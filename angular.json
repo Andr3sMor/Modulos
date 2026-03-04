@@ -39,8 +39,8 @@
           "builder": "@angular/build:dev-server",
           "options": {
             "proxyConfig": "proxy.conf.json",
-	    "port": 3005,
-	    "allowedHosts": ["fa9935d5-93e3-4466-a525-186d3145e4f8-00-xlqdljivs7uc.worf.replit.dev"] 
+            "port": 3000,
+            "allowedHosts": ["fa9935d5-93e3-4466-a525-186d3145e4f8-00-xlqdljivs7uc.worf.replit.dev"] 
           },
           "configurations": {
             "development": {
