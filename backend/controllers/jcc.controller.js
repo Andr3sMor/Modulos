@@ -1,14 +1,11 @@
 const axios = require("axios");
-const https = require("https");
 
-const agent = new https.Agent({ rejectUnauthorized: false });
 const SCRAPE_TOKEN = process.env.SCRAPE_TOKEN;
+const JCC_BASE = "https://sgr.jcc.gov.co:8181";
 
 function scrapeUrl(url) {
   return `http://api.scrape.do?token=${SCRAPE_TOKEN}&url=${encodeURIComponent(url)}&render=true`;
 }
-
-const JCC_BASE = "https://sgr.jcc.gov.co:8181";
 
 exports.consultarContador = async (req, res) => {
   const { cedula } = req.body;
