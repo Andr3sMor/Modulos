@@ -74,7 +74,7 @@ export class SearchComponent {
     this.consultaService
       .consultarAntecedentes(this.cedula, this.tipoDocumento)
       .subscribe({
-        next: (res) => {
+        next: (res: any) => {
           this.resultado = {
             fuente: res.fuente,
             tieneAntecedentes: res.tieneAntecedentes,
