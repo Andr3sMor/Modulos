@@ -31,7 +31,6 @@ exports.consultarAntecedentes = async (req, res) => {
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--ignore-certificate-errors",
-        "--ignore-certificate-errors-spki-list",
       ],
       defaultViewport: chromium.defaultViewport,
       executablePath: await chromium.executablePath(),
@@ -39,61 +38,139 @@ exports.consultarAntecedentes = async (req, res) => {
     });
 
     const page = await browser.newPage();
-
-    // Ignorar errores de SSL del sitio de la policía
     await page.setBypassCSP(true);
 
-    console.log("📄 Cargando página de términos...");
-    await page.goto(POLICIA_URL, {
-      waitUntil: "networkidle2",
-      timeout: 30000,
+    // ── PASO 1: Ir directo al formulario (saltar términos) ──────────────
+    console.log("📋 Intentando ir directo al formulario...");
+    await page.goto(POLICIA_FORM, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
     });
 
-    // Aceptar términos
-    console.log("✅ Aceptando términos...");
-    await page.evaluate(() => {
-      const radios = document.querySelectorAll('input[type="radio"]');
-      radios.forEach((r) => {
-        if (
-          r.value === "true" ||
-          r.nextSibling?.textContent?.includes("Acepto")
-        ) {
-          r.click();
-        }
+    await new Promise((r) => setTimeout(r, 3000));
+
+    const urlActual = page.url();
+    console.log("URL actual:", urlActual);
+
+    // Si redirigió a términos, aceptarlos
+    if (
+      urlActual.includes("index.xhtml") ||
+      urlActual.includes("WebJudicial/")
+    ) {
+      console.log("✅ Aceptando términos...");
+
+      // Seleccionar radio "Acepto"
+      await page.evaluate(() => {
+        const radios = document.querySelectorAll('input[type="radio"]');
+        radios.forEach((r) => {
+          const label = r.closest("label") || r.parentElement;
+          const texto = label?.textContent || r.value || "";
+          if (
+            texto.toLowerCase().includes("acepto") ||
+            r.value === "true" ||
+            r.value === "1" ||
+            r.value === "Acepto"
+          ) {
+            r.click();
+          }
+        });
       });
-    });
 
-    // Buscar y clickear botón de continuar
-    await page.click('input[type="submit"], button[type="submit"], .ui-button');
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
+      await new Promise((r) => setTimeout(r, 1000));
 
-    console.log("📋 En formulario, llenando datos...");
-    await page.waitForSelector("select", { timeout: 10000 });
+      // Click en Enviar
+      const boton =
+        (await page.$('input[type="submit"]')) ||
+        (await page.$('button[type="submit"]')) ||
+        (await page.$(".ui-button"));
 
-    // Seleccionar tipo de documento
-    await page.select("select", tipoValor);
+      if (boton) {
+        await boton.click();
+      }
 
-    // Ingresar cédula
-    const inputCedula = await page.$('input[type="text"], input:not([type])');
-    if (inputCedula) {
-      await inputCedula.click({ clickCount: 3 });
-      await inputCedula.type(cedula);
+      // Esperar navegación con timeout alto
+      await page.waitForNavigation({
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
+
+      await new Promise((r) => setTimeout(r, 3000));
+      console.log("URL después de términos:", page.url());
     }
 
-    // Esperar que el reCAPTCHA se resuelva automáticamente o intentar resolverlo
-    console.log("⏳ Esperando reCAPTCHA...");
-    await new Promise((r) => setTimeout(r, 5000));
+    // ── PASO 2: Llenar formulario ───────────────────────────────────────
+    console.log("📝 Llenando formulario...");
 
-    // Intentar submit
-    await page.click('input[type="submit"], button[type="submit"], .ui-button');
-    await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 45000 });
+    // Esperar select de tipo documento
+    await page.waitForSelector("select", { timeout: 15000 });
+
+    // Listar selects disponibles
+    const selects = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("select")).map((s) => ({
+        name: s.name,
+        id: s.id,
+        options: Array.from(s.options).map((o) => o.text),
+      }));
+    });
+    console.log("Selects:", JSON.stringify(selects));
+
+    // Seleccionar tipo de documento
+    const selectEl = await page.$("select");
+    if (selectEl) {
+      await page.select("select", tipoValor);
+    }
+
+    // Ingresar número de cédula
+    const inputs = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("input")).map((i) => ({
+        name: i.name,
+        id: i.id,
+        type: i.type,
+        placeholder: i.placeholder,
+      }));
+    });
+    console.log("Inputs:", JSON.stringify(inputs));
+
+    const inputCedula =
+      (await page.$('input[id*="cedula"]')) ||
+      (await page.$('input[name*="cedula"]')) ||
+      (await page.$('input[type="text"]'));
+
+    if (inputCedula) {
+      await inputCedula.click({ clickCount: 3 });
+      await inputCedula.type(cedula, { delay: 50 });
+      console.log("✅ Cédula ingresada");
+    } else {
+      throw new Error("No se encontró el campo de cédula");
+    }
+
+    // ── PASO 3: Resolver reCAPTCHA esperando ────────────────────────────
+    console.log("⏳ Esperando 8 segundos para reCAPTCHA...");
+    await new Promise((r) => setTimeout(r, 8000));
+
+    // ── PASO 4: Submit ──────────────────────────────────────────────────
+    console.log("🔍 Enviando consulta...");
+    const botonConsultar =
+      (await page.$('input[type="submit"]')) ||
+      (await page.$('button[type="submit"]')) ||
+      (await page.$(".ui-button"));
+
+    if (botonConsultar) {
+      await botonConsultar.click();
+    }
+
+    await page.waitForNavigation({
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
+
+    await new Promise((r) => setTimeout(r, 3000));
 
     const html = await page.content();
     const texto = html.replace(/<[^>]+>/g, " ").toUpperCase();
-
     console.log(
-      "Respuesta (400 chars):",
-      texto.replace(/\s+/g, " ").trim().substring(0, 400),
+      "Respuesta:",
+      texto.replace(/\s+/g, " ").trim().substring(0, 500),
     );
 
     const noRegistra =
