@@ -34,9 +34,12 @@ export class SearchComponent {
     this.consultaService.verificarCedula(this.cedula).subscribe({
       next: (res: any) => {
         this.resultado = {
-          ...res,
-          fuente: "Registraduría Nacional",
-          data: res.data || {},
+          fuente: res.fuente,
+          data: {
+            vigencia: res.data?.vigencia,
+            codigo: res.data?.codigo,
+            fecha: res.data?.fecha || new Date().toLocaleString(),
+          },
         };
         this.cargando = false;
       },
