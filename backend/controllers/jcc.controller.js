@@ -1,112 +1,154 @@
 const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
-const PROXIES = [
-  "http://203.24.108.161:80",
-  "http://185.162.231.106:80",
-  "http://103.149.162.194:80",
-  "http://91.108.4.179:3128",
-  "http://190.61.88.147:8080",
-];
+const JCC_URL = "https://sgr.jcc.gov.co:8181/apex/f?p=138:1:::NO:::";
 
 exports.consultarContador = async (req, res) => {
   const { cedula } = req.body;
-  console.log(`--- Iniciando consulta JCC para: ${cedula} ---`);
+  if (!cedula)
+    return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
+  console.log(`--- Consultando JCC para: ${cedula} ---`);
   let browser;
-  let ultimoError;
 
-  for (const proxy of PROXIES) {
-    try {
-      console.log(`🔄 Intentando con proxy: ${proxy}`);
+  try {
+    browser = await puppeteer.launch({
+      args: [
+        ...chromium.args,
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--ignore-certificate-errors",
+      ],
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
 
-      browser = await puppeteer.launch({
-        args: [
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-          `--proxy-server=${proxy}`,
-        ],
-        executablePath:
-          "/nix/store/khk7xpgsm5insk81azy9d560yq4npf77-chromium-131.0.6778.204/bin/chromium-browser",
-        headless: true,
-      });
+    const page = await browser.newPage();
+    await page.setBypassCSP(true);
 
-      const page = await browser.newPage();
+    console.log("📄 Cargando JCC...");
+    await page.goto(JCC_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
 
-      await page.goto("https://sgr.jcc.gov.co:8181/apex/f?p=138:1:::NO:::", {
-        waitUntil: "domcontentloaded",
-        timeout: 20000,
-      });
+    await new Promise((r) => setTimeout(r, 3000));
+    console.log("URL actual:", page.url());
 
-      await new Promise((r) => setTimeout(r, 3000));
-
-      const pageContent = await page.content();
-      console.log("HTML primeros 200 chars:", pageContent.substring(0, 200));
-
-      if (pageContent.includes("403") || pageContent.includes("Forbidden")) {
-        console.log(`❌ Proxy ${proxy} bloqueado, intentando siguiente...`);
-        await browser.close();
-        browser = null;
-        continue;
-      }
-
-      // Aceptar términos si aparecen
-      if (pageContent.includes("Acepto") || pageContent.includes("acepto")) {
-        console.log("📋 Aceptando términos...");
-        await page.evaluate(() => {
-          const radios = document.querySelectorAll('input[type="radio"]');
-          radios.forEach((r) => {
-            if (
-              r.value === "Acepto" ||
-              r.value === "acepto" ||
-              r.value === "1"
-            ) {
-              r.click();
-            }
-          });
-        });
-        await page.click('input[type="submit"], button[type="submit"]');
-        await page.waitForNavigation({
-          waitUntil: "networkidle2",
-          timeout: 20000,
-        });
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-
-      const inputs = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll("input")).map((i) => ({
+    // Listar inputs y selects disponibles
+    const elementos = await page.evaluate(() => {
+      return {
+        inputs: Array.from(document.querySelectorAll("input")).map((i) => ({
           name: i.name,
           id: i.id,
           type: i.type,
-        }));
-      });
-      console.log("Inputs encontrados:", JSON.stringify(inputs));
+          placeholder: i.placeholder,
+        })),
+        selects: Array.from(document.querySelectorAll("select")).map((s) => ({
+          name: s.name,
+          id: s.id,
+          options: Array.from(s.options).map((o) => ({
+            value: o.value,
+            text: o.text,
+          })),
+        })),
+        buttons: Array.from(
+          document.querySelectorAll("button, input[type='submit']"),
+        ).map((b) => ({
+          type: b.type,
+          text: b.textContent?.trim(),
+          id: b.id,
+        })),
+      };
+    });
+    console.log("Elementos encontrados:", JSON.stringify(elementos, null, 2));
 
-      await page.type('input[name="P1_NUMERO_DOCUMENTO"]', cedula);
-      await page.click('button[type="submit"], input[type="submit"]');
-      await page.waitForNavigation({
-        waitUntil: "networkidle2",
-        timeout: 20000,
-      });
+    // Seleccionar "Cédula de Ciudadanía" en el select
+    const selectEl = await page.$("select");
+    if (selectEl) {
+      const opciones = await page.evaluate(
+        (s) => Array.from(s.options).map((o) => o.text),
+        selectEl,
+      );
+      console.log("Opciones del select:", opciones);
 
-      const html = await page.content();
-      const esContador = html.includes("CONTADOR PÚBLICO");
+      // Buscar opción que contenga "Ciudadanía" o "CC"
+      const opcionCC = await page.evaluate((s) => {
+        const opt = Array.from(s.options).find(
+          (o) =>
+            o.text.includes("Ciudadan") ||
+            o.text.includes("CC") ||
+            o.value === "CC",
+        );
+        return opt ? opt.value : null;
+      }, selectEl);
 
-      console.log("✅ Consulta exitosa. Es contador:", esContador);
-      return res.json({ esContador, documento: cedula });
-    } catch (error) {
-      console.error(`❌ Error con proxy ${proxy}:`, error.message);
-      ultimoError = error;
-      if (browser) {
-        await browser.close();
-        browser = null;
+      if (opcionCC) {
+        await page.select("select", opcionCC);
+        console.log("✅ Tipo documento seleccionado:", opcionCC);
       }
     }
-  }
 
-  // Si todos los proxies fallaron
-  res.status(502).json({
-    error: "Todos los proxies fallaron",
-    detalle: ultimoError?.message,
-    nota: "Los proxies públicos son inestables. Considera usar ScraperAPI.",
-  });
+    // Ingresar número de documento
+    const inputDoc =
+      (await page.$(`input[name="P1_NUMERO_DOCUMENTO"]`)) ||
+      (await page.$('input[type="text"]'));
+
+    if (!inputDoc) throw new Error("No se encontró el campo de documento");
+
+    await inputDoc.click({ clickCount: 3 });
+    await inputDoc.type(cedula, { delay: 50 });
+    console.log("✅ Cédula ingresada");
+
+    // Click en Consultar
+    const boton =
+      (await page.$('button[type="submit"]')) ||
+      (await page.$('input[type="submit"]')) ||
+      (await page.$(".t-Button"));
+
+    if (!boton) throw new Error("No se encontró el botón Consultar");
+
+    await boton.click();
+    console.log("🔍 Consulta enviada, esperando resultado...");
+
+    await new Promise((r) => setTimeout(r, 5000));
+
+    const html = await page.content();
+    const texto = html.replace(/<[^>]+>/g, " ").toUpperCase();
+    console.log(
+      "Respuesta (500 chars):",
+      texto.replace(/\s+/g, " ").trim().substring(0, 500),
+    );
+
+    const esContador =
+      texto.includes("CONTADOR PÚBLICO") ||
+      texto.includes("HABILITADO") ||
+      texto.includes("CONTADOR PUBLICO");
+
+    const noEsContador =
+      texto.includes("NO REGISTRA") ||
+      texto.includes("NO SE ENCUENTRA") ||
+      texto.includes("NO REGISTRA INFORMACION");
+
+    return res.json({
+      fuente: "Junta Central de Contadores",
+      esContador,
+      documento: cedula,
+      mensaje: esContador
+        ? "La persona ES Contador Público registrado."
+        : noEsContador
+          ? "La persona NO está registrada como Contador Público."
+          : "Sin resultado claro.",
+      detalle: texto.replace(/\s+/g, " ").trim().substring(0, 600),
+    });
+  } catch (error) {
+    console.error("❌ ERROR JCC:", error.message);
+    return res.status(502).json({
+      error: "Error en consulta JCC",
+      detalle: error.message,
+    });
+  } finally {
+    if (browser) await browser.close();
+  }
 };
