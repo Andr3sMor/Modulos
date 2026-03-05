@@ -29,14 +29,25 @@ exports.consultarContador = async (req, res) => {
 
     console.log("📄 Cargando JCC...");
     await page.goto(JCC_URL, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle0",
       timeout: 60000,
     });
 
-    await new Promise((r) => setTimeout(r, 3000));
-    console.log("URL actual:", page.url());
+    // Esperar que el JS renderice la página
+    await new Promise((r) => setTimeout(r, 8000));
 
-    // Listar inputs y selects disponibles
+    // Imprimir HTML para debuggear qué cargó
+    const htmlDebug = await page.content();
+    console.log(
+      "HTML (800 chars):",
+      htmlDebug
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .substring(0, 800),
+    );
+
+    // Listar todos los elementos interactivos
     const elementos = await page.evaluate(() => {
       return {
         inputs: Array.from(document.querySelectorAll("input")).map((i) => ({
@@ -59,88 +70,23 @@ exports.consultarContador = async (req, res) => {
           type: b.type,
           text: b.textContent?.trim(),
           id: b.id,
+          class: b.className,
+        })),
+        iframes: Array.from(document.querySelectorAll("iframe")).map((f) => ({
+          src: f.src,
+          id: f.id,
+          name: f.name,
         })),
       };
     });
-    console.log("Elementos encontrados:", JSON.stringify(elementos, null, 2));
-
-    // Seleccionar "Cédula de Ciudadanía" en el select
-    const selectEl = await page.$("select");
-    if (selectEl) {
-      const opciones = await page.evaluate(
-        (s) => Array.from(s.options).map((o) => o.text),
-        selectEl,
-      );
-      console.log("Opciones del select:", opciones);
-
-      // Buscar opción que contenga "Ciudadanía" o "CC"
-      const opcionCC = await page.evaluate((s) => {
-        const opt = Array.from(s.options).find(
-          (o) =>
-            o.text.includes("Ciudadan") ||
-            o.text.includes("CC") ||
-            o.value === "CC",
-        );
-        return opt ? opt.value : null;
-      }, selectEl);
-
-      if (opcionCC) {
-        await page.select("select", opcionCC);
-        console.log("✅ Tipo documento seleccionado:", opcionCC);
-      }
-    }
-
-    // Ingresar número de documento
-    const inputDoc =
-      (await page.$(`input[name="P1_NUMERO_DOCUMENTO"]`)) ||
-      (await page.$('input[type="text"]'));
-
-    if (!inputDoc) throw new Error("No se encontró el campo de documento");
-
-    await inputDoc.click({ clickCount: 3 });
-    await inputDoc.type(cedula, { delay: 50 });
-    console.log("✅ Cédula ingresada");
-
-    // Click en Consultar
-    const boton =
-      (await page.$('button[type="submit"]')) ||
-      (await page.$('input[type="submit"]')) ||
-      (await page.$(".t-Button"));
-
-    if (!boton) throw new Error("No se encontró el botón Consultar");
-
-    await boton.click();
-    console.log("🔍 Consulta enviada, esperando resultado...");
-
-    await new Promise((r) => setTimeout(r, 5000));
-
-    const html = await page.content();
-    const texto = html.replace(/<[^>]+>/g, " ").toUpperCase();
-    console.log(
-      "Respuesta (500 chars):",
-      texto.replace(/\s+/g, " ").trim().substring(0, 500),
-    );
-
-    const esContador =
-      texto.includes("CONTADOR PÚBLICO") ||
-      texto.includes("HABILITADO") ||
-      texto.includes("CONTADOR PUBLICO");
-
-    const noEsContador =
-      texto.includes("NO REGISTRA") ||
-      texto.includes("NO SE ENCUENTRA") ||
-      texto.includes("NO REGISTRA INFORMACION");
+    console.log("Elementos:", JSON.stringify(elementos, null, 2));
 
     return res.json({
       fuente: "Junta Central de Contadores",
-      esContador,
+      esContador: false,
       documento: cedula,
-      mensaje: esContador
-        ? "La persona ES Contador Público registrado."
-        : noEsContador
-          ? "La persona NO está registrada como Contador Público."
-          : "Sin resultado claro.",
-      detalle: texto.replace(/\s+/g, " ").trim().substring(0, 600),
+      mensaje: "Debug: revisando estructura de página",
+      detalle: JSON.stringify(elementos),
     });
   } catch (error) {
     console.error("❌ ERROR JCC:", error.message);
