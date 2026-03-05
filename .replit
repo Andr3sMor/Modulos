@@ -7,7 +7,7 @@ requiredFiles = [".replit", "replit.nix", "package.json", "package-lock.json"]
 
 [nix]
 channel = "stable-24_11"
-packages = ["nano"]
+packages = ["nano", "chromium"]
 
 [deployment]
 run = ["node", "index.js"]
@@ -23,15 +23,12 @@ externalPort = 80
 
 [[ports]]
 localPort = 3001
-externalPort = 3001
 
 [[ports]]
 localPort = 3005
-externalPort = 3000
 
 [[ports]]
 localPort = 4200
-externalPort = 4200
 
 [workflows]
 runButton = "Project"

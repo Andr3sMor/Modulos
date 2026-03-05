@@ -14,13 +14,23 @@
     />
   </div>
 
+  <!-- Selector de tipo de documento (usado por Antecedentes Policiales) -->
+  <div class="form-group">
+    <label>Tipo de Documento</label>
+    <select [(ngModel)]="tipoDocumento">
+      <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
+        {{ tipo }}
+      </option>
+    </select>
+  </div>
+
   <div class="button-group">
     <button
       class="btn-primary"
       (click)="consultarCedula()"
       [disabled]="cargando"
     >
-      {{ cargando ? 'Buscando...' : 'Vigencia Cédula' }}
+      {{ cargando ? "Buscando..." : "Vigencia Cédula" }}
     </button>
 
     <button
@@ -28,7 +38,16 @@
       (click)="consultarContador()"
       [disabled]="cargando"
     >
-      {{ cargando ? 'Buscando...' : 'Verificar Contador' }}
+      {{ cargando ? "Buscando..." : "Verificar Contador" }}
+    </button>
+
+    <!-- NUEVO botón -->
+    <button
+      class="btn-policia"
+      (click)="consultarAntecedentes()"
+      [disabled]="cargando"
+    >
+      {{ cargando ? "Consultando..." : "🚔 Antecedentes Policiales" }}
     </button>
   </div>
 
@@ -39,6 +58,21 @@
   <div *ngIf="resultado" class="result-card">
     <div class="result-header">
       <span class="badge">{{ resultado.fuente }}</span>
+      <!-- Badge visual para antecedentes -->
+      <span
+        *ngIf="resultado.tieneAntecedentes !== undefined"
+        [class]="
+          resultado.tieneAntecedentes
+            ? 'badge badge-danger'
+            : 'badge badge-success'
+        "
+      >
+        {{
+          resultado.tieneAntecedentes
+            ? "⚠️ Registra antecedentes"
+            : "✅ Sin antecedentes"
+        }}
+      </span>
     </div>
 
     <div class="result-body">
@@ -46,11 +80,19 @@
         <span class="label">Estado:</span>
         <span class="value">{{ resultado.data?.vigencia }}</span>
       </div>
+      <div class="result-item" *ngIf="resultado.data?.tipoDocumento">
+        <span class="label">Tipo documento:</span>
+        <span class="value">{{ resultado.data?.tipoDocumento }}</span>
+      </div>
+      <div class="result-item" *ngIf="resultado.data?.detalle">
+        <span class="label">Detalle:</span>
+        <span class="value small">{{ resultado.data?.detalle }}</span>
+      </div>
       <div class="result-item">
         <span class="label">Fecha consulta:</span>
         <span class="value">{{ resultado.data?.fecha }}</span>
       </div>
-      <div class="result-item">
+      <div class="result-item" *ngIf="resultado.data?.codigo">
         <span class="label">Código:</span>
         <span class="value">{{ resultado.data?.codigo }}</span>
       </div>
