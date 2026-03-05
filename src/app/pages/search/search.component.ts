@@ -36,6 +36,8 @@ export class SearchComponent {
     this.prepararConsulta();
     this.consultaService.verificarCedula(this.cedula).subscribe({
       next: (res: any) => {
+        console.log("✅ Respuesta recibida:", res);
+        console.log("cargando antes:", this.cargando);
         this.zone.run(() => {
           this.resultado = {
             fuente: res.fuente,
@@ -46,12 +48,16 @@ export class SearchComponent {
             },
           };
           this.cargando = false;
+          console.log("cargando después:", this.cargando);
+          console.log("resultado:", this.resultado);
         });
       },
-      error: (err) =>
+      error: (err) => {
+        console.log("❌ Error:", err);
         this.zone.run(() =>
           this.manejarError(err.error?.error || "Error en Registraduría"),
-        ),
+        );
+      },
     });
   }
 
