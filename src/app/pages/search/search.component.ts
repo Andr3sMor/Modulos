@@ -1,4 +1,4 @@
-import { Component, NgZone } from "@angular/core";
+import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
@@ -29,6 +29,7 @@ export class SearchComponent {
   constructor(
     private consultaService: ConsultaService,
     private zone: NgZone,
+    private cdr: ChangeDetectorRef,
   ) {}
 
   consultarCedula() {
@@ -48,15 +49,17 @@ export class SearchComponent {
             },
           };
           this.cargando = false;
+          this.cdr.detectChanges();
           console.log("cargando después:", this.cargando);
           console.log("resultado:", this.resultado);
         });
       },
       error: (err) => {
         console.log("❌ Error:", err);
-        this.zone.run(() =>
-          this.manejarError(err.error?.error || "Error en Registraduría"),
-        );
+        this.zone.run(() => {
+          this.manejarError(err.error?.error || "Error en Registraduría");
+          this.cdr.detectChanges();
+        });
       },
     });
   }
@@ -77,14 +80,16 @@ export class SearchComponent {
             },
           };
           this.cargando = false;
+          this.cdr.detectChanges();
         });
       },
       error: (err) =>
-        this.zone.run(() =>
+        this.zone.run(() => {
           this.manejarError(
             err.error?.error || "Error en consulta de Contador",
-          ),
-        ),
+          );
+          this.cdr.detectChanges();
+        }),
     });
   }
 
@@ -108,14 +113,16 @@ export class SearchComponent {
               },
             };
             this.cargando = false;
+            this.cdr.detectChanges();
           });
         },
         error: (err) =>
-          this.zone.run(() =>
+          this.zone.run(() => {
             this.manejarError(
               err.error?.error || "Error al consultar antecedentes policiales",
-            ),
-          ),
+            );
+            this.cdr.detectChanges();
+          }),
       });
   }
 
