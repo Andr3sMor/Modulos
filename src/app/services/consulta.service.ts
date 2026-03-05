@@ -3,7 +3,7 @@ import { HttpClient } from "@angular/common/http";
 
 @Injectable({ providedIn: "root" })
 export class ConsultaService {
-  private apiUrl = "https://TU-BACKEND.onrender.com"; // ← aquí va la URL de Render después
+  private apiUrl = "https://modulos-backend.onrender.com"; // ← aquí va la URL de Render después
 
   constructor(private http: HttpClient) {}
 
