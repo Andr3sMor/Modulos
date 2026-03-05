@@ -14,7 +14,7 @@
     />
   </div>
 
-  <!-- Selector de tipo de documento (usado por Antecedentes Policiales) 
+  <!-- Selector de tipo de documento (usado por Antecedentes Policiales) -->
   <div class="form-group">
     <label>Tipo de Documento</label>
     <select [(ngModel)]="tipoDocumento">
@@ -23,7 +23,6 @@
       </option>
     </select>
   </div>
-  -->
 
   <div class="button-group">
     <button
@@ -34,7 +33,7 @@
       {{ cargando ? "Buscando..." : "Vigencia Cédula" }}
     </button>
 
-    <!-- Botón para consultar contador 
+    <!-- Botón para consultar contador -->
     <button
       class="btn-secondary"
       (click)="consultarContador()"
@@ -43,7 +42,7 @@
       {{ cargando ? "Buscando..." : "Verificar Contador" }}
     </button>
 
-    <!-- NUEVO botón 
+    <!-- NUEVO botón -->
     <button
       class="btn-policia"
       (click)="consultarAntecedentes()"
@@ -51,7 +50,6 @@
     >
       {{ cargando ? "Consultando..." : "🚔 Antecedentes Policiales" }}
     </button>
-    -->
   </div>
 
   <div *ngIf="error" class="error-badge">
