@@ -1,4 +1,4 @@
-import { Component } from "@angular/core";
+import { Component, NgZone } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
@@ -26,25 +26,32 @@ export class SearchComponent {
     "Permiso Especial de Permanencia",
   ];
 
-  constructor(private consultaService: ConsultaService) {}
+  constructor(
+    private consultaService: ConsultaService,
+    private zone: NgZone,
+  ) {}
 
   consultarCedula() {
     if (!this.cedula) return;
     this.prepararConsulta();
     this.consultaService.verificarCedula(this.cedula).subscribe({
       next: (res: any) => {
-        this.resultado = {
-          fuente: res.fuente,
-          data: {
-            vigencia: res.data?.vigencia,
-            codigo: res.data?.codigo,
-            fecha: res.data?.fecha || new Date().toLocaleString(),
-          },
-        };
-        this.cargando = false;
+        this.zone.run(() => {
+          this.resultado = {
+            fuente: res.fuente,
+            data: {
+              vigencia: res.data?.vigencia,
+              codigo: res.data?.codigo,
+              fecha: res.data?.fecha || new Date().toLocaleString(),
+            },
+          };
+          this.cargando = false;
+        });
       },
       error: (err) =>
-        this.manejarError(err.error?.error || "Error en Registraduría"),
+        this.zone.run(() =>
+          this.manejarError(err.error?.error || "Error en Registraduría"),
+        ),
     });
   }
 
@@ -53,24 +60,28 @@ export class SearchComponent {
     this.prepararConsulta();
     this.consultaService.verificarContador(this.cedula).subscribe({
       next: (res: any) => {
-        this.resultado = {
-          ...res,
-          fuente: "Junta Central de Contadores",
-          data: {
-            vigencia: res.esContador
-              ? "CONTADOR PÚBLICO"
-              : "No es contador o no encontrado",
-            fecha: new Date().toLocaleString(),
-          },
-        };
-        this.cargando = false;
+        this.zone.run(() => {
+          this.resultado = {
+            fuente: "Junta Central de Contadores",
+            data: {
+              vigencia: res.esContador
+                ? "CONTADOR PÚBLICO"
+                : "No es contador o no encontrado",
+              fecha: new Date().toLocaleString(),
+            },
+          };
+          this.cargando = false;
+        });
       },
       error: (err) =>
-        this.manejarError(err.error?.error || "Error en consulta de Contador"),
+        this.zone.run(() =>
+          this.manejarError(
+            err.error?.error || "Error en consulta de Contador",
+          ),
+        ),
     });
   }
 
-  // ── NUEVO: Consulta Antecedentes Policiales ──────────────────────────
   consultarAntecedentes() {
     if (!this.cedula) return;
     this.prepararConsulta();
@@ -78,22 +89,26 @@ export class SearchComponent {
       .consultarAntecedentes(this.cedula, this.tipoDocumento)
       .subscribe({
         next: (res: any) => {
-          this.resultado = {
-            fuente: res.fuente,
-            tieneAntecedentes: res.tieneAntecedentes,
-            data: {
-              vigencia: res.mensaje,
-              detalle: res.detalle || "",
-              fecha: new Date().toLocaleString(),
-              cedula: res.cedula,
-              tipoDocumento: res.tipoDocumento,
-            },
-          };
-          this.cargando = false;
+          this.zone.run(() => {
+            this.resultado = {
+              fuente: res.fuente,
+              tieneAntecedentes: res.tieneAntecedentes,
+              data: {
+                vigencia: res.mensaje,
+                detalle: res.detalle || "",
+                fecha: new Date().toLocaleString(),
+                cedula: res.cedula,
+                tipoDocumento: res.tipoDocumento,
+              },
+            };
+            this.cargando = false;
+          });
         },
         error: (err) =>
-          this.manejarError(
-            err.error?.error || "Error al consultar antecedentes policiales",
+          this.zone.run(() =>
+            this.manejarError(
+              err.error?.error || "Error al consultar antecedentes policiales",
+            ),
           ),
       });
   }
