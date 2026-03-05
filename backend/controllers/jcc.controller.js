@@ -2,6 +2,11 @@ const axios = require("axios");
 const https = require("https");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
+const SCRAPE_TOKEN = process.env.SCRAPE_TOKEN;
+
+function scrapeUrl(url) {
+  return `http://api.scrape.do?token=${SCRAPE_TOKEN}&url=${encodeURIComponent(url)}&render=true`;
+}
 
 const JCC_BASE = "https://sgr.jcc.gov.co:8181";
 
@@ -13,80 +18,71 @@ exports.consultarContador = async (req, res) => {
   console.log(`--- Consultando JCC para: ${cedula} ---`);
 
   try {
-    // Paso 1: GET para obtener cookies y tokens de sesión
-    console.log("📄 Obteniendo sesión JCC...");
-    const r1 = await axios.get(`${JCC_BASE}/apex/f?p=138:1:::NO:::`, {
-      httpsAgent: agent,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-        Accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "es-CO,es;q=0.9",
+    // Paso 1: GET página inicial con render JS
+    console.log("📄 Obteniendo página JCC via Scrape.do...");
+    const r1 = await axios.get(
+      scrapeUrl(`${JCC_BASE}/apex/f?p=138:1:::NO:::`),
+      {
+        timeout: 60000,
       },
-    });
+    );
 
-    console.log("Status GET:", r1.status);
+    console.log("Status:", r1.status);
+    const html1 = r1.data.toString();
     console.log(
       "HTML (600 chars):",
-      r1.data
-        .toString()
+      html1
         .replace(/<[^>]+>/g, " ")
         .replace(/\s+/g, " ")
         .trim()
         .substring(0, 600),
     );
 
-    // Extraer cookies
+    // Extraer campos del formulario
+    const pInstance =
+      html1.match(/name="p_instance"\s+value="([^"]+)"/)?.[1] || "";
+    const pFlow =
+      html1.match(/name="p_flow_id"\s+value="([^"]+)"/)?.[1] || "138";
+    const pFlowStep =
+      html1.match(/name="p_flow_step_id"\s+value="([^"]+)"/)?.[1] || "1";
+    const pPageSubmissionId =
+      html1.match(/name="p_page_submission_id"\s+value="([^"]+)"/)?.[1] || "";
+
+    console.log("Campos:", { pInstance, pFlow, pFlowStep, pPageSubmissionId });
+
+    // Extraer cookies del header
     const cookies = (r1.headers["set-cookie"] || [])
       .map((c) => c.split(";")[0])
       .join("; ");
-    console.log("Cookies:", cookies);
 
-    // Extraer campos ocultos del formulario
-    const html = r1.data.toString();
-    const pInstance =
-      html.match(/name="p_instance"\s+value="([^"]+)"/)?.[1] || "";
-    const pFlow =
-      html.match(/name="p_flow_id"\s+value="([^"]+)"/)?.[1] || "138";
-    const pFlowStep =
-      html.match(/name="p_flow_step_id"\s+value="([^"]+)"/)?.[1] || "1";
-    const pInstance2 =
-      html.match(/name="p_instance"\s+value="([^"]+)"/)?.[1] || "";
-
-    console.log("p_instance:", pInstance, "p_flow:", pFlow);
-
-    // Paso 2: POST con el número de cédula
+    // Paso 2: POST consulta
     console.log("🔍 Enviando consulta...");
     const body = new URLSearchParams({
       p_flow_id: pFlow,
       p_flow_step_id: pFlowStep,
       p_instance: pInstance,
+      p_page_submission_id: pPageSubmissionId,
       p_debug: "",
-      p_request: "SEARCH",
+      p_request: "CONSULTAR",
       p_reload_on_submit: "S",
       p_widget_name: "wwv_flow",
       p_widget_action: "DEFAULT",
-      p_t01: cedula, // campo número documento
-      p_t02: "CC", // tipo documento
+      p_t01: cedula,
+      p_t02: "CC",
     });
 
     const r2 = await axios.post(
-      `${JCC_BASE}/apex/wwv_flow.accept`,
+      scrapeUrl(`${JCC_BASE}/apex/wwv_flow.accept`),
       body.toString(),
       {
-        httpsAgent: agent,
+        timeout: 60000,
         headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
           "Content-Type": "application/x-www-form-urlencoded",
-          Referer: `${JCC_BASE}/apex/f?p=138:1:::NO:::`,
           Cookie: cookies,
         },
       },
     );
 
-    console.log("Status POST:", r2.status);
     const texto = r2.data
       .toString()
       .replace(/<[^>]+>/g, " ")
