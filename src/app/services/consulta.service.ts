@@ -15,24 +15,29 @@ export interface AntecedentesResult {
 
 @Injectable({ providedIn: "root" })
 export class ConsultaService {
+  private apiUrl = "https://modulos-backend.onrender.com"; // ← reemplaza con tu URL de Render
+
   constructor(private http: HttpClient) {}
 
   verificarCedula(cedula: string) {
-    return this.http.post("/api/consulta-cedula", { cedula });
+    return this.http.post(`${this.apiUrl}/api/consulta-cedula`, { cedula });
   }
 
   verificarContador(cedula: string) {
-    return this.http.post("/api/consulta-contador", { cedula });
+    return this.http.post(`${this.apiUrl}/api/consulta-contador`, { cedula });
   }
 
   consultarAntecedentes(
     cedula: string,
     tipoDocumento = "Cédula de Ciudadanía",
   ) {
-    return this.http.post<AntecedentesResult>("/api/consulta-antecedentes", {
-      cedula,
-      tipoDocumento,
-    });
+    return this.http.post<AntecedentesResult>(
+      `${this.apiUrl}/api/consulta-antecedentes`,
+      {
+        cedula,
+        tipoDocumento,
+      },
+    );
   }
 
   consultarAntecedentesConToken(
@@ -40,11 +45,14 @@ export class ConsultaService {
     tipoDocumento: string,
     recaptchaToken: string,
   ) {
-    return this.http.post<AntecedentesResult>("/api/consulta-antecedentes", {
-      cedula,
-      tipoDocumento,
-      recaptchaToken,
-    });
+    return this.http.post<AntecedentesResult>(
+      `${this.apiUrl}/api/consulta-antecedentes`,
+      {
+        cedula,
+        tipoDocumento,
+        recaptchaToken,
+      },
+    );
   }
 
   consultarProcuraduria(
@@ -52,10 +60,13 @@ export class ConsultaService {
     tipoDocumento = "CC",
     tipoCertificado = "1",
   ) {
-    return this.http.post<AntecedentesResult>("/api/consulta-procuraduria", {
-      cedula,
-      tipoDocumento,
-      tipoCertificado,
-    });
+    return this.http.post<AntecedentesResult>(
+      `${this.apiUrl}/api/consulta-procuraduria`,
+      {
+        cedula,
+        tipoDocumento,
+        tipoCertificado,
+      },
+    );
   }
 }
