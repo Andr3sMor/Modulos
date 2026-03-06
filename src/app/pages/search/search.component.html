@@ -43,16 +43,14 @@
     </button>
 
     <!-- NUEVO botón -->
-    <!-- Botón normal -->
     <button (click)="consultarAntecedentes()">
       🚔 Antecedentes Policiales
     </button>
 
-    <!-- Modal captcha -->
     <app-policia-captcha
       [cedula]="cedulaParaCaptcha"
       [visible]="mostrarCaptchaPolicia"
-      (tokenObtenido)="onTokenCaptcha($event)"
+      (resultadoObtenido)="onResultadoPolicia($event)"
       (cancelado)="onCaptchaCancelado()"
     >
     </app-policia-captcha>
