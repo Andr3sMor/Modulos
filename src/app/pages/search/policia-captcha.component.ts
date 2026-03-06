@@ -5,41 +5,56 @@ import {
   EventEmitter,
   OnChanges,
   SimpleChanges,
-  ViewChild,
   ElementRef,
   NgZone,
+  AfterViewInit,
+  ChangeDetectorRef,
 } from "@angular/core";
 import { CommonModule } from "@angular/common";
+import { DomSanitizer, SafeResourceUrl } from "@angular/platform-browser";
 
 @Component({
   selector: "app-policia-captcha",
   standalone: true,
   imports: [CommonModule],
   template: `
-    <!-- Iframe oculto de la Policía -->
-    <iframe
-      #policiaFrame
-      *ngIf="visible"
-      [src]="urlPolicia"
-      style="display:none; width:0; height:0;"
-      (load)="onIframeLoad()"
-    ></iframe>
-
-    <!-- Modal visible solo cuando hay captcha -->
-    <div *ngIf="visible && mostrarCaptcha" class="captcha-overlay">
+    <div *ngIf="visible" class="captcha-overlay">
       <div class="captcha-modal">
         <div class="captcha-header">
-          <span>🔒 Verificación requerida</span>
+          <span>🔒 Verificación Policía Nacional</span>
           <button class="btn-cancelar" (click)="cancelar()">✕</button>
         </div>
-        <p class="captcha-instruccion">
-          Resuelve la verificación para consultar los antecedentes
-        </p>
-        <!-- Contenedor donde se moverá el widget real de reCAPTCHA del iframe -->
-        <div #captchaContainer class="captcha-container"></div>
-        <p *ngIf="esperandoResultado" class="captcha-espera">
-          <span class="spinner-small"></span> Procesando...
-        </p>
+
+        <!-- Estado: cargando -->
+        <div *ngIf="estado === 'cargando'" class="estado-info">
+          <span class="spinner-small"></span> Cargando página de la Policía...
+        </div>
+
+        <!-- Estado: procesando automáticamente -->
+        <div *ngIf="estado === 'procesando'" class="estado-info">
+          <span class="spinner-small"></span> Llenando formulario
+          automáticamente...
+        </div>
+
+        <!-- Estado: captcha visible — mostrar iframe recortado -->
+        <div *ngIf="estado === 'captcha'">
+          <p class="captcha-instruccion">
+            Resuelve la verificación para continuar:
+          </p>
+          <div class="iframe-wrapper">
+            <iframe
+              id="policia-iframe"
+              [src]="urlSegura"
+              class="policia-iframe"
+              (load)="onIframeLoad()"
+            ></iframe>
+          </div>
+        </div>
+
+        <!-- Estado: esperando resultado -->
+        <div *ngIf="estado === 'resultado'" class="estado-info">
+          <span class="spinner-small"></span> Obteniendo resultado...
+        </div>
       </div>
     </div>
   `,
@@ -51,7 +66,7 @@ import { CommonModule } from "@angular/common";
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(0, 0, 0, 0.6);
         z-index: 9999;
         display: flex;
         align-items: center;
@@ -60,16 +75,16 @@ import { CommonModule } from "@angular/common";
       .captcha-modal {
         background: white;
         border-radius: 12px;
-        padding: 28px;
+        padding: 24px;
         box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-        max-width: 400px;
+        max-width: 420px;
         width: 90%;
       }
       .captcha-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
         font-weight: 700;
         font-size: 1rem;
         color: #1f2937;
@@ -77,13 +92,33 @@ import { CommonModule } from "@angular/common";
       .captcha-instruccion {
         font-size: 0.85rem;
         color: #6b7280;
-        margin-bottom: 20px;
+        margin-bottom: 12px;
+        text-align: center;
       }
-      .captcha-container {
+      .estado-info {
         display: flex;
+        align-items: center;
         justify-content: center;
-        min-height: 78px;
-        margin-bottom: 16px;
+        gap: 10px;
+        padding: 20px;
+        color: #6b7280;
+        font-size: 0.88rem;
+      }
+      .iframe-wrapper {
+        width: 100%;
+        height: 120px;
+        overflow: hidden;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        position: relative;
+      }
+      .policia-iframe {
+        width: 1200px;
+        height: 900px;
+        transform: scale(0.32) translateX(-860px) translateY(-1200px);
+        transform-origin: top left;
+        border: none;
+        pointer-events: auto;
       }
       .btn-cancelar {
         background: none;
@@ -92,19 +127,15 @@ import { CommonModule } from "@angular/common";
         cursor: pointer;
         color: #6b7280;
         padding: 4px 8px;
+        border-radius: 4px;
+        transition: background 0.2s;
       }
-      .captcha-espera {
-        text-align: center;
-        color: #6b7280;
-        font-size: 0.85rem;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
+      .btn-cancelar:hover {
+        background: #f3f4f6;
       }
       .spinner-small {
-        width: 14px;
-        height: 14px;
+        width: 16px;
+        height: 16px;
         border: 2px solid #e5e7eb;
         border-top-color: #2563eb;
         border-radius: 50%;
@@ -127,166 +158,187 @@ export class PoliciaCaptchaComponent implements OnChanges {
   }>();
   @Output() cancelado = new EventEmitter<void>();
 
-  @ViewChild("policiaFrame") frameRef!: ElementRef<HTMLIFrameElement>;
-  @ViewChild("captchaContainer") containerRef!: ElementRef<HTMLDivElement>;
-
-  urlPolicia =
-    "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
-  mostrarCaptcha = false;
-  esperandoResultado = false;
+  urlSegura: SafeResourceUrl;
+  estado: "cargando" | "procesando" | "captcha" | "resultado" = "cargando";
   cedula = "";
   tipoDoc = "";
-
-  private intentos = 0;
+  private cargaCount = 0;
   private intervalo: any;
 
-  constructor(private zone: NgZone) {}
+  constructor(
+    private zone: NgZone,
+    private sanitizer: DomSanitizer,
+    private cdr: ChangeDetectorRef,
+  ) {
+    this.urlSegura = this.sanitizer.bypassSecurityTrustResourceUrl(
+      "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml",
+    );
+  }
 
   ngOnChanges(changes: SimpleChanges) {
-    if (changes["visible"] && !this.visible) {
-      this.limpiar();
+    if (changes["visible"]) {
+      if (this.visible) {
+        this.estado = "cargando";
+        this.cargaCount = 0;
+      } else {
+        this.limpiar();
+      }
     }
   }
 
   iniciar(cedula: string, tipoDoc: string) {
     this.cedula = cedula;
     this.tipoDoc = tipoDoc;
-    this.intentos = 0;
-    this.mostrarCaptcha = false;
-    this.esperandoResultado = false;
+    this.cargaCount = 0;
+    this.estado = "cargando";
   }
 
   onIframeLoad() {
-    try {
-      const doc =
-        this.frameRef.nativeElement.contentDocument ||
-        this.frameRef.nativeElement.contentWindow?.document;
-      if (!doc) return;
+    this.cargaCount++;
+    console.log(`iframe load #${this.cargaCount}`);
 
-      // Paso 1: aceptar términos automáticamente si están presentes
-      const radioAcepto =
-        (doc.querySelector(
-          'input[type="radio"][value="S"]',
-        ) as HTMLInputElement) ||
-        (doc.querySelector('input[type="radio"]') as HTMLInputElement);
-      if (radioAcepto) {
-        radioAcepto.click();
+    // Pequeño delay para que el DOM del iframe esté listo
+    setTimeout(() => this.procesarIframe(), 800);
+  }
+
+  private getDoc(): Document | null {
+    try {
+      const iframe = document.getElementById(
+        "policia-iframe",
+      ) as HTMLIFrameElement;
+      return iframe?.contentDocument || iframe?.contentWindow?.document || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  private procesarIframe() {
+    const doc = this.getDoc();
+    if (!doc) {
+      console.log("No se pudo acceder al documento del iframe");
+      return;
+    }
+
+    const texto = doc.body?.innerText || "";
+    console.log("Texto iframe (200):", texto.substring(0, 200));
+
+    // Paso 1: aceptar términos
+    const radioAcepto = doc.querySelector(
+      'input[type="radio"]',
+    ) as HTMLInputElement;
+    if (radioAcepto && this.cargaCount === 1) {
+      console.log("✅ Aceptando términos...");
+      this.zone.run(() => {
+        this.estado = "procesando";
+        this.cdr.detectChanges();
+      });
+      radioAcepto.click();
+      setTimeout(() => {
+        const btn = doc.querySelector(
+          'input[type="submit"], button[type="submit"]',
+        ) as HTMLElement;
+        if (btn) btn.click();
+      }, 600);
+      return;
+    }
+
+    // Paso 2: llenar cédula
+    const inputDoc = doc.querySelector(
+      'input[type="text"]',
+    ) as HTMLInputElement;
+    if (inputDoc && this.cargaCount === 2) {
+      console.log("✅ Llenando cédula:", this.cedula);
+      this.zone.run(() => {
+        this.estado = "procesando";
+        this.cdr.detectChanges();
+      });
+
+      inputDoc.focus();
+      inputDoc.value = this.cedula;
+      inputDoc.dispatchEvent(new Event("input", { bubbles: true }));
+      inputDoc.dispatchEvent(new Event("change", { bubbles: true }));
+
+      // Seleccionar tipo doc
+      const sel = doc.querySelector("select") as HTMLSelectElement;
+      if (sel) {
+        for (let i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].text.toUpperCase().includes("CIUDADAN")) {
+            sel.selectedIndex = i;
+            sel.dispatchEvent(new Event("change", { bubbles: true }));
+            break;
+          }
+        }
+      }
+
+      // Hacer clic en consultar para que aparezca el captcha
+      setTimeout(() => {
+        const btnConsultar = Array.from(
+          doc.querySelectorAll('button, input[type="submit"]'),
+        ).find(
+          (el) =>
+            el.textContent?.toUpperCase().includes("CONSULT") ||
+            (el as HTMLInputElement).value?.toUpperCase().includes("CONSULT"),
+        ) as HTMLElement;
+        if (btnConsultar) {
+          console.log("✅ Clic en Consultar");
+          btnConsultar.click();
+        }
+        // Mostrar iframe con captcha después de un momento
         setTimeout(() => {
-          const btnEnviar = doc.querySelector(
+          this.zone.run(() => {
+            this.estado = "captcha";
+            this.cdr.detectChanges();
+          });
+          this.esperarResolucionCaptcha(doc);
+        }, 1500);
+      }, 800);
+      return;
+    }
+
+    // Paso 3: resultado final (carga 3+)
+    if (this.cargaCount >= 3) {
+      console.log("✅ Leyendo resultado...");
+      this.zone.run(() => {
+        this.estado = "resultado";
+        this.cdr.detectChanges();
+      });
+      setTimeout(() => this.leerResultado(doc), 1000);
+    }
+  }
+
+  private esperarResolucionCaptcha(doc: Document) {
+    // Monitorear cuando el captcha se resuelve y la página recarga
+    let checks = 0;
+    this.intervalo = setInterval(() => {
+      checks++;
+      try {
+        const win = doc.defaultView as any;
+        const token = win?.grecaptcha?.getResponse?.();
+        if (token && token.length > 0) {
+          console.log("✅ Captcha resuelto, enviando formulario...");
+          clearInterval(this.intervalo);
+          this.zone.run(() => {
+            this.estado = "resultado";
+            this.cdr.detectChanges();
+          });
+          const btn = doc.querySelector(
             'input[type="submit"], button[type="submit"]',
           ) as HTMLElement;
-          if (btnEnviar) btnEnviar.click();
-        }, 500);
-        return;
-      }
-
-      // Paso 2: llenar cédula si el formulario está visible
-      const inputCedula = doc.querySelector(
-        'input[id*="cedula"], input[name*="cedula"], input[id*="documento"], input[type="text"]',
-      ) as HTMLInputElement;
-      if (inputCedula && this.cedula) {
-        inputCedula.value = this.cedula;
-        inputCedula.dispatchEvent(new Event("input", { bubbles: true }));
-        inputCedula.dispatchEvent(new Event("change", { bubbles: true }));
-
-        // Buscar y llenar tipo de documento si existe
-        const selectTipo = doc.querySelector("select") as HTMLSelectElement;
-        if (selectTipo) {
-          Array.from(selectTipo.options).forEach((opt, idx) => {
-            if (opt.text.toUpperCase().includes("CIUDADAN")) {
-              selectTipo.selectedIndex = idx;
-              selectTipo.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-          });
+          if (btn) btn.click();
         }
+      } catch (e) {}
 
-        // Esperar a que aparezca el captcha
-        this.esperarCaptcha(doc);
-        return;
-      }
-
-      // Paso 3: detectar resultado final
-      this.detectarResultado(doc);
-    } catch (e) {
-      console.error("Error manipulando iframe:", e);
-    }
+      if (checks > 120) clearInterval(this.intervalo); // 2 min timeout
+    }, 1000);
   }
 
-  private esperarCaptcha(doc: Document) {
-    this.intentos = 0;
-    this.intervalo = setInterval(() => {
-      this.intentos++;
-
-      // Buscar el widget de reCAPTCHA
-      const captchaWidget = doc.querySelector(
-        '.g-recaptcha, iframe[src*="recaptcha"]',
-      ) as HTMLElement;
-      if (captchaWidget) {
-        clearInterval(this.intervalo);
-        this.zone.run(() => {
-          this.mostrarCaptcha = true;
-          setTimeout(() => this.moverCaptcha(doc, captchaWidget), 100);
-        });
-        return;
-      }
-
-      // Buscar botón consultar y hacer clic para que aparezca el captcha
-      if (this.intentos === 3) {
-        const btnConsultar = doc.querySelector(
-          'input[type="submit"], button[type="submit"], button',
-        ) as HTMLElement;
-        if (btnConsultar) btnConsultar.click();
-      }
-
-      if (this.intentos > 30) {
-        clearInterval(this.intervalo);
-        // Sin captcha — intentar leer resultado directo
-        this.detectarResultado(doc);
-      }
-    }, 500);
-  }
-
-  private moverCaptcha(doc: Document, widget: HTMLElement) {
-    try {
-      // Clonar el widget de reCAPTCHA al modal visible
-      const clone = widget.cloneNode(true) as HTMLElement;
-      if (this.containerRef?.nativeElement) {
-        this.containerRef.nativeElement.innerHTML = "";
-        this.containerRef.nativeElement.appendChild(clone);
-      }
-
-      // Monitorear cuando el captcha es resuelto en el iframe original
-      this.intervalo = setInterval(() => {
-        try {
-          const token = (doc.defaultView as any)?.grecaptcha?.getResponse?.();
-          if (token) {
-            clearInterval(this.intervalo);
-            this.zone.run(() => {
-              this.esperandoResultado = true;
-            });
-
-            // Hacer clic en el botón de consulta con el token ya resuelto
-            const btn = doc.querySelector(
-              'input[type="submit"], button[type="submit"]',
-            ) as HTMLElement;
-            if (btn) btn.click();
-
-            // Esperar resultado
-            setTimeout(() => this.leerResultadoFinal(doc), 3000);
-          }
-        } catch (e) {}
-      }, 1000);
-    } catch (e) {
-      console.error("Error moviendo captcha:", e);
-    }
-  }
-
-  private leerResultadoFinal(doc: Document) {
+  private leerResultado(doc: Document) {
     const texto = doc.body?.innerText?.toUpperCase() || "";
+    console.log("Resultado texto:", texto.substring(0, 400));
+
     const tieneAntecedentes =
       texto.includes("REGISTRA ANTECEDENTES") ||
-      texto.includes("TIENE ANTECEDENTES") ||
-      texto.includes("SE ENCUENTRAN ANTECEDENTES");
+      texto.includes("TIENE ANTECEDENTES");
 
     const sinAntecedentes =
       texto.includes("NO REGISTRA") ||
@@ -294,8 +346,7 @@ export class PoliciaCaptchaComponent implements OnChanges {
       texto.includes("SIN ANTECEDENTES");
 
     this.zone.run(() => {
-      this.mostrarCaptcha = false;
-      this.esperandoResultado = false;
+      this.visible = false;
       this.resultadoObtenido.emit({
         tieneAntecedentes,
         mensaje: tieneAntecedentes
@@ -307,17 +358,6 @@ export class PoliciaCaptchaComponent implements OnChanges {
     });
   }
 
-  private detectarResultado(doc: Document) {
-    const texto = doc.body?.innerText?.toUpperCase() || "";
-    if (
-      texto.includes("ANTECEDENTES") ||
-      texto.includes("REGISTRA") ||
-      texto.includes("JUDICIAL")
-    ) {
-      this.leerResultadoFinal(doc);
-    }
-  }
-
   cancelar() {
     this.limpiar();
     this.cancelado.emit();
@@ -325,8 +365,7 @@ export class PoliciaCaptchaComponent implements OnChanges {
 
   private limpiar() {
     clearInterval(this.intervalo);
-    this.mostrarCaptcha = false;
-    this.esperandoResultado = false;
-    this.intentos = 0;
+    this.estado = "cargando";
+    this.cargaCount = 0;
   }
 }
