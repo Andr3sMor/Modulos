@@ -16,56 +16,60 @@ import { DomSanitizer, SafeResourceUrl } from "@angular/platform-browser";
   standalone: true,
   imports: [CommonModule],
   template: `
-    <!-- Iframe siempre presente en el DOM cuando visible=true -->
-    <ng-container *ngIf="visible">
-      <!-- Iframe oculto para los pasos 1 y 2 -->
-      <iframe
-        *ngIf="estado !== 'captcha'"
-        id="policia-iframe"
-        [src]="urlSegura"
-        style="display:none; width:0; height:0; position:absolute;"
-        (load)="onIframeLoad()"
-      ></iframe>
+    <div *ngIf="visible" class="captcha-overlay">
+      <div class="captcha-modal">
+        <div class="captcha-header">
+          <span>🔒 Antecedentes Policiales</span>
+          <button class="btn-cancelar" (click)="cancelar()">✕</button>
+        </div>
 
-      <!-- Modal overlay -->
-      <div class="captcha-overlay">
-        <div class="captcha-modal">
-          <div class="captcha-header">
-            <span>🔒 Verificación Policía Nacional</span>
-            <button class="btn-cancelar" (click)="cancelar()">✕</button>
+        <!-- Instrucciones -->
+        <div *ngIf="!resultadoManual" class="instrucciones">
+          <div class="paso">
+            <span class="paso-num">1</span>
+            <span>Acepta los términos y condiciones</span>
           </div>
-
-          <div *ngIf="estado === 'cargando'" class="estado-info">
-            <span class="spinner-small"></span> Cargando página de la Policía...
+          <div class="paso">
+            <span class="paso-num">2</span>
+            <span
+              >Ingresa la cédula: <strong>{{ cedula }}</strong></span
+            >
           </div>
-
-          <div *ngIf="estado === 'procesando'" class="estado-info">
-            <span class="spinner-small"></span> {{ mensajeEstado }}
+          <div class="paso">
+            <span class="paso-num">3</span>
+            <span>Resuelve el captcha y haz clic en Consultar</span>
           </div>
-
-          <div *ngIf="estado === 'captcha'">
-            <p class="captcha-instruccion">
-              Resuelve la verificación para continuar:
-            </p>
-            <div class="iframe-wrapper">
-              <iframe
-                id="policia-iframe"
-                [src]="urlSegura"
-                class="policia-iframe"
-                (load)="onIframeLoad()"
-              ></iframe>
-            </div>
-            <p class="captcha-hint">
-              💡 Completa el captcha directamente en la ventana de arriba
-            </p>
+          <div class="paso">
+            <span class="paso-num">4</span>
+            <span>Selecciona el resultado obtenido abajo</span>
           </div>
+        </div>
 
-          <div *ngIf="estado === 'resultado'" class="estado-info">
-            <span class="spinner-small"></span> Obteniendo resultado...
+        <!-- Iframe de la Policía -->
+        <div *ngIf="!resultadoManual" class="iframe-wrapper">
+          <iframe [src]="urlSegura" class="policia-iframe"></iframe>
+        </div>
+
+        <!-- Botones de resultado manual -->
+        <div *ngIf="!resultadoManual" class="botones-resultado">
+          <p class="resultado-label">¿Qué resultado obtuviste?</p>
+          <div class="botones-row">
+            <button
+              class="btn-sin-antecedentes"
+              (click)="reportarResultado(false)"
+            >
+              ✅ Sin antecedentes
+            </button>
+            <button
+              class="btn-con-antecedentes"
+              (click)="reportarResultado(true)"
+            >
+              ⚠️ Con antecedentes
+            </button>
           </div>
         </div>
       </div>
-    </ng-container>
+    </div>
   `,
   styles: [
     `
@@ -75,61 +79,118 @@ import { DomSanitizer, SafeResourceUrl } from "@angular/platform-browser";
         left: 0;
         width: 100%;
         height: 100%;
-        background: rgba(0, 0, 0, 0.6);
+        background: rgba(0, 0, 0, 0.7);
         z-index: 9999;
         display: flex;
         align-items: center;
         justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
       }
       .captcha-modal {
         background: white;
         border-radius: 12px;
-        padding: 24px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-        max-width: 440px;
-        width: 90%;
+        padding: 20px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        width: 100%;
+        max-width: 700px;
+        max-height: 90vh;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
       }
       .captcha-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 16px;
         font-weight: 700;
         font-size: 1rem;
         color: #1f2937;
       }
-      .captcha-instruccion {
+      .instrucciones {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        background: #f0f9ff;
+        border-radius: 8px;
+        padding: 12px;
+      }
+      .paso {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         font-size: 0.85rem;
-        color: #6b7280;
-        margin-bottom: 12px;
-        text-align: center;
+        color: #374151;
       }
-      .captcha-hint {
-        font-size: 0.78rem;
-        color: #9ca3af;
-        text-align: center;
-        margin-top: 10px;
-      }
-      .estado-info {
+      .paso-num {
+        background: #2563eb;
+        color: white;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        padding: 24px;
-        color: #6b7280;
-        font-size: 0.88rem;
+        font-size: 0.75rem;
+        font-weight: 700;
+        flex-shrink: 0;
       }
       .iframe-wrapper {
-        width: 100%;
-        height: 500px;
-        overflow: auto;
+        flex: 1;
         border-radius: 8px;
+        overflow: hidden;
         border: 1px solid #e5e7eb;
+        min-height: 420px;
       }
       .policia-iframe {
         width: 100%;
         height: 100%;
+        min-height: 420px;
         border: none;
+      }
+      .botones-resultado {
+        border-top: 1px solid #e5e7eb;
+        padding-top: 14px;
+      }
+      .resultado-label {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+      .botones-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .btn-sin-antecedentes {
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        background: #dcfce7;
+        color: #166534;
+        font-weight: 700;
+        font-size: 0.88rem;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-sin-antecedentes:hover {
+        background: #bbf7d0;
+      }
+      .btn-con-antecedentes {
+        padding: 12px;
+        border: none;
+        border-radius: 8px;
+        background: #fee2e2;
+        color: #991b1b;
+        font-weight: 700;
+        font-size: 0.88rem;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .btn-con-antecedentes:hover {
+        background: #fecaca;
       }
       .btn-cancelar {
         background: none;
@@ -143,20 +204,6 @@ import { DomSanitizer, SafeResourceUrl } from "@angular/platform-browser";
       .btn-cancelar:hover {
         background: #f3f4f6;
       }
-      .spinner-small {
-        width: 16px;
-        height: 16px;
-        border: 2px solid #e5e7eb;
-        border-top-color: #2563eb;
-        border-radius: 50%;
-        animation: spin 0.7s linear infinite;
-        display: inline-block;
-      }
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
     `,
   ],
 })
@@ -169,12 +216,9 @@ export class PoliciaCaptchaComponent implements OnChanges {
   @Output() cancelado = new EventEmitter<void>();
 
   urlSegura: SafeResourceUrl;
-  estado: "cargando" | "procesando" | "captcha" | "resultado" = "cargando";
-  mensajeEstado = "Procesando...";
   cedula = "";
   tipoDoc = "";
-  private cargaCount = 0;
-  private intervalo: any;
+  resultadoManual = false;
 
   constructor(
     private zone: NgZone,
@@ -187,195 +231,30 @@ export class PoliciaCaptchaComponent implements OnChanges {
   }
 
   ngOnChanges(changes: SimpleChanges) {
-    if (changes["visible"]) {
-      if (this.visible) {
-        this.estado = "cargando";
-        this.cargaCount = 0;
-      } else {
-        this.limpiar();
-      }
+    if (changes["visible"] && !this.visible) {
+      this.resultadoManual = false;
     }
   }
 
   iniciar(cedula: string, tipoDoc: string) {
     this.cedula = cedula;
     this.tipoDoc = tipoDoc;
-    this.cargaCount = 0;
-    this.estado = "cargando";
+    this.resultadoManual = false;
   }
 
-  onIframeLoad() {
-    this.cargaCount++;
-    console.log(`iframe load #${this.cargaCount}`);
-    setTimeout(() => this.procesarIframe(), 800);
-  }
-
-  private getDoc(): Document | null {
-    try {
-      const iframe = document.getElementById(
-        "policia-iframe",
-      ) as HTMLIFrameElement;
-      return iframe?.contentDocument || iframe?.contentWindow?.document || null;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  private procesarIframe() {
-    const doc = this.getDoc();
-    if (!doc) {
-      console.log("Sin acceso al iframe");
-      return;
-    }
-
-    const texto = doc.body?.innerText || "";
-    console.log(`[carga ${this.cargaCount}] Texto:`, texto.substring(0, 150));
-
-    // Carga 1: aceptar términos
-    if (this.cargaCount === 1) {
-      const radio = doc.querySelector(
-        'input[type="radio"]',
-      ) as HTMLInputElement;
-      if (radio) {
-        console.log("✅ Aceptando términos");
-        this.setEstado("procesando", "Aceptando términos...");
-        radio.click();
-        setTimeout(() => {
-          const btn = doc.querySelector(
-            'input[type="submit"], button[type="submit"]',
-          ) as HTMLElement;
-          btn?.click();
-        }, 600);
-      }
-      return;
-    }
-
-    // Carga 2: llenar formulario
-    if (this.cargaCount === 2) {
-      const input = doc.querySelector('input[type="text"]') as HTMLInputElement;
-      if (input) {
-        console.log("✅ Llenando cédula");
-        this.setEstado("procesando", "Llenando formulario...");
-
-        input.focus();
-        input.value = this.cedula;
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-        input.dispatchEvent(new Event("change", { bubbles: true }));
-
-        // Tipo documento
-        const sel = doc.querySelector("select") as HTMLSelectElement;
-        if (sel) {
-          for (let i = 0; i < sel.options.length; i++) {
-            if (sel.options[i].text.toUpperCase().includes("CIUDADAN")) {
-              sel.selectedIndex = i;
-              sel.dispatchEvent(new Event("change", { bubbles: true }));
-              break;
-            }
-          }
-        }
-
-        // Clic en Consultar para revelar el captcha
-        setTimeout(() => {
-          const btnConsultar = Array.from(
-            doc.querySelectorAll('button, input[type="submit"]'),
-          ).find(
-            (el) =>
-              el.textContent?.toUpperCase().includes("CONSULT") ||
-              (el as HTMLInputElement).value?.toUpperCase().includes("CONSULT"),
-          ) as HTMLElement;
-          console.log(
-            "Botón consultar:",
-            btnConsultar?.textContent ||
-              (btnConsultar as HTMLInputElement)?.value,
-          );
-          btnConsultar?.click();
-
-          // Mostrar el iframe completo para que el usuario resuelva el captcha
-          setTimeout(() => {
-            this.setEstado("captcha");
-            this.esperarCaptcha();
-          }, 1500);
-        }, 800);
-      }
-      return;
-    }
-
-    // Carga 3+: leer resultado
-    if (this.cargaCount >= 3) {
-      clearInterval(this.intervalo);
-      this.setEstado("resultado");
-      setTimeout(() => this.leerResultado(doc), 1000);
-    }
-  }
-
-  private esperarCaptcha() {
-    // Cuando el captcha se resuelve, la página hace submit automáticamente
-    // Solo necesitamos esperar la siguiente carga del iframe (cargaCount === 3)
-    // El intervalo monitorea si grecaptcha ya tiene token por si el submit no es automático
-    let checks = 0;
-    this.intervalo = setInterval(() => {
-      checks++;
-      try {
-        const doc = this.getDoc();
-        const win = doc?.defaultView as any;
-        const token = win?.grecaptcha?.getResponse?.();
-        if (token && token.length > 0) {
-          console.log("✅ Token captcha detectado, enviando...");
-          clearInterval(this.intervalo);
-          this.setEstado("resultado");
-          const btn = doc?.querySelector(
-            'input[type="submit"], button[type="submit"]',
-          ) as HTMLElement;
-          btn?.click();
-        }
-      } catch (e) {}
-      if (checks > 180) clearInterval(this.intervalo);
-    }, 1000);
-  }
-
-  private leerResultado(doc: Document) {
-    const texto = doc.body?.innerText?.toUpperCase() || "";
-    console.log("Resultado:", texto.substring(0, 400));
-
-    const tieneAntecedentes =
-      texto.includes("REGISTRA ANTECEDENTES") ||
-      texto.includes("TIENE ANTECEDENTES");
-    const sinAntecedentes =
-      texto.includes("NO REGISTRA") ||
-      texto.includes("NO SE ENCUENTRAN") ||
-      texto.includes("SIN ANTECEDENTES");
-
+  reportarResultado(tieneAntecedentes: boolean) {
     this.zone.run(() => {
       this.resultadoObtenido.emit({
         tieneAntecedentes,
         mensaje: tieneAntecedentes
           ? "La persona REGISTRA antecedentes judiciales."
-          : sinAntecedentes
-            ? "La persona NO registra antecedentes judiciales."
-            : "Consulta completada. Verifique en la página oficial.",
+          : "La persona NO registra antecedentes judiciales.",
       });
     });
   }
 
-  private setEstado(
-    estado: "cargando" | "procesando" | "captcha" | "resultado",
-    msg = "",
-  ) {
-    this.zone.run(() => {
-      this.estado = estado;
-      if (msg) this.mensajeEstado = msg;
-      this.cdr.detectChanges();
-    });
-  }
-
   cancelar() {
-    this.limpiar();
+    this.resultadoManual = false;
     this.cancelado.emit();
-  }
-
-  private limpiar() {
-    clearInterval(this.intervalo);
-    this.estado = "cargando";
-    this.cargaCount = 0;
   }
 }
