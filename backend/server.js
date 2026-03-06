@@ -7,6 +7,18 @@ const regController = require("./controllers/registraduria.controller");
 const policiaController = require("./controllers/policia.controller");
 const offshoreController = require("./controllers/offshore.controller");
 
+// DEBUG - identificar cual controlador falla
+console.log("jcc.consultarContador:", typeof jccController.consultarContador);
+console.log("reg.consultarCedula:", typeof regController.consultarCedula);
+console.log(
+  "policia.consultarAntecedentes:",
+  typeof policiaController.consultarAntecedentes,
+);
+console.log(
+  "offshore.consultarOffshore:",
+  typeof offshoreController.consultarOffshore,
+);
+
 const corsOptions = {
   origin: [
     "https://andr3smor.github.io",
