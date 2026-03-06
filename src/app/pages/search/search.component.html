@@ -13,7 +13,6 @@
     <div class="search-section">
       <h3 class="section-title">Datos de Búsqueda</h3>
 
-      <!-- Fila 1: Identificación + Nombre -->
       <div class="fields-row">
         <div class="field-group">
           <label class="field-label">Número de Identificación</label>
@@ -37,7 +36,6 @@
         </div>
       </div>
 
-      <!-- Fila 2: Tipo documento + Servicios + Botón -->
       <div class="action-row">
         <div class="field-group field-small">
           <label class="field-label">Tipo de Documento</label>
@@ -82,13 +80,12 @@
       <h3 class="section-title">Resultados de la Consulta</h3>
 
       <div *ngFor="let r of resultados" class="result-card">
-        <!-- Header del resultado -->
+        <!-- Header -->
         <div class="result-header">
           <div class="result-source">
             <span class="source-badge">{{ r.fuente }}</span>
           </div>
           <div class="result-badges">
-            <!-- Badge Registraduría -->
             <span
               *ngIf="r.tipo === 'registraduria'"
               class="status-badge"
@@ -101,7 +98,6 @@
             >
               {{ r.data?.vigencia }}
             </span>
-            <!-- Badge Contador -->
             <span
               *ngIf="r.tipo === 'contador'"
               [class]="
@@ -112,7 +108,6 @@
             >
               {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
             </span>
-            <!-- Badge Antecedentes -->
             <span
               *ngIf="r.tipo === 'antecedentes'"
               [class]="
@@ -127,7 +122,6 @@
                   : "✅ Sin antecedentes"
               }}
             </span>
-            <!-- Badge Offshore -->
             <span
               *ngIf="r.tipo === 'offshore'"
               [class]="
@@ -145,9 +139,10 @@
           </div>
         </div>
 
-        <!-- Cuerpo del resultado -->
+        <!-- Cuerpo -->
         <div class="result-body">
-          <div class="result-grid">
+          <!-- Campos básicos (no offshore) -->
+          <div class="result-grid" *ngIf="r.tipo !== 'offshore'">
             <div
               class="result-item"
               *ngIf="
@@ -163,10 +158,6 @@
               <span class="item-label">Código</span>
               <span class="item-value">{{ r.data?.codigo }}</span>
             </div>
-            <div class="result-item" *ngIf="r.data?.fecha">
-              <span class="item-label">Fecha consulta</span>
-              <span class="item-value">{{ r.data?.fecha }}</span>
-            </div>
             <div
               class="result-item"
               *ngIf="r.mensaje && r.tipo === 'antecedentes'"
@@ -174,53 +165,67 @@
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
-            <div
-              class="result-item"
-              *ngIf="r.tipo === 'offshore' && !r.tieneRegistros"
-            >
-              <span class="item-label">Resultado</span>
-              <span class="item-value"
-                >No se encontraron registros en bases offshore</span
-              >
+            <div class="result-item" *ngIf="r.data?.fecha">
+              <span class="item-label">Fecha consulta</span>
+              <span class="item-value">{{ r.data?.fecha }}</span>
             </div>
           </div>
 
-          <!-- Tabla offshore por categorías -->
-          <div *ngIf="r.tipo === 'offshore'" class="offshore-list">
-            <div class="offshore-title">
-              📋 {{ r.totalResultados }} registro(s) en total
+          <!-- Offshore -->
+          <ng-container *ngIf="r.tipo === 'offshore'">
+            <div class="result-grid">
+              <div class="result-item" *ngIf="r.data?.fecha">
+                <span class="item-label">Fecha consulta</span>
+                <span class="item-value">{{ r.data?.fecha }}</span>
+              </div>
             </div>
 
-            <ng-container *ngFor="let cat of r.categorias">
-              <div *ngIf="cat.total > 0" class="offshore-categoria">
-                <!-- Cabecera categoría -->
-                <div class="cat-header cat-con-resultados">
-                  <span class="cat-nombre">{{ cat.nombre }}</span>
-                  <span class="cat-total cat-badge-activo">{{
-                    cat.total
-                  }}</span>
-                </div>
+            <div
+              *ngIf="!r.tieneRegistros"
+              style="margin-top: 10px; color: #6b7280; font-size: 0.88rem"
+            >
+              No se encontraron registros en bases de datos offshore.
+            </div>
 
-                <!-- Items -->
-                <div class="cat-items">
-                  <div *ngFor="let o of cat.resultados" class="offshore-item">
-                    <div class="offshore-name">{{ o.nombre }}</div>
-                    <div class="offshore-meta">
-                      <span class="meta-tag meta-score"
-                        >Score: {{ o.score }}%</span
-                      >
-                      <span *ngIf="o.match" class="meta-tag meta-match"
-                        >✅ Exacto</span
-                      >
-                      <a [href]="o.url" target="_blank" class="meta-link"
-                        >Ver en ICIJ →</a
-                      >
+            <div *ngIf="r.tieneRegistros" class="offshore-list">
+              <div class="offshore-title">
+                📋 {{ r.totalResultados }} registro(s) en total
+              </div>
+
+              <ng-container *ngFor="let cat of r.categorias">
+                <div *ngIf="cat.total > 0" class="offshore-categoria">
+                  <div class="cat-header cat-con-resultados">
+                    <span class="cat-nombre">{{ cat.nombre }}</span>
+                    <span class="cat-total cat-badge-activo">{{
+                      cat.total
+                    }}</span>
+                  </div>
+
+                  <div class="cat-items">
+                    <div
+                      *ngFor="let o of cat.resultados; let i = index"
+                      class="offshore-item"
+                    >
+                      <div class="offshore-name">
+                        {{ i + 1 }}. {{ o.nombre }}
+                      </div>
+                      <div class="offshore-meta">
+                        <span class="meta-tag meta-score"
+                          >Score: {{ o.score }}%</span
+                        >
+                        <span *ngIf="o.match" class="meta-tag meta-match"
+                          >✅ Coincidencia exacta</span
+                        >
+                        <a [href]="o.url" target="_blank" class="meta-link"
+                          >Ver en ICIJ →</a
+                        >
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </ng-container>
-          </div>
+              </ng-container>
+            </div>
+          </ng-container>
         </div>
       </div>
     </div>
