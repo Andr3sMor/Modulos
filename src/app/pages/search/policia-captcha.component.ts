@@ -1,182 +1,125 @@
 import {
   Component,
-  EventEmitter,
   Input,
-  OnDestroy,
   Output,
+  EventEmitter,
+  OnChanges,
+  SimpleChanges,
+  ViewChild,
+  ElementRef,
   NgZone,
 } from "@angular/core";
 import { CommonModule } from "@angular/common";
-import { HttpClient } from "@angular/common/http";
 
 @Component({
   selector: "app-policia-captcha",
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div class="overlay" *ngIf="visible">
-      <div class="modal">
-        <div class="header">
-          <span>🚔 Antecedentes Policiales — {{ cedula }}</span>
-          <button class="close" (click)="cancelar()">✕</button>
-        </div>
+    <!-- Iframe oculto de la Policía -->
+    <iframe
+      #policiaFrame
+      *ngIf="visible"
+      [src]="urlPolicia"
+      style="display:none; width:0; height:0;"
+      (load)="onIframeLoad()"
+    ></iframe>
 
-        <!-- Cargando -->
-        <div
-          class="body center"
-          *ngIf="status === 'cargando' || status === 'iniciando'"
-        >
-          <div class="spinner"></div>
-          <p>{{ mensajeEstado }}</p>
+    <!-- Modal visible solo cuando hay captcha -->
+    <div *ngIf="visible && mostrarCaptcha" class="captcha-overlay">
+      <div class="captcha-modal">
+        <div class="captcha-header">
+          <span>🔒 Verificación requerida</span>
+          <button class="btn-cancelar" (click)="cancelar()">✕</button>
         </div>
-
-        <!-- Captcha listo: mostrar screenshot -->
-        <div class="body" *ngIf="status === 'captcha'">
-          <p class="instruccion">
-            👆 Haz clic en el checkbox "<strong>No soy un robot</strong>" en la
-            imagen:
-          </p>
-          <div class="screenshot-wrapper" (click)="onClickImagen($event)">
-            <img
-              [src]="screenshotUrl"
-              alt="Formulario de la Policía"
-              class="screenshot"
-              #screenshotImg
-            />
-            <div class="click-hint">
-              Haz clic directamente sobre el checkbox ▼
-            </div>
-          </div>
-          <p class="nota">
-            Si aparece un challenge de imágenes, haz clic en ellas también.
-          </p>
-        </div>
-
-        <!-- Consultando -->
-        <div class="body center" *ngIf="status === 'consultando'">
-          <div class="spinner"></div>
-          <p>✅ Captcha resuelto. Consultando resultado...</p>
-        </div>
-
-        <!-- Error -->
-        <div class="body center" *ngIf="status === 'error'">
-          <p class="error">❌ {{ mensajeEstado }}</p>
-          <button class="btn-retry" (click)="cancelar()">Cerrar</button>
-        </div>
+        <p class="captcha-instruccion">
+          Resuelve la verificación para consultar los antecedentes
+        </p>
+        <!-- Contenedor donde se moverá el widget real de reCAPTCHA del iframe -->
+        <div #captchaContainer class="captcha-container"></div>
+        <p *ngIf="esperandoResultado" class="captcha-espera">
+          <span class="spinner-small"></span> Procesando...
+        </p>
       </div>
     </div>
   `,
   styles: [
     `
-      .overlay {
+      .captcha-overlay {
         position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.75);
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 9999;
         display: flex;
         align-items: center;
         justify-content: center;
-        z-index: 9999;
-        padding: 16px;
       }
-      .modal {
+      .captcha-modal {
         background: white;
         border-radius: 12px;
-        overflow: hidden;
-        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
-        width: 100%;
-        max-width: 720px;
-        max-height: 92vh;
-        display: flex;
-        flex-direction: column;
+        padding: 28px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        max-width: 400px;
+        width: 90%;
       }
-      .header {
-        background: #1a3a5c;
-        color: white;
-        padding: 14px 20px;
+      .captcha-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        font-weight: 600;
-        font-size: 15px;
-        flex-shrink: 0;
+        margin-bottom: 12px;
+        font-weight: 700;
+        font-size: 1rem;
+        color: #1f2937;
       }
-      .close {
+      .captcha-instruccion {
+        font-size: 0.85rem;
+        color: #6b7280;
+        margin-bottom: 20px;
+      }
+      .captcha-container {
+        display: flex;
+        justify-content: center;
+        min-height: 78px;
+        margin-bottom: 16px;
+      }
+      .btn-cancelar {
         background: none;
         border: none;
-        color: white;
-        font-size: 20px;
+        font-size: 1.1rem;
         cursor: pointer;
+        color: #6b7280;
+        padding: 4px 8px;
       }
-      .body {
-        padding: 20px;
-        overflow-y: auto;
-      }
-      .body.center {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: 40px 20px;
-      }
-      .instruccion {
-        margin: 0 0 12px;
-        color: #333;
-        font-size: 14px;
-      }
-      .nota {
-        margin: 10px 0 0;
-        color: #888;
-        font-size: 12px;
-      }
-      .screenshot-wrapper {
-        border: 2px solid #1a3a5c;
-        border-radius: 8px;
-        overflow: hidden;
-        cursor: crosshair;
-        position: relative;
-      }
-      .screenshot {
-        width: 100%;
-        display: block;
-      }
-      .click-hint {
-        background: rgba(26, 58, 92, 0.85);
-        color: white;
-        font-size: 12px;
+      .captcha-espera {
         text-align: center;
-        padding: 6px;
+        color: #6b7280;
+        font-size: 0.85rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
       }
-      .spinner {
-        width: 40px;
-        height: 40px;
-        border: 4px solid #eee;
-        border-top-color: #1a3a5c;
+      .spinner-small {
+        width: 14px;
+        height: 14px;
+        border: 2px solid #e5e7eb;
+        border-top-color: #2563eb;
         border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-        margin-bottom: 16px;
+        animation: spin 0.7s linear infinite;
+        display: inline-block;
       }
       @keyframes spin {
         to {
           transform: rotate(360deg);
         }
       }
-      .error {
-        color: #c62828;
-        font-weight: 600;
-        margin-bottom: 16px;
-      }
-      .btn-retry {
-        background: #1a3a5c;
-        color: white;
-        border: none;
-        border-radius: 8px;
-        padding: 10px 24px;
-        cursor: pointer;
-      }
     `,
   ],
 })
-export class PoliciaCaptchaComponent implements OnDestroy {
-  @Input() cedula = "";
+export class PoliciaCaptchaComponent implements OnChanges {
   @Input() visible = false;
   @Output() resultadoObtenido = new EventEmitter<{
     tieneAntecedentes: boolean;
@@ -184,126 +127,206 @@ export class PoliciaCaptchaComponent implements OnDestroy {
   }>();
   @Output() cancelado = new EventEmitter<void>();
 
-  status = "idle";
-  mensajeEstado = "";
-  screenshotUrl = "";
-  sessionId = "";
+  @ViewChild("policiaFrame") frameRef!: ElementRef<HTMLIFrameElement>;
+  @ViewChild("captchaContainer") containerRef!: ElementRef<HTMLDivElement>;
 
-  private pollTimer: any = null;
-  private screenshotTimer: any = null;
+  urlPolicia =
+    "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
+  mostrarCaptcha = false;
+  esperandoResultado = false;
+  cedula = "";
+  tipoDoc = "";
 
-  constructor(
-    private http: HttpClient,
-    private zone: NgZone,
-  ) {}
+  private intentos = 0;
+  private intervalo: any;
 
-  ngOnDestroy() {
-    this.limpiar();
+  constructor(private zone: NgZone) {}
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes["visible"] && !this.visible) {
+      this.limpiar();
+    }
   }
 
-  // Llamado desde search.component cuando el usuario hace clic en el botón
-  iniciar(cedula: string, tipoDocumento: string) {
+  iniciar(cedula: string, tipoDoc: string) {
     this.cedula = cedula;
-    this.visible = true;
-    this.status = "iniciando";
-    this.mensajeEstado = "Aceptando términos y cargando formulario...";
-
-    this.http
-      .post<any>("/api/policia/iniciar", { cedula, tipoDocumento })
-      .subscribe({
-        next: (r) => {
-          this.sessionId = r.sessionId;
-          this.mensajeEstado = "Llenando formulario...";
-          this.status = "cargando";
-          this.iniciarPolling();
-        },
-        error: (e) => {
-          this.status = "error";
-          this.mensajeEstado = e.error?.error || "Error al iniciar";
-        },
-      });
+    this.tipoDoc = tipoDoc;
+    this.intentos = 0;
+    this.mostrarCaptcha = false;
+    this.esperandoResultado = false;
   }
 
-  private iniciarPolling() {
-    this.pollTimer = setInterval(() => {
-      this.http.get<any>(`/api/policia/status/${this.sessionId}`).subscribe({
-        next: (r) => {
-          this.zone.run(() => {
-            this.status = r.status;
+  onIframeLoad() {
+    try {
+      const doc =
+        this.frameRef.nativeElement.contentDocument ||
+        this.frameRef.nativeElement.contentWindow?.document;
+      if (!doc) return;
 
-            if (r.status === "captcha") {
-              clearInterval(this.pollTimer);
-              this.mensajeEstado = "Captcha listo";
-              this.iniciarScreenshots();
-            } else if (r.status === "listo") {
-              clearInterval(this.pollTimer);
-              this.limpiar();
-              this.resultadoObtenido.emit(r.resultado);
-              this.visible = false;
-            } else if (r.status === "error") {
-              clearInterval(this.pollTimer);
-              this.mensajeEstado = r.resultado?.error || "Error desconocido";
+      // Paso 1: aceptar términos automáticamente si están presentes
+      const radioAcepto =
+        (doc.querySelector(
+          'input[type="radio"][value="S"]',
+        ) as HTMLInputElement) ||
+        (doc.querySelector('input[type="radio"]') as HTMLInputElement);
+      if (radioAcepto) {
+        radioAcepto.click();
+        setTimeout(() => {
+          const btnEnviar = doc.querySelector(
+            'input[type="submit"], button[type="submit"]',
+          ) as HTMLElement;
+          if (btnEnviar) btnEnviar.click();
+        }, 500);
+        return;
+      }
+
+      // Paso 2: llenar cédula si el formulario está visible
+      const inputCedula = doc.querySelector(
+        'input[id*="cedula"], input[name*="cedula"], input[id*="documento"], input[type="text"]',
+      ) as HTMLInputElement;
+      if (inputCedula && this.cedula) {
+        inputCedula.value = this.cedula;
+        inputCedula.dispatchEvent(new Event("input", { bubbles: true }));
+        inputCedula.dispatchEvent(new Event("change", { bubbles: true }));
+
+        // Buscar y llenar tipo de documento si existe
+        const selectTipo = doc.querySelector("select") as HTMLSelectElement;
+        if (selectTipo) {
+          Array.from(selectTipo.options).forEach((opt, idx) => {
+            if (opt.text.toUpperCase().includes("CIUDADAN")) {
+              selectTipo.selectedIndex = idx;
+              selectTipo.dispatchEvent(new Event("change", { bubbles: true }));
             }
           });
-        },
+        }
+
+        // Esperar a que aparezca el captcha
+        this.esperarCaptcha(doc);
+        return;
+      }
+
+      // Paso 3: detectar resultado final
+      this.detectarResultado(doc);
+    } catch (e) {
+      console.error("Error manipulando iframe:", e);
+    }
+  }
+
+  private esperarCaptcha(doc: Document) {
+    this.intentos = 0;
+    this.intervalo = setInterval(() => {
+      this.intentos++;
+
+      // Buscar el widget de reCAPTCHA
+      const captchaWidget = doc.querySelector(
+        '.g-recaptcha, iframe[src*="recaptcha"]',
+      ) as HTMLElement;
+      if (captchaWidget) {
+        clearInterval(this.intervalo);
+        this.zone.run(() => {
+          this.mostrarCaptcha = true;
+          setTimeout(() => this.moverCaptcha(doc, captchaWidget), 100);
+        });
+        return;
+      }
+
+      // Buscar botón consultar y hacer clic para que aparezca el captcha
+      if (this.intentos === 3) {
+        const btnConsultar = doc.querySelector(
+          'input[type="submit"], button[type="submit"], button',
+        ) as HTMLElement;
+        if (btnConsultar) btnConsultar.click();
+      }
+
+      if (this.intentos > 30) {
+        clearInterval(this.intervalo);
+        // Sin captcha — intentar leer resultado directo
+        this.detectarResultado(doc);
+      }
+    }, 500);
+  }
+
+  private moverCaptcha(doc: Document, widget: HTMLElement) {
+    try {
+      // Clonar el widget de reCAPTCHA al modal visible
+      const clone = widget.cloneNode(true) as HTMLElement;
+      if (this.containerRef?.nativeElement) {
+        this.containerRef.nativeElement.innerHTML = "";
+        this.containerRef.nativeElement.appendChild(clone);
+      }
+
+      // Monitorear cuando el captcha es resuelto en el iframe original
+      this.intervalo = setInterval(() => {
+        try {
+          const token = (doc.defaultView as any)?.grecaptcha?.getResponse?.();
+          if (token) {
+            clearInterval(this.intervalo);
+            this.zone.run(() => {
+              this.esperandoResultado = true;
+            });
+
+            // Hacer clic en el botón de consulta con el token ya resuelto
+            const btn = doc.querySelector(
+              'input[type="submit"], button[type="submit"]',
+            ) as HTMLElement;
+            if (btn) btn.click();
+
+            // Esperar resultado
+            setTimeout(() => this.leerResultadoFinal(doc), 3000);
+          }
+        } catch (e) {}
+      }, 1000);
+    } catch (e) {
+      console.error("Error moviendo captcha:", e);
+    }
+  }
+
+  private leerResultadoFinal(doc: Document) {
+    const texto = doc.body?.innerText?.toUpperCase() || "";
+    const tieneAntecedentes =
+      texto.includes("REGISTRA ANTECEDENTES") ||
+      texto.includes("TIENE ANTECEDENTES") ||
+      texto.includes("SE ENCUENTRAN ANTECEDENTES");
+
+    const sinAntecedentes =
+      texto.includes("NO REGISTRA") ||
+      texto.includes("NO SE ENCUENTRAN") ||
+      texto.includes("SIN ANTECEDENTES");
+
+    this.zone.run(() => {
+      this.mostrarCaptcha = false;
+      this.esperandoResultado = false;
+      this.resultadoObtenido.emit({
+        tieneAntecedentes,
+        mensaje: tieneAntecedentes
+          ? "La persona REGISTRA antecedentes judiciales."
+          : sinAntecedentes
+            ? "La persona NO registra antecedentes judiciales."
+            : "Consulta completada. Verifique en la página oficial.",
       });
-    }, 1500);
+    });
   }
 
-  private iniciarScreenshots() {
-    // Actualizar screenshot cada 1.5s mientras el usuario interactúa
-    this.actualizarScreenshot();
-    this.screenshotTimer = setInterval(() => this.actualizarScreenshot(), 1500);
-  }
-
-  private actualizarScreenshot() {
-    // Agregar timestamp para evitar caché
-    this.screenshotUrl = `/api/policia/screenshot/${this.sessionId}?t=${Date.now()}`;
-  }
-
-  onClickImagen(event: MouseEvent) {
-    const img = event.target as HTMLImageElement;
-    const rect = img.getBoundingClientRect();
-
-    // Calcular coordenadas relativas a la imagen
-    const scaleX = 1280 / rect.width;
-    const scaleY = 900 / rect.height;
-    const x = Math.round((event.clientX - rect.left) * scaleX);
-    const y = Math.round((event.clientY - rect.top) * scaleY);
-
-    console.log(`Clic en imagen: (${x}, ${y})`);
-
-    this.http
-      .post<any>(`/api/policia/clic/${this.sessionId}`, { x, y })
-      .subscribe({
-        next: (r) => {
-          this.zone.run(() => {
-            if (r.tokenObtenido) {
-              clearInterval(this.screenshotTimer);
-              this.status = "consultando";
-              // Continuar polling para obtener resultado final
-              this.iniciarPolling();
-            } else {
-              // Actualizar screenshot para mostrar el challenge de imágenes
-              this.actualizarScreenshot();
-            }
-          });
-        },
-        error: () => this.actualizarScreenshot(),
-      });
+  private detectarResultado(doc: Document) {
+    const texto = doc.body?.innerText?.toUpperCase() || "";
+    if (
+      texto.includes("ANTECEDENTES") ||
+      texto.includes("REGISTRA") ||
+      texto.includes("JUDICIAL")
+    ) {
+      this.leerResultadoFinal(doc);
+    }
   }
 
   cancelar() {
     this.limpiar();
-    this.visible = false;
     this.cancelado.emit();
   }
 
   private limpiar() {
-    clearInterval(this.pollTimer);
-    clearInterval(this.screenshotTimer);
-    this.status = "idle";
-    this.sessionId = "";
-    this.screenshotUrl = "";
+    clearInterval(this.intervalo);
+    this.mostrarCaptcha = false;
+    this.esperandoResultado = false;
+    this.intentos = 0;
   }
 }
