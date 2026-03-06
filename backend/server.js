@@ -5,7 +5,6 @@ const app = express();
 const jccController = require("./controllers/jcc.controller");
 const regController = require("./controllers/registraduria.controller");
 const policia = require("./controllers/policia.controller");
-const procuController = require("./controllers/procuraduria.controller");
 
 app.use(cors());
 app.use(express.json());
