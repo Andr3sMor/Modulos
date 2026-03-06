@@ -263,3 +263,36 @@ select.field-input { cursor: pointer; }
   .card-header { padding: 20px 16px; }
   .checkboxes-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Offshore categorías ── */
+.offshore-categoria {
+  margin-bottom: 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.cat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: #f9fafb;
+  cursor: default;
+}
+.cat-con-resultados { background: #1f2937; }
+.cat-nombre {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #374151;
+}
+.cat-con-resultados .cat-nombre { color: white; }
+.cat-total {
+  font-size: 0.78rem;
+  background: #e5e7eb;
+  color: #6b7280;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+.cat-badge-activo { background: #6b7280; color: white; }
+.cat-items { padding: 8px 14px; }
