@@ -1,194 +1,202 @@
-const puppeteer = require("puppeteer-core");
-const chromium = require("@sparticuz/chromium");
+/**
+ * policia.controller.js
+ * Recibe el token reCAPTCHA resuelto desde el frontend Angular
+ * No necesita browser ni servicios de pago
+ */
 
-const POLICIA_URL =
-  "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
-const POLICIA_FORM =
-  "https://antecedentes.policia.gov.co:7005/WebJudicial/antecedentes.xhtml";
+const axios = require("axios");
+const https = require("https");
+
+const POLICIA_BASE = "https://antecedentes.policia.gov.co:7005";
+const POLICIA_URL = `${POLICIA_BASE}/WebJudicial/index.xhtml`;
+const POLICIA_FORM = `${POLICIA_BASE}/WebJudicial/antecedentes.xhtml`;
+
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+const BASE_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
+  Connection: "keep-alive",
+};
+
+function parseCookies(existing, header) {
+  const cookies = { ...existing };
+  const headers = Array.isArray(header) ? header : [header].filter(Boolean);
+  headers.forEach((h) => {
+    const [pair] = h.split(";");
+    const [name, ...rest] = pair.split("=");
+    if (name?.trim()) cookies[name.trim()] = rest.join("=").trim();
+  });
+  return cookies;
+}
+function cookiesToHeader(c) {
+  return Object.entries(c)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
+}
+function extraerCamposOcultos(html) {
+  const campos = {};
+  (html.match(/<input[^>]+type=["']hidden["'][^>]*>/gi) || []).forEach(
+    (tag) => {
+      const name = tag.match(/name=["']([^"']+)["']/i)?.[1];
+      const value = tag.match(/value=["']([^"']*)["']/i)?.[1] ?? "";
+      if (name) campos[name] = value;
+    },
+  );
+  return campos;
+}
 
 exports.consultarAntecedentes = async (req, res) => {
-  const { cedula, tipoDocumento = "cc" } = req.body;
+  const { cedula, tipoDocumento = "cc", recaptchaToken } = req.body;
+
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  const tipoMap = {
-    "Cédula de Ciudadanía": "Cédula de Ciudadanía",
-    "Cédula de Extranjería": "Cédula de Extranjería",
-    Pasaporte: "Pasaporte",
-    cc: "Cédula de Ciudadanía",
-    cx: "Cédula de Extranjería",
-    pa: "Pasaporte",
-  };
-  const tipoValor = tipoMap[tipoDocumento] || "Cédula de Ciudadanía";
+  // Si no viene token, devolver 428 para que Angular muestre el captcha
+  if (!recaptchaToken) {
+    return res.status(428).json({
+      error: "captcha_required",
+      mensaje: "Se requiere resolver el reCAPTCHA antes de continuar.",
+      sitekey: "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH",
+    });
+  }
 
-  console.log(`--- Consultando antecedentes para: ${cedula} ---`);
-  let browser;
+  const tipoMap = {
+    "Cédula de Ciudadanía": "cc",
+    "Cédula de Extranjería": "cx",
+    Pasaporte: "pa",
+    "Documento País Origen": "dp",
+    cc: "cc",
+    cx: "cx",
+    pa: "pa",
+    dp: "dp",
+  };
+  const tipoValor = tipoMap[tipoDocumento] || "cc";
+
+  console.log(
+    `--- Consultando antecedentes para: ${cedula} (token: ${recaptchaToken.substring(0, 20)}...) ---`,
+  );
+  let cookies = {};
 
   try {
-    browser = await puppeteer.launch({
-      args: [
-        ...chromium.args,
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--ignore-certificate-errors",
-      ],
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
+    // PASO 1: GET términos
+    const r1 = await axios.get(POLICIA_URL, {
+      httpsAgent,
+      headers: { ...BASE_HEADERS, Accept: "text/html" },
     });
+    cookies = parseCookies(cookies, r1.headers["set-cookie"]);
+    const campos1 = extraerCamposOcultos(r1.data);
+    if (!campos1["javax.faces.ViewState"])
+      throw new Error("Sin ViewState en términos.");
 
-    const page = await browser.newPage();
-    await page.setBypassCSP(true);
-
-    // ── PASO 1: Ir directo al formulario (saltar términos) ──────────────
-    console.log("📋 Intentando ir directo al formulario...");
-    await page.goto(POLICIA_FORM, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-
-    await new Promise((r) => setTimeout(r, 3000));
-
-    const urlActual = page.url();
-    console.log("URL actual:", urlActual);
-
-    // Si redirigió a términos, aceptarlos
-    if (
-      urlActual.includes("index.xhtml") ||
-      urlActual.includes("WebJudicial/")
-    ) {
-      console.log("✅ Aceptando términos...");
-
-      // Seleccionar radio "Acepto"
-      await page.evaluate(() => {
-        const radios = document.querySelectorAll('input[type="radio"]');
-        radios.forEach((r) => {
-          const label = r.closest("label") || r.parentElement;
-          const texto = label?.textContent || r.value || "";
-          if (
-            texto.toLowerCase().includes("acepto") ||
-            r.value === "true" ||
-            r.value === "1" ||
-            r.value === "Acepto"
-          ) {
-            r.click();
-          }
-        });
-      });
-
-      await new Promise((r) => setTimeout(r, 1000));
-
-      // Click en Enviar
-      const boton =
-        (await page.$('input[type="submit"]')) ||
-        (await page.$('button[type="submit"]')) ||
-        (await page.$(".ui-button"));
-
-      if (boton) {
-        await boton.click();
-      }
-
-      // Esperar navegación con timeout alto
-      await page.waitForNavigation({
-        waitUntil: "domcontentloaded",
-        timeout: 60000,
-      });
-
-      await new Promise((r) => setTimeout(r, 3000));
-      console.log("URL después de términos:", page.url());
-    }
-
-    // ── PASO 2: Llenar formulario ───────────────────────────────────────
-    console.log("📝 Llenando formulario...");
-
-    // Esperar select de tipo documento
-    await page.waitForSelector("select", { timeout: 15000 });
-
-    // Listar selects disponibles
-    const selects = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("select")).map((s) => ({
-        name: s.name,
-        id: s.id,
-        options: Array.from(s.options).map((o) => o.text),
-      }));
-    });
-    console.log("Selects:", JSON.stringify(selects));
-
-    // Seleccionar tipo de documento
-    const selectEl = await page.$("select");
-    if (selectEl) {
-      await page.select("select", tipoValor);
-    }
-
-    // Ingresar número de cédula
-    const inputs = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("input")).map((i) => ({
-        name: i.name,
-        id: i.id,
-        type: i.type,
-        placeholder: i.placeholder,
-      }));
-    });
-    console.log("Inputs:", JSON.stringify(inputs));
-
-    const inputCedula =
-      (await page.$('input[id*="cedula"]')) ||
-      (await page.$('input[name*="cedula"]')) ||
-      (await page.$('input[type="text"]'));
-
-    if (inputCedula) {
-      await inputCedula.click({ clickCount: 3 });
-      await inputCedula.type(cedula, { delay: 50 });
-      console.log("✅ Cédula ingresada");
-    } else {
-      throw new Error("No se encontró el campo de cédula");
-    }
-
-    // ── PASO 3: Resolver reCAPTCHA esperando ────────────────────────────
-    console.log("⏳ Esperando 8 segundos para reCAPTCHA...");
-    await new Promise((r) => setTimeout(r, 8000));
-
-    // ── PASO 4: Submit ──────────────────────────────────────────────────
-    console.log("🔍 Enviando consulta...");
-    const botonConsultar =
-      (await page.$('input[type="submit"]')) ||
-      (await page.$('button[type="submit"]')) ||
-      (await page.$(".ui-button"));
-
-    if (botonConsultar) {
-      await botonConsultar.click();
-    }
-
-    await page.waitForNavigation({
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-
-    await new Promise((r) => setTimeout(r, 3000));
-
-    const html = await page.content();
-    const texto = html.replace(/<[^>]+>/g, " ").toUpperCase();
-    console.log(
-      "Respuesta:",
-      texto.replace(/\s+/g, " ").trim().substring(0, 500),
+    // PASO 2: POST aceptar términos
+    const r2 = await axios.post(
+      POLICIA_URL,
+      new URLSearchParams({
+        ...campos1,
+        aceptaOption: "true",
+        "javax.faces.partial.ajax": "true",
+        "javax.faces.source": "continuarBtn",
+        "javax.faces.partial.execute": "@all",
+        "javax.faces.partial.render": "@all",
+        "javax.faces.behavior.event": "action",
+        "javax.faces.partial.event": "click",
+        form: "form",
+        continuarBtn: "continuarBtn",
+      }).toString(),
+      {
+        httpsAgent,
+        headers: {
+          ...BASE_HEADERS,
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          "Faces-Request": "partial/ajax",
+          "X-Requested-With": "XMLHttpRequest",
+          Referer: POLICIA_URL,
+          Origin: POLICIA_BASE,
+          Cookie: cookiesToHeader(cookies),
+        },
+      },
     );
+    cookies = parseCookies(cookies, r2.headers["set-cookie"]);
+
+    // PASO 3: GET formulario
+    const r3 = await axios.get(POLICIA_FORM, {
+      httpsAgent,
+      headers: {
+        ...BASE_HEADERS,
+        Accept: "text/html",
+        Referer: POLICIA_URL,
+        Cookie: cookiesToHeader(cookies),
+      },
+    });
+    cookies = parseCookies(cookies, r3.headers["set-cookie"]);
+    const campos3 = extraerCamposOcultos(r3.data);
+    if (!campos3["javax.faces.ViewState"])
+      throw new Error("Sin ViewState en formulario.");
+
+    // PASO 4: POST consulta con token del frontend
+    console.log("🔍 Enviando consulta con token del usuario...");
+    const r4 = await axios.post(
+      POLICIA_FORM,
+      new URLSearchParams({
+        ...campos3,
+        formAntecedentes: "formAntecedentes",
+        cedulaTipo: tipoValor,
+        cedulaInput: cedula,
+        "g-recaptcha-response": recaptchaToken,
+        captchaAntecedentes_response: recaptchaToken,
+        j_idt17: "",
+      }).toString(),
+      {
+        httpsAgent,
+        headers: {
+          ...BASE_HEADERS,
+          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+          Referer: POLICIA_FORM,
+          Origin: POLICIA_BASE,
+          Cookie: cookiesToHeader(cookies),
+        },
+      },
+    );
+
+    const html4 =
+      typeof r4.data === "string" ? r4.data : JSON.stringify(r4.data);
+    const texto = html4
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toUpperCase();
+
+    console.log("Status:", r4.status);
+    console.log("Respuesta (600):", texto.substring(0, 600));
 
     const noRegistra =
       texto.includes("NO REGISTRA") ||
       texto.includes("SIN ANTECEDENTES") ||
-      texto.includes("NO PRESENTA") ||
-      texto.includes("NO TIENE ASUNTOS PENDIENTES");
-
+      texto.includes("NO PRESENTA");
     const registra =
       texto.includes("REGISTRA ANTECEDENTES") ||
       texto.includes("PRESENTA ANTECEDENTES") ||
       texto.includes("CONDENA");
+
+    // Token inválido/expirado — pedir nuevo captcha
+    if (!noRegistra && !registra && texto.includes("CAPTCHA")) {
+      return res.status(428).json({
+        error: "captcha_invalid",
+        mensaje:
+          "El token reCAPTCHA expiró o es inválido. Por favor resuélvelo de nuevo.",
+        sitekey: "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH",
+      });
+    }
 
     const mensaje = noRegistra
       ? "La persona NO registra antecedentes judiciales."
       : registra
         ? "La persona REGISTRA antecedentes judiciales."
         : "Sin resultado claro. Revisa el detalle.";
+
+    console.log(`✅ ${cedula}: ${mensaje}`);
 
     return res.json({
       fuente: "Policía Nacional de Colombia",
@@ -197,7 +205,7 @@ exports.consultarAntecedentes = async (req, res) => {
       tipoDocumento,
       tieneAntecedentes: registra && !noRegistra,
       mensaje,
-      detalle: texto.replace(/\s+/g, " ").trim().substring(0, 800),
+      detalle: texto.substring(0, 800),
     });
   } catch (error) {
     console.error("❌ ERROR:", error.message);
@@ -205,7 +213,5 @@ exports.consultarAntecedentes = async (req, res) => {
       error: "Error en consulta Policía Nacional",
       detalle: error.message,
     });
-  } finally {
-    if (browser) await browser.close();
   }
 };

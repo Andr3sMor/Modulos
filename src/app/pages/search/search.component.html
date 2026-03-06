@@ -43,13 +43,19 @@
     </button>
 
     <!-- NUEVO botón -->
-    <button
-      class="btn-policia"
-      (click)="consultarAntecedentes()"
-      [disabled]="cargando"
-    >
-      {{ cargando ? "Consultando..." : "🚔 Antecedentes Policiales" }}
+    <!-- Botón normal -->
+    <button (click)="consultarAntecedentes()">
+      🚔 Antecedentes Policiales
     </button>
+
+    <!-- Modal captcha -->
+    <app-policia-captcha
+      [cedula]="cedulaParaCaptcha"
+      [visible]="mostrarCaptchaPolicia"
+      (tokenObtenido)="onTokenCaptcha($event)"
+      (cancelado)="onCaptchaCancelado()"
+    >
+    </app-policia-captcha>
   </div>
 
   <div *ngIf="error" class="error-badge">

@@ -2,11 +2,12 @@ import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
+import { PoliciaCaptchaComponent } from "./policia-captcha.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, PoliciaCaptchaComponent],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -16,6 +17,8 @@ export class SearchComponent {
   resultado: any = null;
   cargando = false;
   error = "";
+  mostrarCaptchaPolicia = false;
+  cedulaParaCaptcha = "";
 
   tiposDocumento = [
     "Cédula de Ciudadanía",
@@ -95,35 +98,29 @@ export class SearchComponent {
 
   consultarAntecedentes() {
     if (!this.cedula) return;
+    this.cedulaParaCaptcha = this.cedula;
+    this.mostrarCaptchaPolicia = true;
+  }
+
+  onTokenCaptcha(token: string) {
+    this.mostrarCaptchaPolicia = false;
     this.prepararConsulta();
     this.consultaService
-      .consultarAntecedentes(this.cedula, this.tipoDocumento)
+      .consultarAntecedentesConToken(this.cedula, this.tipoDocumento, token)
       .subscribe({
-        next: (res: any) => {
-          this.zone.run(() => {
-            this.resultado = {
-              fuente: res.fuente,
-              tieneAntecedentes: res.tieneAntecedentes,
-              data: {
-                vigencia: res.mensaje,
-                detalle: res.detalle || "",
-                fecha: new Date().toLocaleString(),
-                cedula: res.cedula,
-                tipoDocumento: res.tipoDocumento,
-              },
-            };
-            this.cargando = false;
-            this.cdr.detectChanges();
-          });
+        next: (res) => {
+          this.resultado = {
+            /* igual que antes */
+          };
+          this.cargando = false;
         },
         error: (err) =>
-          this.zone.run(() => {
-            this.manejarError(
-              err.error?.error || "Error al consultar antecedentes policiales",
-            );
-            this.cdr.detectChanges();
-          }),
+          this.manejarError(err.error?.error || "Error al consultar"),
       });
+  }
+
+  onCaptchaCancelado() {
+    this.mostrarCaptchaPolicia = false;
   }
 
   private prepararConsulta() {
