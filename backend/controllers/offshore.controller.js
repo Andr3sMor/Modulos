@@ -16,7 +16,7 @@ async function buscarCategoria(nombre, cat) {
     // Reconciliation API con limit alto
     const r = await axios.post(
       "https://offshoreleaks.icij.org/api/v1/reconcile",
-      { queries: { q0: { query: nombre, type: cat.tipo, limit: 100 } } },
+      { queries: { q0: { query: nombre, type: cat.tipo, limit: 10000000 } } },
       { headers: { "Content-Type": "application/json" }, timeout: 20000 },
     );
 
