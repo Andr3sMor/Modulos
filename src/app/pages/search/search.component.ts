@@ -152,7 +152,7 @@ export class SearchComponent {
                   fuente: "ICIJ Offshore Leaks",
                   tieneRegistros: res.tieneRegistros,
                   totalResultados: res.totalResultados,
-                  resultadosOffshore: res.resultados || [],
+                  categorias: res.categorias || [],
                   data: { fecha: new Date().toLocaleString() },
                 });
                 this.cdr.detectChanges();

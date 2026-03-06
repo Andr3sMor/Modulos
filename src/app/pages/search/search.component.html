@@ -186,47 +186,40 @@
           </div>
 
           <!-- Tabla offshore por categorías -->
-          <div
-            *ngIf="r.tipo === 'offshore' && r.categorias?.length > 0"
-            class="offshore-list"
-          >
+          <div *ngIf="r.tipo === 'offshore'" class="offshore-list">
             <div class="offshore-title">
-              📋 Resultados por categoría ({{ r.totalResultados }} total)
+              📋 {{ r.totalResultados }} registro(s) en total
             </div>
 
-            <div *ngFor="let cat of r.categorias" class="offshore-categoria">
-              <!-- Cabecera categoría -->
-              <div
-                class="cat-header"
-                [class.cat-con-resultados]="cat.total > 0"
-              >
-                <span class="cat-nombre">{{ cat.nombre }}</span>
-                <span
-                  class="cat-total"
-                  [class.cat-badge-activo]="cat.total > 0"
-                  >{{ cat.total }}</span
-                >
-              </div>
+            <ng-container *ngFor="let cat of r.categorias">
+              <div *ngIf="cat.total > 0" class="offshore-categoria">
+                <!-- Cabecera categoría -->
+                <div class="cat-header cat-con-resultados">
+                  <span class="cat-nombre">{{ cat.nombre }}</span>
+                  <span class="cat-total cat-badge-activo">{{
+                    cat.total
+                  }}</span>
+                </div>
 
-              <!-- Resultados de la categoría -->
-              <div *ngIf="cat.resultados?.length > 0" class="cat-items">
-                <div *ngFor="let o of cat.resultados" class="offshore-item">
-                  <div class="offshore-name">{{ o.nombre }}</div>
-                  <div class="offshore-meta">
-                    <span *ngIf="o.pais" class="meta-tag">🌍 {{ o.pais }}</span>
-                    <span *ngIf="o.jurisdiccion" class="meta-tag"
-                      >⚖️ {{ o.jurisdiccion }}</span
-                    >
-                    <span *ngIf="o.fuente" class="meta-tag"
-                      >📁 {{ o.fuente }}</span
-                    >
-                    <a [href]="o.url" target="_blank" class="meta-link"
-                      >Ver en ICIJ →</a
-                    >
+                <!-- Items -->
+                <div class="cat-items">
+                  <div *ngFor="let o of cat.resultados" class="offshore-item">
+                    <div class="offshore-name">{{ o.nombre }}</div>
+                    <div class="offshore-meta">
+                      <span class="meta-tag meta-score"
+                        >Score: {{ o.score }}%</span
+                      >
+                      <span *ngIf="o.match" class="meta-tag meta-match"
+                        >✅ Exacto</span
+                      >
+                      <a [href]="o.url" target="_blank" class="meta-link"
+                        >Ver en ICIJ →</a
+                      >
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            </ng-container>
           </div>
         </div>
       </div>
