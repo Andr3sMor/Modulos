@@ -17,6 +17,14 @@ export class SearchComponent {
   cargando = false;
   error = "";
 
+  tipoDocumento = "Cédula de Ciudadanía";
+  tiposDocumento = [
+    "Cédula de Ciudadanía",
+    "Cédula de Extranjería",
+    "Pasaporte",
+    "Documento País Origen",
+  ];
+
   // Policía
   mostrarCaptchaPolicia = false;
   cedulaParaCaptcha = "";
