@@ -4,19 +4,29 @@ const app = express();
 
 const jccController = require("./controllers/jcc.controller");
 const regController = require("./controllers/registraduria.controller");
-const policia = require("./controllers/policia.controller");
+const policiaController = require("./controllers/policia.controller");
 
-app.use(cors());
+// CORS - permitir GitHub Pages y desarrollo local
+app.use(
+  cors({
+    origin: [
+      "https://andr3smor.github.io",
+      "http://localhost:4200",
+      "http://localhost:3001",
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  }),
+);
+
+// Responder preflight OPTIONS
+app.options("*", cors());
+
 app.use(express.json());
 
-// Registraduría y JCC
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
-
-// Policía — flujo en 4 pasos
-app.post("/api/policia/iniciar", policia.iniciar);
-app.get("/api/policia/screenshot/:id", policia.screenshot);
-app.get("/api/policia/status/:id", policia.status);
-app.post("/api/policia/clic/:id", policia.clic);
+app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
 
 app.listen(3001, () => console.log("Backend en puerto 3001"));
