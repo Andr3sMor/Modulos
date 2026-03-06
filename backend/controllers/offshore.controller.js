@@ -8,14 +8,9 @@ exports.consultarOffshore = async (req, res) => {
   console.log(`--- Consultando Offshore Leaks para: ${nombre} ---`);
 
   try {
-    // Búsqueda por nombre usando la API de reconciliación
     const response = await axios.post(
       "https://offshoreleaks.icij.org/api/v1/reconcile",
-      {
-        queries: {
-          q0: { query: nombre },
-        },
-      },
+      { queries: { q0: { query: nombre } } },
       {
         headers: { "Content-Type": "application/json" },
         timeout: 15000,
@@ -23,7 +18,7 @@ exports.consultarOffshore = async (req, res) => {
     );
 
     const resultados = response.data?.q0?.result || [];
-    console.log(`✅ Resultados encontrados: ${resultados.length}`);
+    console.log(`✅ Resultados: ${resultados.length}`);
 
     return res.json({
       fuente: "ICIJ Offshore Leaks",
