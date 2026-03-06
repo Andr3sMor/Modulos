@@ -69,4 +69,8 @@ export class ConsultaService {
       },
     );
   }
+
+  consultarOffshore(nombre: string) {
+    return this.http.post(`${this.apiUrl}/api/consulta-offshore`, { nombre });
+  }
 }
