@@ -1,8 +1,15 @@
+/**
+ * jcc.controller.js
+ * Usa Cloudflare Worker como relay para evitar bloqueo de IP de Render
+ * Cambia JCC_BASE por tu URL del Worker después de desplegarlo
+ */
+
 const axios = require("axios");
 const https = require("https");
-
 const agent = new https.Agent({ rejectUnauthorized: false });
-const JCC_BASE = "https://sgr.jcc.gov.co";
+
+// ⚠️ Reemplaza esto con tu URL real del Worker después del paso 3
+const JCC_BASE = process.env.JCC_WORKER_URL || "https://sgr.jcc.gov.co:8181";
 const JCC_URL = `${JCC_BASE}/apex/f?p=138:1:::NO:::`;
 
 const HEADERS = {
@@ -18,7 +25,7 @@ exports.consultarContador = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  console.log(`--- Consultando JCC para: ${cedula} ---`);
+  console.log(`--- Consultando JCC para: ${cedula} (via ${JCC_BASE}) ---`);
 
   try {
     // Paso 1: GET página inicial
@@ -28,24 +35,13 @@ exports.consultarContador = async (req, res) => {
       headers: HEADERS,
       timeout: 30000,
     });
-
     console.log("Status GET:", r1.status);
-    const html1 = r1.data.toString();
-    console.log(
-      "HTML (400 chars):",
-      html1
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .substring(0, 400),
-    );
 
-    // Extraer cookies
+    const html1 = r1.data.toString();
     const cookies = (r1.headers["set-cookie"] || [])
       .map((c) => c.split(";")[0])
       .join("; ");
 
-    // Extraer campos ocultos del formulario
     const campos = {};
     (html1.match(/<input[^>]+type=["']hidden["'][^>]*>/gi) || []).forEach(
       (tag) => {
@@ -54,7 +50,6 @@ exports.consultarContador = async (req, res) => {
         if (name) campos[name] = value;
       },
     );
-    console.log("Campos ocultos:", JSON.stringify(campos));
 
     // Paso 2: POST consulta
     console.log("🔍 POST consulta...");
@@ -84,23 +79,20 @@ exports.consultarContador = async (req, res) => {
       },
     );
 
-    console.log("Status POST:", r2.status);
     const texto = r2.data
       .toString()
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim();
-    console.log("Respuesta (600 chars):", texto.substring(0, 600));
+    console.log("Respuesta (600):", texto.substring(0, 600));
 
     const esContador =
       texto.toUpperCase().includes("CONTADOR PÚBLICO") ||
       texto.toUpperCase().includes("HABILITADO") ||
       texto.toUpperCase().includes("CONTADOR PUBLICO");
-
     const noEsContador =
       texto.toUpperCase().includes("NO REGISTRA") ||
-      texto.toUpperCase().includes("NO SE ENCUENTRA") ||
-      texto.toUpperCase().includes("NO REGISTRA INFORMACION");
+      texto.toUpperCase().includes("NO SE ENCUENTRA");
 
     return res.json({
       fuente: "Junta Central de Contadores",
@@ -115,16 +107,8 @@ exports.consultarContador = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ ERROR JCC:", error.message);
-    if (error.response) {
-      console.error("Status:", error.response.status);
-      console.error(
-        "Data:",
-        JSON.stringify(error.response.data).substring(0, 200),
-      );
-    }
-    return res.status(502).json({
-      error: "Error en consulta JCC",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({ error: "Error en consulta JCC", detalle: error.message });
   }
 };
