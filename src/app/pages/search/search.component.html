@@ -1,175 +1,224 @@
-<div class="form-card">
-  <h2>Módulo de Consultas Legales</h2>
-  <p class="subtitle">
-    Ingrese el documento para verificar en las bases de datos oficiales.
-  </p>
+<div class="page-wrapper">
+  <div class="main-card">
+    <!-- Header -->
+    <div class="card-header">
+      <h2 class="card-title">Consulta de Información</h2>
+      <p class="card-subtitle">
+        Verifique información en bases de datos oficiales y registros
+        internacionales
+      </p>
+    </div>
 
-  <div class="form-group">
-    <label>Número de Documento (Cédula)</label>
-    <input
-      type="text"
-      [(ngModel)]="cedula"
-      placeholder="Ej: 12345678"
-      (keyup.enter)="consultarCedula()"
-    />
-  </div>
+    <!-- Formulario de búsqueda -->
+    <div class="search-section">
+      <h3 class="section-title">Datos de Búsqueda</h3>
 
-  <div class="form-group">
-    <label>Tipo de Documento</label>
-    <select [(ngModel)]="tipoDocumento">
-      <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
-        {{ tipo }}
-      </option>
-    </select>
-  </div>
+      <!-- Fila 1: Identificación + Nombre -->
+      <div class="fields-row">
+        <div class="field-group">
+          <label class="field-label">Número de Identificación</label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="cedula"
+            placeholder="Ej: 12345678"
+            (keyup.enter)="ejecutarConsulta()"
+          />
+        </div>
+        <div class="field-group">
+          <label class="field-label">Nombre Completo</label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="nombre"
+            placeholder="Ej: Juan García"
+            (keyup.enter)="ejecutarConsulta()"
+          />
+        </div>
+      </div>
 
-  <div class="button-group">
-    <button
-      class="btn-primary"
-      (click)="consultarCedula()"
-      [disabled]="cargando"
-    >
-      {{ cargando ? "Buscando..." : "Vigencia Cédula" }}
-    </button>
-    <button
-      class="btn-secondary"
-      (click)="consultarContador()"
-      [disabled]="cargando"
-    >
-      {{ cargando ? "Buscando..." : "Verificar Contador" }}
-    </button>
-    <button (click)="consultarAntecedentes()">
-      🚔 Antecedentes Policiales
-    </button>
+      <!-- Fila 2: Tipo documento + Servicios + Botón -->
+      <div class="action-row">
+        <div class="field-group field-small">
+          <label class="field-label">Tipo de Documento</label>
+          <select class="field-input" [(ngModel)]="tipoDocumento">
+            <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
+              {{ tipo }}
+            </option>
+          </select>
+        </div>
+
+        <div class="field-group field-large">
+          <label class="field-label">Servicios a consultar</label>
+          <div class="checkboxes-grid">
+            <label class="checkbox-item" *ngFor="let svc of servicios">
+              <input type="checkbox" [(ngModel)]="svc.activo" />
+              <span class="checkbox-label">{{ svc.nombre }}</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field-group field-btn">
+          <label class="field-label">&nbsp;</label>
+          <button
+            class="btn-search"
+            (click)="ejecutarConsulta()"
+            [disabled]="cargando"
+          >
+            <span *ngIf="!cargando">🔍 Consultar</span>
+            <span *ngIf="cargando" class="loading-text">
+              <span class="spinner"></span> Buscando...
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Error -->
+    <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
+
+    <!-- Resultados -->
+    <div *ngIf="resultados.length > 0" class="results-section">
+      <h3 class="section-title">Resultados de la Consulta</h3>
+
+      <div *ngFor="let r of resultados" class="result-card">
+        <!-- Header del resultado -->
+        <div class="result-header">
+          <div class="result-source">
+            <span class="source-badge">{{ r.fuente }}</span>
+          </div>
+          <div class="result-badges">
+            <!-- Badge Registraduría -->
+            <span
+              *ngIf="r.tipo === 'registraduria'"
+              class="status-badge"
+              [class.badge-success]="
+                r.data?.vigencia?.toUpperCase()?.includes('VIGENTE')
+              "
+              [class.badge-danger]="
+                !r.data?.vigencia?.toUpperCase()?.includes('VIGENTE')
+              "
+            >
+              {{ r.data?.vigencia }}
+            </span>
+            <!-- Badge Contador -->
+            <span
+              *ngIf="r.tipo === 'contador'"
+              [class]="
+                r.esContador
+                  ? 'status-badge badge-success'
+                  : 'status-badge badge-neutral'
+              "
+            >
+              {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
+            </span>
+            <!-- Badge Antecedentes -->
+            <span
+              *ngIf="r.tipo === 'antecedentes'"
+              [class]="
+                r.tieneAntecedentes
+                  ? 'status-badge badge-danger'
+                  : 'status-badge badge-success'
+              "
+            >
+              {{
+                r.tieneAntecedentes
+                  ? "⚠️ Registra antecedentes"
+                  : "✅ Sin antecedentes"
+              }}
+            </span>
+            <!-- Badge Offshore -->
+            <span
+              *ngIf="r.tipo === 'offshore'"
+              [class]="
+                r.tieneRegistros
+                  ? 'status-badge badge-danger'
+                  : 'status-badge badge-success'
+              "
+            >
+              {{
+                r.tieneRegistros
+                  ? "⚠️ " + r.totalResultados + " registro(s)"
+                  : "✅ Sin registros"
+              }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Cuerpo del resultado -->
+        <div class="result-body">
+          <div class="result-grid">
+            <div
+              class="result-item"
+              *ngIf="
+                r.data?.vigencia &&
+                r.tipo !== 'contador' &&
+                r.tipo !== 'antecedentes'
+              "
+            >
+              <span class="item-label">Estado</span>
+              <span class="item-value">{{ r.data?.vigencia }}</span>
+            </div>
+            <div class="result-item" *ngIf="r.data?.codigo">
+              <span class="item-label">Código</span>
+              <span class="item-value">{{ r.data?.codigo }}</span>
+            </div>
+            <div class="result-item" *ngIf="r.data?.fecha">
+              <span class="item-label">Fecha consulta</span>
+              <span class="item-value">{{ r.data?.fecha }}</span>
+            </div>
+            <div
+              class="result-item"
+              *ngIf="r.mensaje && r.tipo === 'antecedentes'"
+            >
+              <span class="item-label">Resultado</span>
+              <span class="item-value">{{ r.mensaje }}</span>
+            </div>
+            <div
+              class="result-item"
+              *ngIf="r.tipo === 'offshore' && !r.tieneRegistros"
+            >
+              <span class="item-label">Resultado</span>
+              <span class="item-value"
+                >No se encontraron registros en bases offshore</span
+              >
+            </div>
+          </div>
+
+          <!-- Tabla offshore -->
+          <div
+            *ngIf="r.tipo === 'offshore' && r.resultadosOffshore?.length > 0"
+            class="offshore-list"
+          >
+            <div class="offshore-title">
+              📋 Registros encontrados ({{ r.totalResultados }} total)
+            </div>
+            <div
+              *ngFor="let o of r.resultadosOffshore; let i = index"
+              class="offshore-item"
+            >
+              <div class="offshore-name">{{ i + 1 }}. {{ o.nombre }}</div>
+              <div class="offshore-meta">
+                <span class="meta-tag">📁 {{ o.tipo }}</span>
+                <span class="meta-tag meta-score">Score: {{ o.score }}%</span>
+                <span *ngIf="o.match" class="meta-tag meta-match"
+                  >✅ Exacto</span
+                >
+                <a [href]="o.url" target="_blank" class="meta-link"
+                  >Ver en ICIJ →</a
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Captcha Policía -->
     <app-policia-captcha
       [visible]="mostrarCaptchaPolicia"
       (resultadoObtenido)="onResultadoPolicia($event)"
       (cancelado)="onCaptchaCancelado()"
     ></app-policia-captcha>
-  </div>
-
-  <!-- ── Sección Offshore Leaks ── -->
-  <hr style="margin: 24px 0; border-color: #e5e7eb" />
-
-  <div class="form-group">
-    <label>🌐 Consulta Offshore Leaks (ICIJ)</label>
-    <input
-      type="text"
-      [(ngModel)]="nombre"
-      placeholder="Ej: Juan García o Empresa S.A."
-      (keyup.enter)="consultarOffshore()"
-    />
-  </div>
-
-  <div class="button-group">
-    <button
-      class="btn-primary"
-      (click)="consultarOffshore()"
-      [disabled]="cargando"
-    >
-      {{ cargando ? "Buscando..." : "🔍 Buscar en Offshore Leaks" }}
-    </button>
-  </div>
-
-  <div *ngIf="error" class="error-badge">
-    <i class="icon-warning"></i> {{ error }}
-  </div>
-
-  <div *ngIf="resultado" class="result-card">
-    <div class="result-header">
-      <span class="badge">{{ resultado.fuente }}</span>
-      <span
-        *ngIf="resultado.tieneRegistros !== undefined"
-        [class]="
-          resultado.tieneRegistros
-            ? 'badge badge-danger'
-            : 'badge badge-success'
-        "
-      >
-        {{
-          resultado.tieneRegistros
-            ? "⚠️ Registros encontrados"
-            : "✅ Sin registros offshore"
-        }}
-      </span>
-      <span
-        *ngIf="resultado.tieneAntecedentes !== undefined"
-        [class]="
-          resultado.tieneAntecedentes
-            ? 'badge badge-danger'
-            : 'badge badge-success'
-        "
-      >
-        {{
-          resultado.tieneAntecedentes
-            ? "⚠️ Registra antecedentes"
-            : "✅ Sin antecedentes"
-        }}
-      </span>
-    </div>
-
-    <div class="result-body">
-      <div class="result-item">
-        <span class="label">Estado:</span>
-        <span class="value">{{ resultado.data?.vigencia }}</span>
-      </div>
-      <div class="result-item" *ngIf="resultado.data?.tipoDocumento">
-        <span class="label">Tipo documento:</span>
-        <span class="value">{{ resultado.data?.tipoDocumento }}</span>
-      </div>
-      <div class="result-item" *ngIf="resultado.data?.detalle">
-        <span class="label">Detalle:</span>
-        <span class="value small">{{ resultado.data?.detalle }}</span>
-      </div>
-      <div class="result-item">
-        <span class="label">Fecha consulta:</span>
-        <span class="value">{{ resultado.data?.fecha }}</span>
-      </div>
-      <div class="result-item" *ngIf="resultado.data?.codigo">
-        <span class="label">Código:</span>
-        <span class="value">{{ resultado.data?.codigo }}</span>
-      </div>
-    </div>
-
-    <!-- Tabla de resultados offshore -->
-    <div
-      *ngIf="resultado.resultadosOffshore?.length > 0"
-      class="result-body"
-      style="margin-top: 12px"
-    >
-      <div
-        class="result-item"
-        style="
-          font-weight: bold;
-          border-bottom: 1px solid #e5e7eb;
-          padding-bottom: 8px;
-        "
-      >
-        <span class="label">Registros encontrados:</span>
-      </div>
-      <div
-        *ngFor="let r of resultado.resultadosOffshore"
-        class="result-item"
-        style="
-          flex-direction: column;
-          align-items: flex-start;
-          gap: 2px;
-          border-bottom: 1px solid #f3f4f6;
-          padding: 8px 0;
-        "
-      >
-        <span style="font-weight: 600">{{ r.nombre }}</span>
-        <span style="font-size: 0.8rem; color: #6b7280"
-          >Tipo: {{ r.tipo }}</span
-        >
-        <a
-          [href]="r.url"
-          target="_blank"
-          style="font-size: 0.8rem; color: #3b82f6"
-        >
-          Ver en ICIJ →
-        </a>
-      </div>
-    </div>
   </div>
 </div>

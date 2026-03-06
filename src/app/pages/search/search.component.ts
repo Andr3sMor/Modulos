@@ -14,9 +14,10 @@ import { PoliciaCaptchaComponent } from "./policia-captcha.component";
 export class SearchComponent {
   cedula = "";
   nombre = "";
-  resultado: any = null;
   cargando = false;
   error = "";
+  resultados: any[] = [];
+  mostrarCaptchaPolicia = false;
 
   tipoDocumento = "Cédula de Ciudadanía";
   tiposDocumento = [
@@ -26,7 +27,12 @@ export class SearchComponent {
     "Documento País Origen",
   ];
 
-  mostrarCaptchaPolicia = false;
+  servicios = [
+    { id: "registraduria", nombre: "Registraduría", activo: true },
+    { id: "contador", nombre: "Contador JCC", activo: false },
+    { id: "antecedentes", nombre: "Policía", activo: false },
+    { id: "offshore", nombre: "Offshore ICIJ", activo: false },
+  ];
 
   @ViewChild(PoliciaCaptchaComponent) captchaComp!: PoliciaCaptchaComponent;
 
@@ -36,152 +42,166 @@ export class SearchComponent {
     private cdr: ChangeDetectorRef,
   ) {}
 
-  consultarCedula() {
-    if (!this.cedula) return;
-    this.prepararConsulta();
-    this.consultaService.verificarCedula(this.cedula).subscribe({
-      next: (res: any) => {
-        this.zone.run(() => {
-          this.resultado = {
-            ...res,
-            fuente: "Registraduría Nacional",
-            data: res.data || {},
-          };
-          this.cargando = false;
-          this.cdr.detectChanges();
-        });
-      },
-      error: (err) =>
-        this.zone.run(() =>
-          this.manejarError(err.error?.error || "Error en Registraduría"),
-        ),
-    });
-  }
+  ejecutarConsulta() {
+    const activos = this.servicios.filter((s) => s.activo);
+    if (!activos.length) {
+      this.error = "Selecciona al menos un servicio.";
+      return;
+    }
+    if (!this.cedula && !this.nombre) {
+      this.error = "Ingresa al menos un dato de búsqueda.";
+      return;
+    }
 
-  consultarContador() {
-    if (!this.cedula) return;
-    this.prepararConsulta();
-    this.consultaService.verificarContador(this.cedula).subscribe({
-      next: (res: any) => {
-        this.zone.run(() => {
-          this.resultado = {
-            ...res,
-            fuente: "Junta Central de Contadores",
-            data: {
-              vigencia: res.esContador
-                ? "CONTADOR PÚBLICO"
-                : "No es contador o no encontrado",
-              fecha: new Date().toLocaleString(),
-            },
-          };
-          this.cargando = false;
-          this.cdr.detectChanges();
-        });
-      },
-      error: (err) =>
-        this.zone.run(() =>
-          this.manejarError(
-            err.error?.error || "Error en consulta de Contador",
-          ),
-        ),
-    });
-  }
-
-  consultarAntecedentes() {
-    if (!this.cedula) return;
     this.error = "";
-    this.resultado = null;
-    this.mostrarCaptchaPolicia = true;
-    setTimeout(() => {
-      this.captchaComp.iniciar(this.cedula, this.tipoDocumento);
-    }, 100);
+    this.resultados = [];
+    this.cargando = true;
+
+    const tareas = activos.map((s) => this.llamarServicio(s.id));
+    Promise.allSettled(tareas).then(() => {
+      this.zone.run(() => {
+        this.cargando = false;
+        this.cdr.detectChanges();
+      });
+    });
+  }
+
+  private llamarServicio(id: string): Promise<void> {
+    return new Promise((resolve) => {
+      switch (id) {
+        case "registraduria":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService.verificarCedula(this.cedula).subscribe({
+            next: (res: any) => {
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "registraduria",
+                  fuente: "Registraduría Nacional",
+                  data: {
+                    vigencia: res.data?.vigencia || res.vigencia,
+                    codigo: res.data?.codigo,
+                    fecha: new Date().toLocaleString(),
+                  },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              });
+            },
+            error: (err: any) => {
+              this.zone.run(() => {
+                this.agregarError("Registraduría", err);
+                resolve();
+              });
+            },
+          });
+          break;
+
+        case "contador":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService.verificarContador(this.cedula).subscribe({
+            next: (res: any) => {
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "contador",
+                  fuente: "Junta Central de Contadores",
+                  esContador: res.esContador,
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              });
+            },
+            error: (err: any) => {
+              this.zone.run(() => {
+                this.agregarError("Contador JCC", err);
+                resolve();
+              });
+            },
+          });
+          break;
+
+        case "antecedentes":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.error = "";
+          this.mostrarCaptchaPolicia = true;
+          setTimeout(() => {
+            this.captchaComp?.iniciar(this.cedula, this.tipoDocumento);
+          }, 100);
+          resolve();
+          break;
+
+        case "offshore":
+          if (!this.nombre) {
+            resolve();
+            return;
+          }
+          this.consultaService.consultarOffshore(this.nombre).subscribe({
+            next: (res: any) => {
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "offshore",
+                  fuente: "ICIJ Offshore Leaks",
+                  tieneRegistros: res.tieneRegistros,
+                  totalResultados: res.totalResultados,
+                  resultadosOffshore: res.resultados || [],
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              });
+            },
+            error: (err: any) => {
+              this.zone.run(() => {
+                this.agregarError("Offshore ICIJ", err);
+                resolve();
+              });
+            },
+          });
+          break;
+
+        default:
+          resolve();
+      }
+    });
+  }
+
+  private agregarError(fuente: string, err: any) {
+    this.resultados.push({
+      tipo: "error",
+      fuente,
+      data: {
+        vigencia: err.error?.error || "Error al consultar",
+        fecha: new Date().toLocaleString(),
+      },
+    });
+    this.cdr.detectChanges();
   }
 
   onResultadoPolicia(evento: { tieneAntecedentes: boolean; mensaje: string }) {
     this.mostrarCaptchaPolicia = false;
-    this.resultado = {
-      fuente: "Policía Nacional de Colombia",
-      tieneAntecedentes: evento.tieneAntecedentes,
-      data: {
-        vigencia: evento.mensaje,
-        fecha: new Date().toLocaleString(),
-        cedula: this.cedula,
-      },
-    };
+    this.zone.run(() => {
+      this.resultados.push({
+        tipo: "antecedentes",
+        fuente: "Policía Nacional de Colombia",
+        tieneAntecedentes: evento.tieneAntecedentes,
+        mensaje: evento.mensaje,
+        data: { fecha: new Date().toLocaleString() },
+      });
+      this.cdr.detectChanges();
+    });
   }
 
   onCaptchaCancelado() {
     this.mostrarCaptchaPolicia = false;
-  }
-
-  consultarProcuraduria() {
-    if (!this.cedula) return;
-    this.prepararConsulta();
-    this.consultaService.consultarProcuraduria(this.cedula).subscribe({
-      next: (res: any) => {
-        this.zone.run(() => {
-          this.resultado = {
-            fuente: "Procuraduría General de la Nación",
-            tieneAntecedentes: res.tieneAntecedentes,
-            data: {
-              vigencia: res.mensaje,
-              detalle: res.detalle || "",
-              fecha: new Date().toLocaleString(),
-              cedula: res.cedula,
-            },
-          };
-          this.cargando = false;
-          this.cdr.detectChanges();
-        });
-      },
-      error: (err) =>
-        this.zone.run(() =>
-          this.manejarError(
-            err.error?.error || "Error al consultar Procuraduría",
-          ),
-        ),
-    });
-  }
-
-  consultarOffshore() {
-    if (!this.nombre) return;
-    this.prepararConsulta();
-    this.consultaService.consultarOffshore(this.nombre).subscribe({
-      next: (res: any) => {
-        this.zone.run(() => {
-          this.resultado = {
-            fuente: "ICIJ Offshore Leaks",
-            tieneRegistros: res.tieneRegistros,
-            totalResultados: res.totalResultados,
-            resultadosOffshore: res.resultados || [],
-            data: {
-              vigencia: res.tieneRegistros
-                ? `Se encontraron ${res.totalResultados} registro(s)`
-                : "No se encontraron registros en bases de datos offshore",
-              fecha: new Date().toLocaleString(),
-            },
-          };
-          this.cargando = false;
-          this.cdr.detectChanges();
-        });
-      },
-      error: (err) =>
-        this.zone.run(() =>
-          this.manejarError(
-            err.error?.error || "Error al consultar Offshore Leaks",
-          ),
-        ),
-    });
-  }
-
-  prepararConsulta() {
-    this.cargando = true;
-    this.error = "";
-    this.resultado = null;
-  }
-
-  private manejarError(msg: string) {
-    this.error = msg;
     this.cargando = false;
   }
 }
