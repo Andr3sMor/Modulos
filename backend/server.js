@@ -14,9 +14,6 @@ app.use(express.json());
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 
-// Procuraduría
-app.post("/api/consulta-procuraduria", procuController.consultarProcuraduria);
-
 // Policía — flujo en 4 pasos
 app.post("/api/policia/iniciar", policia.iniciar);
 app.get("/api/policia/screenshot/:id", policia.screenshot);
