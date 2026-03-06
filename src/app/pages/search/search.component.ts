@@ -1,4 +1,4 @@
-import { Component } from "@angular/core";
+import { Component, ViewChild } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
@@ -12,7 +12,7 @@ import { PoliciaCaptchaComponent } from "./policia-captcha.component";
   styleUrls: ["./search.component.css"],
 })
 export class SearchComponent {
-  cedula: string = "";
+  cedula = "";
   resultado: any = null;
   cargando = false;
   error = "";
@@ -25,9 +25,9 @@ export class SearchComponent {
     "Documento País Origen",
   ];
 
-  // Policía
   mostrarCaptchaPolicia = false;
-  cedulaParaCaptcha = "";
+
+  @ViewChild(PoliciaCaptchaComponent) captchaComp!: PoliciaCaptchaComponent;
 
   constructor(private consultaService: ConsultaService) {}
 
@@ -75,20 +75,22 @@ export class SearchComponent {
   // ── Policía Nacional ───────────────────────────────────────────────
   consultarAntecedentes() {
     if (!this.cedula) return;
-    this.cedulaParaCaptcha = this.cedula;
+    this.error = "";
+    this.resultado = null;
     this.mostrarCaptchaPolicia = true;
+    // Dar un tick para que Angular renderice el componente antes de llamar iniciar()
+    setTimeout(() => {
+      this.captchaComp.iniciar(this.cedula, this.tipoDocumento);
+    }, 100);
   }
 
-  onResultadoPolicia(evento: { tieneAntecedentes: boolean; texto: string }) {
+  onResultadoPolicia(evento: { tieneAntecedentes: boolean; mensaje: string }) {
     this.mostrarCaptchaPolicia = false;
     this.resultado = {
       fuente: "Policía Nacional de Colombia",
       tieneAntecedentes: evento.tieneAntecedentes,
       data: {
-        vigencia: evento.tieneAntecedentes
-          ? "La persona REGISTRA antecedentes judiciales."
-          : "La persona NO registra antecedentes judiciales.",
-        detalle: evento.texto,
+        vigencia: evento.mensaje,
         fecha: new Date().toLocaleString(),
         cedula: this.cedula,
       },
@@ -126,7 +128,6 @@ export class SearchComponent {
 
   // ── Helpers ────────────────────────────────────────────────────────
   prepararConsulta() {
-    if (!this.cedula) return;
     this.cargando = true;
     this.error = "";
     this.resultado = null;

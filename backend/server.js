@@ -3,15 +3,24 @@ const cors = require("cors");
 const app = express();
 
 const jccController = require("./controllers/jcc.controller");
-const regController = require("./controllers/registraduria.controller"); // Cuando lo retomes
-const policiaController = require("./controllers/policia.controller");
+const regController = require("./controllers/registraduria.controller");
+const policia = require("./controllers/policia.controller");
+const procuController = require("./controllers/procuraduria.controller");
 
 app.use(cors());
 app.use(express.json());
 
-// Definición de Rutas Claras
+// Registraduría y JCC
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
-app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
 
-app.listen(3001, () => console.log("Backend modular en puerto 3001"));
+// Procuraduría
+app.post("/api/consulta-procuraduria", procuController.consultarProcuraduria);
+
+// Policía — flujo en 4 pasos
+app.post("/api/policia/iniciar", policia.iniciar);
+app.get("/api/policia/screenshot/:id", policia.screenshot);
+app.get("/api/policia/status/:id", policia.status);
+app.post("/api/policia/clic/:id", policia.clic);
+
+app.listen(3001, () => console.log("Backend en puerto 3001"));
