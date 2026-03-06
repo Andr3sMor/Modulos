@@ -14,7 +14,6 @@
     />
   </div>
 
-  <!-- Selector de tipo de documento (usado por Antecedentes Policiales) -->
   <div class="form-group">
     <label>Tipo de Documento</label>
     <select [(ngModel)]="tipoDocumento">
@@ -32,8 +31,6 @@
     >
       {{ cargando ? "Buscando..." : "Vigencia Cédula" }}
     </button>
-
-    <!-- Botón para consultar contador -->
     <button
       class="btn-secondary"
       (click)="consultarContador()"
@@ -41,18 +38,37 @@
     >
       {{ cargando ? "Buscando..." : "Verificar Contador" }}
     </button>
-
-    <!-- NUEVO botón -->
     <button (click)="consultarAntecedentes()">
       🚔 Antecedentes Policiales
     </button>
-
     <app-policia-captcha
       [visible]="mostrarCaptchaPolicia"
       (resultadoObtenido)="onResultadoPolicia($event)"
       (cancelado)="onCaptchaCancelado()"
+    ></app-policia-captcha>
+  </div>
+
+  <!-- ── Sección Offshore Leaks ── -->
+  <hr style="margin: 24px 0; border-color: #e5e7eb" />
+
+  <div class="form-group">
+    <label>🌐 Consulta Offshore Leaks (ICIJ)</label>
+    <input
+      type="text"
+      [(ngModel)]="nombre"
+      placeholder="Ej: Juan García o Empresa S.A."
+      (keyup.enter)="consultarOffshore()"
+    />
+  </div>
+
+  <div class="button-group">
+    <button
+      class="btn-primary"
+      (click)="consultarOffshore()"
+      [disabled]="cargando"
     >
-    </app-policia-captcha>
+      {{ cargando ? "Buscando..." : "🔍 Buscar en Offshore Leaks" }}
+    </button>
   </div>
 
   <div *ngIf="error" class="error-badge">
@@ -62,7 +78,20 @@
   <div *ngIf="resultado" class="result-card">
     <div class="result-header">
       <span class="badge">{{ resultado.fuente }}</span>
-      <!-- Badge visual para antecedentes -->
+      <span
+        *ngIf="resultado.tieneRegistros !== undefined"
+        [class]="
+          resultado.tieneRegistros
+            ? 'badge badge-danger'
+            : 'badge badge-success'
+        "
+      >
+        {{
+          resultado.tieneRegistros
+            ? "⚠️ Registros encontrados"
+            : "✅ Sin registros offshore"
+        }}
+      </span>
       <span
         *ngIf="resultado.tieneAntecedentes !== undefined"
         [class]="
@@ -99,6 +128,47 @@
       <div class="result-item" *ngIf="resultado.data?.codigo">
         <span class="label">Código:</span>
         <span class="value">{{ resultado.data?.codigo }}</span>
+      </div>
+    </div>
+
+    <!-- Tabla de resultados offshore -->
+    <div
+      *ngIf="resultado.resultadosOffshore?.length > 0"
+      class="result-body"
+      style="margin-top: 12px"
+    >
+      <div
+        class="result-item"
+        style="
+          font-weight: bold;
+          border-bottom: 1px solid #e5e7eb;
+          padding-bottom: 8px;
+        "
+      >
+        <span class="label">Registros encontrados:</span>
+      </div>
+      <div
+        *ngFor="let r of resultado.resultadosOffshore"
+        class="result-item"
+        style="
+          flex-direction: column;
+          align-items: flex-start;
+          gap: 2px;
+          border-bottom: 1px solid #f3f4f6;
+          padding: 8px 0;
+        "
+      >
+        <span style="font-weight: 600">{{ r.nombre }}</span>
+        <span style="font-size: 0.8rem; color: #6b7280"
+          >Tipo: {{ r.tipo }}</span
+        >
+        <a
+          [href]="r.url"
+          target="_blank"
+          style="font-size: 0.8rem; color: #3b82f6"
+        >
+          Ver en ICIJ →
+        </a>
       </div>
     </div>
   </div>
