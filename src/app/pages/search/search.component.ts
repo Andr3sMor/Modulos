@@ -18,6 +18,7 @@ export class SearchComponent {
   error = "";
   resultados: any[] = [];
   mostrarCaptchaPolicia = false;
+  tabOffshoreActivo: { [key: string]: string } = {};
 
   tipoDocumento = "Cédula de Ciudadanía";
   tiposDocumento = [
@@ -203,5 +204,16 @@ export class SearchComponent {
   onCaptchaCancelado() {
     this.mostrarCaptchaPolicia = false;
     this.cargando = false;
+  }
+
+  seleccionarTab(resultadoIndex: number, tab: string) {
+    this.tabOffshoreActivo[resultadoIndex] = tab;
+  }
+
+  getTabActivo(resultadoIndex: number, categorias: any[]): string {
+    if (this.tabOffshoreActivo[resultadoIndex])
+      return this.tabOffshoreActivo[resultadoIndex];
+    const primera = categorias?.find((c) => c.total > 0);
+    return primera?.tipo || "";
   }
 }

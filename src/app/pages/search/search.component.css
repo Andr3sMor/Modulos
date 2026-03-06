@@ -294,5 +294,64 @@ select.field-input { cursor: pointer; }
   border-radius: 10px;
   font-weight: 700;
 }
+
+/* ── Tabs offshore ── */
+.tabs-menu {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  border-bottom: 2px solid #e5e7eb;
+  padding-bottom: 0;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  padding: 8px 14px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #6b7280;
+  cursor: pointer;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: -2px;
+  transition: color 0.2s;
+}
+.tab-btn:hover { color: #2563eb; }
+.tab-activo {
+  color: #2563eb !important;
+  border-bottom: 3px solid #2563eb !important;
+}
+.tab-count {
+  font-size: 0.72rem;
+  background: #e5e7eb;
+  color: #6b7280;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+.tab-count-activo { background: #dbeafe; color: #1d4ed8; }
+.tab-content { padding: 8px 0; }
+.sin-resultados {
+  text-align: center;
+  padding: 20px;
+  color: #9ca3af;
+  font-size: 0.85rem;
+}
+.offshore-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid #f3f4f6;
+  gap: 12px;
+}
+.meta-score-alto  { background: #dcfce7; color: #166534; }
+.meta-score-medio { background: #fef3c7; color: #92400e; }
+.meta-score-bajo  { background: #f3f4f6; color: #6b7280; }
+
 .cat-badge-activo { background: #6b7280; color: white; }
 .cat-items { padding: 8px 14px; }

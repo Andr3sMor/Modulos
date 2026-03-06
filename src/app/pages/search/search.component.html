@@ -13,6 +13,7 @@
     <div class="search-section">
       <h3 class="section-title">Datos de Búsqueda</h3>
 
+      <!-- Fila 1: Identificación + Nombre -->
       <div class="fields-row">
         <div class="field-group">
           <label class="field-label">Número de Identificación</label>
@@ -36,6 +37,7 @@
         </div>
       </div>
 
+      <!-- Fila 2: Tipo documento + Servicios + Botón -->
       <div class="action-row">
         <div class="field-group field-small">
           <label class="field-label">Tipo de Documento</label>
@@ -79,8 +81,8 @@
     <div *ngIf="resultados.length > 0" class="results-section">
       <h3 class="section-title">Resultados de la Consulta</h3>
 
-      <div *ngFor="let r of resultados" class="result-card">
-        <!-- Header -->
+      <div *ngFor="let r of resultados; let i = index" class="result-card">
+        <!-- Header del resultado -->
         <div class="result-header">
           <div class="result-source">
             <span class="source-badge">{{ r.fuente }}</span>
@@ -141,14 +143,15 @@
 
         <!-- Cuerpo -->
         <div class="result-body">
-          <!-- Campos básicos (no offshore) -->
-          <div class="result-grid" *ngIf="r.tipo !== 'offshore'">
+          <!-- Campos básicos -->
+          <div class="result-grid">
             <div
               class="result-item"
               *ngIf="
                 r.data?.vigencia &&
                 r.tipo !== 'contador' &&
-                r.tipo !== 'antecedentes'
+                r.tipo !== 'antecedentes' &&
+                r.tipo !== 'offshore'
               "
             >
               <span class="item-label">Estado</span>
@@ -171,50 +174,73 @@
             </div>
           </div>
 
-          <!-- Offshore -->
-          <ng-container *ngIf="r.tipo === 'offshore'">
-            <div class="result-grid">
-              <div class="result-item" *ngIf="r.data?.fecha">
-                <span class="item-label">Fecha consulta</span>
-                <span class="item-value">{{ r.data?.fecha }}</span>
-              </div>
+          <!-- ── Offshore: tabs por categoría ── -->
+          <div *ngIf="r.tipo === 'offshore'" class="offshore-list">
+            <div *ngIf="!r.tieneRegistros" class="sin-resultados">
+              ✅ No se encontraron registros en bases de datos offshore
             </div>
 
-            <div
-              *ngIf="!r.tieneRegistros"
-              style="margin-top: 10px; color: #6b7280; font-size: 0.88rem"
-            >
-              No se encontraron registros en bases de datos offshore.
-            </div>
-
-            <div *ngIf="r.tieneRegistros" class="offshore-list">
+            <ng-container *ngIf="r.tieneRegistros">
               <div class="offshore-title">
-                📋 {{ r.totalResultados }} registro(s) en total
+                📋 {{ r.totalResultados }} registro(s) distribuidos en las
+                siguientes categorías
               </div>
 
-              <ng-container *ngFor="let cat of r.categorias">
-                <div *ngIf="cat.total > 0" class="offshore-categoria">
-                  <div class="cat-header cat-con-resultados">
-                    <span class="cat-nombre">{{ cat.nombre }}</span>
-                    <span class="cat-total cat-badge-activo">{{
-                      cat.total
-                    }}</span>
+              <!-- Menú de tabs -->
+              <div class="tabs-menu">
+                <button
+                  *ngFor="let cat of r.categorias"
+                  class="tab-btn"
+                  [class.tab-activo]="
+                    getTabActivo(i, r.categorias) === cat.tipo
+                  "
+                  (click)="seleccionarTab(i, cat.tipo)"
+                >
+                  {{ cat.nombre }}
+                  <span
+                    class="tab-count"
+                    [class.tab-count-activo]="cat.total > 0"
+                  >
+                    {{ cat.total }}
+                  </span>
+                </button>
+              </div>
+
+              <!-- Contenido del tab activo -->
+              <div *ngFor="let cat of r.categorias">
+                <div
+                  *ngIf="getTabActivo(i, r.categorias) === cat.tipo"
+                  class="tab-content"
+                >
+                  <div
+                    *ngIf="cat.resultados.length === 0"
+                    class="sin-resultados"
+                  >
+                    Sin registros en esta categoría
                   </div>
 
-                  <div class="cat-items">
-                    <div
-                      *ngFor="let o of cat.resultados; let i = index"
-                      class="offshore-item"
-                    >
+                  <div
+                    *ngFor="let o of cat.resultados; let j = index"
+                    class="offshore-item"
+                  >
+                    <div class="offshore-row">
                       <div class="offshore-name">
-                        {{ i + 1 }}. {{ o.nombre }}
+                        <span class="offshore-num">{{ j + 1 }}.</span>
+                        {{ o.nombre }}
                       </div>
                       <div class="offshore-meta">
-                        <span class="meta-tag meta-score"
-                          >Score: {{ o.score }}%</span
+                        <span
+                          class="meta-tag"
+                          [class.meta-score-alto]="o.score >= 80"
+                          [class.meta-score-medio]="
+                            o.score >= 50 && o.score < 80
+                          "
+                          [class.meta-score-bajo]="o.score < 50"
                         >
+                          {{ o.score }}%
+                        </span>
                         <span *ngIf="o.match" class="meta-tag meta-match"
-                          >✅ Coincidencia exacta</span
+                          >✅ Exacto</span
                         >
                         <a [href]="o.url" target="_blank" class="meta-link"
                           >Ver en ICIJ →</a
@@ -223,9 +249,10 @@
                     </div>
                   </div>
                 </div>
-              </ng-container>
-            </div>
-          </ng-container>
+              </div>
+            </ng-container>
+          </div>
+          <!-- fin offshore -->
         </div>
       </div>
     </div>
