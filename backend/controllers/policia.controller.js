@@ -1,7 +1,6 @@
 /**
  * policia.controller.js
- * Intenta saltar la página de términos yendo directo a antecedentes.xhtml
- * Si el servidor redirige, acepta términos automáticamente y reintenta
+ * Acepta términos automáticamente y consulta antecedentes sin reCAPTCHA
  */
 
 const axios = require("axios");
@@ -10,7 +9,6 @@ const https = require("https");
 const POLICIA_BASE = "https://antecedentes.policia.gov.co:7005";
 const POLICIA_URL = `${POLICIA_BASE}/WebJudicial/index.xhtml`;
 const POLICIA_FORM = `${POLICIA_BASE}/WebJudicial/antecedentes.xhtml`;
-const RECAPTCHA_SITEKEY = "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH";
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
@@ -52,7 +50,6 @@ function extraerCamposOcultos(html) {
 }
 
 function htmlContieneFormulario(html) {
-  // Verificar que la respuesta tiene el formulario de consulta, no la página de términos
   return (
     html.includes("cedulaTipo") ||
     html.includes("cedulaInput") ||
@@ -60,80 +57,7 @@ function htmlContieneFormulario(html) {
   );
 }
 
-async function obtenerVersionRecaptcha() {
-  try {
-    const r = await axios.get("https://www.google.com/recaptcha/api.js", {
-      headers: { "User-Agent": BASE_HEADERS["User-Agent"] },
-      timeout: 8000,
-    });
-    const match = r.data.match(/releases\/([^/]+)\//);
-    return match ? match[1] : "v2-53e66d3d589f5";
-  } catch {
-    return "v2-53e66d3d589f5";
-  }
-}
-
-async function obtenerTokenAnchor(version) {
-  const co = Buffer.from(POLICIA_BASE)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, ".");
-
-  const anchorUrl = `https://www.google.com/recaptcha/api2/anchor?ar=1&k=${RECAPTCHA_SITEKEY}&co=${co}&hl=es&v=${version}&size=normal&cb=${Math.random().toString(36).substring(2)}`;
-
-  const r = await axios.get(anchorUrl, {
-    headers: { ...BASE_HEADERS, Referer: POLICIA_FORM },
-    timeout: 10000,
-  });
-
-  const tokenMatch = r.data.match(/recaptcha-token[^>]+value="([^"]+)"/);
-  if (!tokenMatch) throw new Error("No se encontró recaptcha-token en anchor.");
-  return tokenMatch[1];
-}
-
-async function obtenerTokenFinal(tokenAnchor, version) {
-  const co = Buffer.from(POLICIA_BASE)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=/g, ".");
-
-  const body = new URLSearchParams({
-    v: version,
-    reason: "q",
-    k: RECAPTCHA_SITEKEY,
-    c: tokenAnchor,
-    sa: "",
-    co,
-    hl: "es",
-    size: "normal",
-    chr: "%5B89%2C64%2C27%5D",
-    vh: "13599012192",
-    bg: "!GEpWGq0mlTHGqO8GxWd6T3JASMAAAAAPQAAAABMHG8aAAASdwAAABkBmgSLNuTzPbICXFBTNSdAA",
-  });
-
-  const r = await axios.post(
-    `https://www.google.com/recaptcha/api2/reload?k=${RECAPTCHA_SITEKEY}`,
-    body.toString(),
-    {
-      headers: {
-        ...BASE_HEADERS,
-        "Content-Type": "application/x-www-form-urlencoded",
-        Referer: `https://www.google.com/recaptcha/api2/anchor?k=${RECAPTCHA_SITEKEY}`,
-        Origin: "https://www.google.com",
-      },
-      timeout: 10000,
-    },
-  );
-
-  const match = r.data.match(/"rresp","([^"]+)"/);
-  if (!match) throw new Error("No se encontró rresp en Google reload.");
-  return match[1];
-}
-
 async function aceptarTerminos(cookies) {
-  // GET términos para obtener ViewState
   const r1 = await axios.get(POLICIA_URL, {
     httpsAgent,
     headers: { ...BASE_HEADERS, Cookie: cookiesToHeader(cookies) },
@@ -144,7 +68,6 @@ async function aceptarTerminos(cookies) {
   if (!campos1["javax.faces.ViewState"])
     throw new Error("Sin ViewState en términos.");
 
-  // POST aceptar términos
   const r2 = await axios.post(
     POLICIA_URL,
     new URLSearchParams({
@@ -179,7 +102,7 @@ async function aceptarTerminos(cookies) {
 
 // ── Controller principal ──────────────────────────────────────────────────────
 exports.consultarAntecedentes = async (req, res) => {
-  const { cedula, tipoDocumento = "cc", recaptchaToken } = req.body;
+  const { cedula, tipoDocumento = "cc" } = req.body;
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
@@ -199,32 +122,28 @@ exports.consultarAntecedentes = async (req, res) => {
   let cookies = {};
 
   try {
-    let campos3;
+    let campos;
 
-    // ── INTENTO 1: ir directo al formulario sin pasar por términos ──
+    // ── INTENTO 1: acceso directo al formulario ──
     console.log("⚡ Intentando acceso directo al formulario...");
     const rDirect = await axios.get(POLICIA_FORM, {
       httpsAgent,
       headers: { ...BASE_HEADERS },
-      maxRedirects: 0, // no seguir redirecciones automáticamente
+      maxRedirects: 0,
       validateStatus: (s) => s < 400,
       timeout: 15000,
     });
     cookies = parseCookies(cookies, rDirect.headers["set-cookie"]);
 
     if (htmlContieneFormulario(rDirect.data)) {
-      // ✅ El servidor aceptó el acceso directo
-      console.log("✅ Acceso directo al formulario exitoso.");
-      campos3 = extraerCamposOcultos(rDirect.data);
+      console.log("✅ Acceso directo exitoso.");
+      campos = extraerCamposOcultos(rDirect.data);
     } else {
-      // El servidor devolvió la página de términos o redirigió
-      console.log("🔄 Servidor requiere aceptar términos. Procesando...");
-
-      // Aceptar términos automáticamente
+      // ── INTENTO 2: aceptar términos y reintentar ──
+      console.log("🔄 Aceptando términos automáticamente...");
       cookies = await aceptarTerminos(cookies);
 
-      // Ahora sí ir al formulario
-      const r3 = await axios.get(POLICIA_FORM, {
+      const r2 = await axios.get(POLICIA_FORM, {
         httpsAgent,
         headers: {
           ...BASE_HEADERS,
@@ -233,40 +152,30 @@ exports.consultarAntecedentes = async (req, res) => {
         },
         timeout: 15000,
       });
-      cookies = parseCookies(cookies, r3.headers["set-cookie"]);
+      cookies = parseCookies(cookies, r2.headers["set-cookie"]);
 
-      if (!htmlContieneFormulario(r3.data)) {
+      if (!htmlContieneFormulario(r2.data)) {
         throw new Error(
           "No se pudo acceder al formulario tras aceptar términos.",
         );
       }
-      campos3 = extraerCamposOcultos(r3.data);
+      campos = extraerCamposOcultos(r2.data);
     }
 
-    if (!campos3["javax.faces.ViewState"])
+    if (!campos["javax.faces.ViewState"])
       throw new Error("Sin ViewState en formulario.");
 
-    // ── Token reCAPTCHA ──────────────────────────────────────────────
-    let tokenCaptcha = recaptchaToken; // si el frontend envió uno, usarlo
-
-    if (!tokenCaptcha) {
-      console.log("🔑 Obteniendo token reCAPTCHA automáticamente...");
-      const version = await obtenerVersionRecaptcha();
-      const tokenAnchor = await obtenerTokenAnchor(version);
-      tokenCaptcha = await obtenerTokenFinal(tokenAnchor, version);
-    }
-
-    // ── POST consulta ────────────────────────────────────────────────
+    // ── POST consulta (sin reCAPTCHA) ────────────────────────────────
     console.log(`🔍 Enviando consulta: ${tipoValor} ${cedula}`);
-    const r4 = await axios.post(
+    const rConsulta = await axios.post(
       POLICIA_FORM,
       new URLSearchParams({
-        ...campos3,
+        ...campos,
         formAntecedentes: "formAntecedentes",
         cedulaTipo: tipoValor,
         cedulaInput: cedula,
-        "g-recaptcha-response": tokenCaptcha,
-        captchaAntecedentes_response: tokenCaptcha,
+        "g-recaptcha-response": "",
+        captchaAntecedentes_response: "",
         j_idt17: "",
       }).toString(),
       {
@@ -283,7 +192,9 @@ exports.consultarAntecedentes = async (req, res) => {
     );
 
     const texto = (
-      typeof r4.data === "string" ? r4.data : JSON.stringify(r4.data)
+      typeof rConsulta.data === "string"
+        ? rConsulta.data
+        : JSON.stringify(rConsulta.data)
     )
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")

@@ -1,13 +1,12 @@
-import { Component, ViewChild, NgZone, ChangeDetectorRef } from "@angular/core";
+import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
-import { PoliciaCaptchaComponent } from "./policia-captcha.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule, PoliciaCaptchaComponent],
+  imports: [CommonModule, FormsModule],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -17,7 +16,6 @@ export class SearchComponent {
   cargando = false;
   error = "";
   resultados: any[] = [];
-  mostrarCaptchaPolicia = false;
   tabOffshoreActivo: { [key: string]: string } = {};
 
   tipoDocumento = "Cédula de Ciudadanía";
@@ -34,8 +32,6 @@ export class SearchComponent {
     { id: "antecedentes", nombre: "Policía", activo: false },
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
   ];
-
-  @ViewChild(PoliciaCaptchaComponent) captchaComp!: PoliciaCaptchaComponent;
 
   constructor(
     private consultaService: ConsultaService,
@@ -132,7 +128,6 @@ export class SearchComponent {
             resolve();
             return;
           }
-          this.error = "";
           this.consultaService
             .consultarAntecedentes(this.cedula, this.tipoDocumento)
             .subscribe({
@@ -151,11 +146,7 @@ export class SearchComponent {
               },
               error: (err: any) => {
                 this.zone.run(() => {
-                  // Si el backend falla, abrir el iframe como fallback
-                  this.mostrarCaptchaPolicia = true;
-                  setTimeout(() => {
-                    this.captchaComp?.iniciar(this.cedula, this.tipoDocumento);
-                  }, 100);
+                  this.agregarError("Policía Nacional", err);
                   resolve();
                 });
               },
@@ -177,7 +168,6 @@ export class SearchComponent {
                     cat.resultados.filter((o: any) => o.score === 100).length,
                   0,
                 );
-
                 this.resultados.push({
                   tipo: "offshore",
                   fuente: "ICIJ Offshore Leaks",
@@ -215,25 +205,6 @@ export class SearchComponent {
       },
     });
     this.cdr.detectChanges();
-  }
-
-  onResultadoPolicia(evento: { tieneAntecedentes: boolean; mensaje: string }) {
-    this.mostrarCaptchaPolicia = false;
-    this.zone.run(() => {
-      this.resultados.push({
-        tipo: "antecedentes",
-        fuente: "Policía Nacional de Colombia",
-        tieneAntecedentes: evento.tieneAntecedentes,
-        mensaje: evento.mensaje,
-        data: { fecha: new Date().toLocaleString() },
-      });
-      this.cdr.detectChanges();
-    });
-  }
-
-  onCaptchaCancelado() {
-    this.mostrarCaptchaPolicia = false;
-    this.cargando = false;
   }
 
   seleccionarTab(resultadoIndex: number, tab: string) {
