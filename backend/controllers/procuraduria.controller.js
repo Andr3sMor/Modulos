@@ -180,6 +180,7 @@ exports.consultarProcuraduria = async (req, res) => {
     });
 
     console.log("✅ POST Status:", r2.status);
+    console.log("📄 RESPUESTA COMPLETA:", respuestaTexto.substring(0, 2000));
     cookies = parseCookies(r2.headers, cookies);
 
     const respuestaTexto = r2.data.toString();
@@ -243,7 +244,6 @@ exports.consultarProcuraduria = async (req, res) => {
       .toUpperCase();
 
     console.log("📝 Certificado (400):", textoCert.substring(0, 400));
-
     const sinSanciones =
       textoCert.includes("NO REGISTRA") ||
       textoCert.includes("SIN ANTECEDENTES") ||
