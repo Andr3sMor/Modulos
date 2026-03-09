@@ -1,12 +1,10 @@
 /**
  * procuraduria.controller.js
  *
- * Flujo:
- * 1. GET https://procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx
- *    → extraer __VIEWSTATE, __VIEWSTATEGENERATOR, __EVENTVALIDATION, IdPregunta
- *    → resolver la operación matemática del captcha
- * 2. POST con todos los campos → obtener token "t" en la URL de redirección
- * 3. GET/POST a Certificado.aspx?t=...&tpo=2 → verificar antecedentes
+ * El formulario usa ASP.NET UpdatePanel con __ASYNCPOST=true.
+ * La respuesta NO es una redirección HTTP 302 sino texto plano con formato:
+ *   length|type|id|content|length|type|id|content|...
+ * donde uno de los bloques es "pageRedirect" con la URL destino.
  */
 
 const axios = require("axios");
@@ -14,7 +12,7 @@ const https = require("https");
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const BASE_URL = "https://www.procuraduria.gov.co/";
+const BASE_URL = "https://procuraduria.gov.co";
 const FORM_URL = `${BASE_URL}/Pages/Generacion-de-antecedentes.aspx`;
 const CERT_BASE = "https://apps.procuraduria.gov.co/webcert";
 
@@ -35,24 +33,17 @@ const axiosInst = axios.create({
   validateStatus: (s) => s < 600,
 });
 
-// Extrae el valor de un input hidden del HTML
 function extraerInput(html, name) {
-  const match =
+  const m =
     html.match(new RegExp(`name="${name}"[^>]*value="([^"]*)"`, "i")) ||
-    html.match(new RegExp(`id="${name}"[^>]*value="([^"]*)"`, "i")) ||
-    html.match(new RegExp(`value="([^"]*)"[^>]*name="${name}"`, "i"));
-  return match ? match[1] : "";
+    html.match(new RegExp(`value="([^"]*)"[^>]*name="${name}"`, "i")) ||
+    html.match(new RegExp(`id="${name}"[^>]*value="([^"]*)"`, "i"));
+  return m ? m[1] : "";
 }
 
-// Resuelve operaciones simples: "6 + 2", "3 - 1", "4 * 2"
 function resolverCaptcha(pregunta) {
-  const limpia = pregunta.replace(/[¿?¡!]/g, "").trim();
-  // Buscar patrón: número operador número
-  const match = limpia.match(/(\d+)\s*([\+\-\*x×])\s*(\d+)/);
-  if (!match) {
-    console.warn("⚠️ No se pudo parsear captcha:", pregunta);
-    return "0";
-  }
+  const match = pregunta.match(/(\d+)\s*([\+\-\*x×])\s*(\d+)/);
+  if (!match) return "0";
   const a = parseInt(match[1]);
   const op = match[2];
   const b = parseInt(match[3]);
@@ -62,7 +53,6 @@ function resolverCaptcha(pregunta) {
   return "0";
 }
 
-// Acumula cookies de respuestas sucesivas
 function parseCookies(headers, existing = "") {
   const setCookie = headers["set-cookie"] || [];
   let result = existing;
@@ -71,13 +61,42 @@ function parseCookies(headers, existing = "") {
     const key = par.split("=")[0].trim();
     if (!result.includes(key + "=")) {
       result = result ? `${result}; ${par}` : par;
-    } else {
-      // actualizar valor existente
-      result = result.replace(new RegExp(`${key}=[^;]*(;|$)`), par + "$1");
     }
   });
   return result;
 }
+
+/**
+ * Parsea la respuesta de ASP.NET ScriptManager (UpdatePanel / __ASYNCPOST)
+ * Formato: "len|tipo|id|contenido|len|tipo|id|contenido|..."
+ * Busca un bloque de tipo "pageRedirect" que contiene la URL destino.
+ */
+function parsearRespuestaAsync(texto) {
+  // Buscar pageRedirect directamente
+  const redirectMatch = texto.match(/pageRedirect\|\|([^|]+)\|/);
+  if (redirectMatch) return redirectMatch[1];
+
+  // Buscar también en formato scriptBlock con window.location
+  const locationMatch = texto.match(
+    /window\.location[^=]*=\s*['"]([^'"]+)['"]/,
+  );
+  if (locationMatch) return locationMatch[1];
+
+  // Buscar URL de certificado directamente
+  const certMatch = texto.match(/Certificado\.aspx\?t=([^|&\s"']+)/i);
+  if (certMatch) return `${CERT_BASE}/Certificado.aspx?t=${certMatch[1]}`;
+
+  return null;
+}
+
+const tipoIDMap = {
+  CC: "1",
+  CE: "2",
+  PA: "3",
+  "Cédula de Ciudadanía": "1",
+  "Cédula de Extranjería": "2",
+  Pasaporte: "3",
+};
 
 exports.consultarProcuraduria = async (req, res) => {
   const { cedula, tipoDocumento = "CC", tipoCertificado = "1" } = req.body;
@@ -85,25 +104,16 @@ exports.consultarProcuraduria = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  // Mapear tipo de documento a valor del select
-  const tipoIDMap = {
-    CC: "1",
-    CE: "2",
-    PA: "3",
-    "Cédula de Ciudadanía": "1",
-    "Cédula de Extranjería": "2",
-    Pasaporte: "3",
-  };
   const ddlTipoID = tipoIDMap[tipoDocumento] || "1";
 
   console.log(`\n=== Consulta Procuraduría: ${cedula} ===`);
 
   try {
     // ── Paso 1: GET formulario ─────────────────────────────────────────────
-    console.log("📄 GET formulario Procuraduría...");
+    console.log("📄 GET formulario...");
     const r1 = await axiosInst.get(FORM_URL, { headers: HEADERS });
-
     console.log("✅ GET Status:", r1.status);
+
     if (r1.status >= 400) {
       return res.status(502).json({
         error: "Error consultando Procuraduría",
@@ -114,31 +124,30 @@ exports.consultarProcuraduria = async (req, res) => {
     let cookies = parseCookies(r1.headers);
     const html = r1.data.toString();
 
-    // Extraer campos ASP.NET
     const viewState = extraerInput(html, "__VIEWSTATE");
     const viewStateGenerator = extraerInput(html, "__VIEWSTATEGENERATOR");
     const eventValidation = extraerInput(html, "__EVENTVALIDATION");
-
-    // Extraer IdPregunta y texto del captcha
-    const idPregunta =
-      extraerInput(html, "IdPregunta") ||
-      html.match(/IdPregunta[^>]*value="([^"]+)"/i)?.[1] ||
-      "20";
+    const idPregunta = extraerInput(html, "IdPregunta") || "20";
 
     const textoCaptcha =
-      html.match(/¿\s*[Cc]uanto\s+es\s+([^?]+)\?/i)?.[1]?.trim() ||
-      html.match(/Cuanto\s+es\s+([^<"?]+)/i)?.[1]?.trim() ||
-      html.match(/id="lblPregunta"[^>]*>([^<]+)</i)?.[1]?.trim() ||
+      html.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i)?.[1]?.trim() ||
+      html.match(/Cuanto\s+es\s+([0-9\s\+\-\*x×]+)/i)?.[1]?.trim() ||
       "6 + 2";
 
     console.log("📋 VIEWSTATE:", viewState ? "OK" : "NO ENCONTRADO");
-    console.log("📋 Captcha texto:", textoCaptcha);
+    console.log(
+      "📋 Captcha:",
+      textoCaptcha,
+      "→",
+      resolverCaptcha(textoCaptcha),
+    );
 
     const respuestaCaptcha = resolverCaptcha(textoCaptcha);
-    console.log("🔢 Respuesta captcha:", respuestaCaptcha);
 
-    // ── Paso 2: POST formulario ────────────────────────────────────────────
+    // ── Paso 2: POST con __ASYNCPOST=true (UpdatePanel) ───────────────────
+    // El campo ctl05 es el ScriptManager trigger, crítico para el async post
     const postData = new URLSearchParams({
+      ctl05: "UpdatePanel1|btnExportar", // ScriptManager trigger
       __EVENTTARGET: "",
       __EVENTARGUMENT: "",
       __LASTFOCUS: "",
@@ -152,14 +161,18 @@ exports.consultarProcuraduria = async (req, res) => {
       txtRespuestaPregunta: respuestaCaptcha,
       txtEmail: "",
       IdPregunta: idPregunta,
+      __ASYNCPOST: "true",
       btnExportar: "Generar",
     });
 
-    console.log("🔍 POST formulario...");
+    console.log("🔍 POST formulario (ASYNCPOST)...");
     const r2 = await axiosInst.post(FORM_URL, postData.toString(), {
       headers: {
         ...HEADERS,
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "*/*",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-MicrosoftAjax": "Delta=true",
         Referer: FORM_URL,
         Origin: BASE_URL,
         Cookie: cookies,
@@ -169,66 +182,58 @@ exports.consultarProcuraduria = async (req, res) => {
     console.log("✅ POST Status:", r2.status);
     cookies = parseCookies(r2.headers, cookies);
 
-    // Buscar token "t" en la redirección o en el HTML
-    let tokenT = "";
+    const respuestaTexto = r2.data.toString();
+    console.log("📄 Respuesta POST (500):", respuestaTexto.substring(0, 500));
+
+    // ── Paso 3: Extraer URL del certificado ────────────────────────────────
     let certUrl = "";
 
-    if (r2.status === 302 || r2.status === 301) {
+    // Caso A: redirección HTTP clásica
+    if (r2.status === 301 || r2.status === 302) {
       const location = r2.headers["location"] || "";
-      console.log("🔀 Redirección a:", location);
-      const tMatch = location.match(/[?&]t=([^&]+)/);
-      tokenT = tMatch ? decodeURIComponent(tMatch[1]) : "";
       certUrl = location.startsWith("http")
         ? location
         : `${CERT_BASE}${location}`;
-    } else {
-      // A veces el redirect está embebido en el HTML como meta refresh o JS
-      const htmlR2 = r2.data.toString();
-      const tMatch =
-        htmlR2.match(/Certificado\.aspx\?t=([^&"'\s]+)/i) ||
-        htmlR2.match(
-          /window\.location[^=]*=\s*['"]([^'"]+Certificado[^'"]+)['"]/i,
-        );
-      if (tMatch) {
-        certUrl = tMatch[1].startsWith("http")
-          ? tMatch[1]
-          : `${CERT_BASE}/${tMatch[1]}`;
-        const tm = certUrl.match(/[?&]t=([^&]+)/);
-        tokenT = tm ? decodeURIComponent(tm[1]) : "";
+    }
+
+    // Caso B: respuesta async de UpdatePanel
+    if (!certUrl) {
+      const urlExtraida = parsearRespuestaAsync(respuestaTexto);
+      if (urlExtraida) {
+        certUrl = urlExtraida.startsWith("http")
+          ? urlExtraida
+          : `${CERT_BASE}/${urlExtraida.replace(/^\//, "")}`;
       }
     }
 
     console.log(
-      "🎟️  Token t:",
-      tokenT ? tokenT.substring(0, 30) + "..." : "NO ENCONTRADO",
+      "🎟️  URL certificado:",
+      certUrl ? certUrl.substring(0, 80) + "..." : "NO ENCONTRADA",
     );
 
-    if (!tokenT && !certUrl) {
-      // Puede que el captcha falló — revisar mensaje en HTML
-      const htmlR2 = r2.data.toString();
-      const errorMsg =
-        htmlR2.match(/class="[^"]*error[^"]*"[^>]*>([^<]+)</i)?.[1]?.trim() ||
-        htmlR2.match(/lblMensaje[^>]*>([^<]+)</i)?.[1]?.trim() ||
-        "No se obtuvo token de certificado";
-      console.error("❌ Sin token:", errorMsg);
+    if (!certUrl) {
+      // Mostrar texto plano para diagnóstico
+      const textoPlano = respuestaTexto
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .substring(0, 600);
+      console.error("❌ Sin URL de certificado. Respuesta:", textoPlano);
       return res.status(502).json({
         error: "Error consultando Procuraduría",
-        detalle: errorMsg,
+        detalle:
+          "No se obtuvo URL del certificado. Respuesta del servidor: " +
+          textoPlano,
       });
     }
 
-    // ── Paso 3: GET/POST certificado ───────────────────────────────────────
-    if (!certUrl) {
-      certUrl = `${CERT_BASE}/Certificado.aspx?t=${encodeURIComponent(tokenT)}&tpo=2`;
-    }
-
-    console.log("📜 GET certificado:", certUrl.substring(0, 80) + "...");
+    // ── Paso 4: GET certificado ────────────────────────────────────────────
+    console.log("📜 GET certificado...");
     const r3 = await axiosInst.get(certUrl, {
       headers: { ...HEADERS, Referer: FORM_URL, Cookie: cookies },
     });
 
     console.log("✅ Certificado Status:", r3.status);
-    cookies = parseCookies(r3.headers, cookies);
 
     const htmlCert = r3.data.toString();
     const textoCert = htmlCert
@@ -237,9 +242,8 @@ exports.consultarProcuraduria = async (req, res) => {
       .trim()
       .toUpperCase();
 
-    console.log("📝 Texto certificado (400):", textoCert.substring(0, 400));
+    console.log("📝 Certificado (400):", textoCert.substring(0, 400));
 
-    // Interpretar resultado
     const sinSanciones =
       textoCert.includes("NO REGISTRA") ||
       textoCert.includes("SIN ANTECEDENTES") ||
