@@ -1,7 +1,8 @@
 /**
  * policia.controller.js
- * El botón "Continuar" en términos usa AJAX parcial de PrimeFaces,
- * no genera una navegación completa. Hay que esperar la URL o el DOM.
+ * - aceptaOption es radio button (value="true"), no checkbox
+ * - El onclick del botón ejecuta window.location.href tras el AJAX
+ * - Hay que esperar la navegación real después del click
  */
 
 const puppeteer = require("puppeteer-core");
@@ -59,38 +60,6 @@ async function buscar(page, selectores) {
   return null;
 }
 
-/** Espera a que la URL cambie O a que aparezca el formulario en el DOM */
-async function esperarFormulario(page, timeoutMs = 20000) {
-  const inicio = Date.now();
-  while (Date.now() - inicio < timeoutMs) {
-    const url = page.url();
-    console.log("  ⏳ URL actual:", url);
-
-    // Caso 1: el servidor redirigió a antecedentes.xhtml
-    if (url.includes("antecedentes")) {
-      console.log("  ✅ Redirigido a antecedentes.xhtml");
-      return true;
-    }
-
-    // Caso 2: AJAX actualizó el DOM y el formulario ya está visible en la misma URL
-    const tieneFormulario = await page.evaluate(
-      () =>
-        !!(
-          document.querySelector("select[id*='cedulaTipo']") ||
-          document.querySelector("input[id*='cedulaInput']") ||
-          document.querySelector("form[id*='formAntecedentes']")
-        ),
-    );
-    if (tieneFormulario) {
-      console.log("  ✅ Formulario detectado via AJAX en DOM");
-      return true;
-    }
-
-    await sleep(800);
-  }
-  return false;
-}
-
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "cc" } = req.body;
   if (!cedula)
@@ -111,76 +80,36 @@ exports.consultarAntecedentes = async (req, res) => {
     await page.setBypassCSP(true);
 
     // ── PASO 1: Cargar términos ────────────────────────────────────
-    console.log("📄 Cargando index.xhtml...");
+    console.log("📄 Cargando términos...");
     await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 30000 });
-    console.log("URL inicial:", page.url());
 
-    // Log elementos de la página de términos
-    const elsTerminos = await page.evaluate(() =>
-      Array.from(
-        document.querySelectorAll("input, button, select, a[onclick]"),
-      ).map((el) => ({
-        tag: el.tagName,
-        id: el.id,
-        name: el.name,
-        type: el.type,
-        value: (el.value || "").substring(0, 40),
-        text: (el.innerText || "").substring(0, 40),
-        onclick: (el.getAttribute("onclick") || "").substring(0, 80),
-      })),
-    );
-    console.log("🔍 Elementos términos:", JSON.stringify(elsTerminos));
+    // ── PASO 2: Seleccionar radio "Acepto" (value="true") ──────────
+    // Es un radio button, no checkbox: aceptaOption:0 con value="true"
+    console.log("☑️  Seleccionando radio Acepto (true)...");
+    await page.click("input[name='aceptaOption'][value='true']");
+    await sleep(500);
 
-    // ── PASO 2: Marcar checkbox ────────────────────────────────────
-    const checkbox = await buscar(page, [
-      "#aceptaOption",
-      "input[id$='aceptaOption']",
-      "input[type='checkbox']",
-    ]);
-    if (checkbox) {
-      await checkbox.click();
-      await sleep(300);
-      console.log("☑️  Checkbox marcado");
-    }
-
-    // ── PASO 3: Click en continuar (puede ser AJAX, no esperar navegación) ──
-    const btnContinuar = await buscar(page, [
-      "#continuarBtn",
-      "input[id$='continuarBtn']",
-      "button[id$='continuarBtn']",
-      "input[value*='ontinuar']",
-      "button[value*='ontinuar']",
-      "a[id*='continuar' i]",
+    // ── PASO 3: Click en Continuar y esperar navegación real ───────
+    // El onclick hace AJAX + luego window.location.href a antecedentes.xhtml
+    console.log("🖱️  Click en Continuar...");
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
+      page.click("#continuarBtn"),
     ]);
 
-    if (!btnContinuar)
-      throw new Error("No se encontró botón continuar en términos.");
+    console.log("URL tras continuar:", page.url());
 
-    console.log("🖱️  Haciendo click en Continuar...");
-    await btnContinuar.click();
-
-    // ── PASO 4: Esperar formulario (AJAX o redirección) ────────────
-    const formularioCargado = await esperarFormulario(page, 20000);
-    if (!formularioCargado) {
-      console.log("URL al timeout:", page.url());
-      console.log("HTML (600):", (await page.content()).substring(0, 600));
-      throw new Error("Timeout esperando formulario tras aceptar términos.");
-    }
-
-    // Si sigue en index.xhtml pero con el formulario en DOM, navegar explícitamente
+    // Si por alguna razón no llegó a antecedentes, ir explícitamente
     if (!page.url().includes("antecedentes")) {
-      console.log(
-        "🔄 Navegando explícitamente a antecedentes.xhtml con cookies activas...",
-      );
+      console.log("🔄 Navegando explícitamente a antecedentes.xhtml...");
       await page.goto(POLICIA_FORM, {
         waitUntil: "networkidle2",
         timeout: 20000,
       });
+      console.log("URL tras goto:", page.url());
     }
 
-    console.log("URL en formulario:", page.url());
-
-    // ── PASO 5: Log elementos del formulario ───────────────────────
+    // ── PASO 4: Log elementos del formulario ───────────────────────
     const elsForm = await page.evaluate(() =>
       Array.from(
         document.querySelectorAll("input, select, textarea, button"),
@@ -192,9 +121,9 @@ exports.consultarAntecedentes = async (req, res) => {
         value: (el.value || "").substring(0, 40),
       })),
     );
-    console.log("🔍 Elementos formulario:", JSON.stringify(elsForm));
+    console.log("🔍 Elementos antecedentes.xhtml:", JSON.stringify(elsForm));
 
-    // ── PASO 6: Seleccionar tipo de documento ──────────────────────
+    // ── PASO 5: Seleccionar tipo de documento ──────────────────────
     const selectTipo = await buscar(page, [
       "select[id='formAntecedentes:cedulaTipo']",
       "select[id='cedulaTipo']",
@@ -213,7 +142,7 @@ exports.consultarAntecedentes = async (req, res) => {
           ? Array.from(el.options).map((o) => ({ v: o.value, t: o.text }))
           : [];
       }, selId);
-      console.log("Opciones tipo:", JSON.stringify(opciones));
+      console.log("Opciones tipo doc:", JSON.stringify(opciones));
 
       await page.select(selId, tipoValor).catch(async () => {
         const op = opciones.find((o) =>
@@ -223,7 +152,7 @@ exports.consultarAntecedentes = async (req, res) => {
       });
     }
 
-    // ── PASO 7: Ingresar cédula ────────────────────────────────────
+    // ── PASO 6: Ingresar cédula ────────────────────────────────────
     const inputCedula = await buscar(page, [
       "input[id='formAntecedentes:cedulaInput']",
       "input[id='cedulaInput']",
@@ -233,18 +162,15 @@ exports.consultarAntecedentes = async (req, res) => {
     ]);
 
     if (!inputCedula) {
-      console.log(
-        "HTML antecedentes (800):",
-        (await page.content()).substring(0, 800),
-      );
-      throw new Error("No se encontró campo de cédula.");
+      console.log("HTML (800):", (await page.content()).substring(0, 800));
+      throw new Error("No se encontró campo de cédula en antecedentes.xhtml.");
     }
 
     await inputCedula.click({ clickCount: 3 });
     await inputCedula.type(cedula, { delay: 50 });
     console.log(`📝 Cédula ingresada: ${cedula}`);
 
-    // ── PASO 8: reCAPTCHA ──────────────────────────────────────────
+    // ── PASO 7: reCAPTCHA ──────────────────────────────────────────
     console.log("⏳ Esperando reCAPTCHA...");
     await page
       .waitForSelector("iframe[src*='recaptcha']", { timeout: 12000 })
@@ -272,7 +198,7 @@ exports.consultarAntecedentes = async (req, res) => {
         console.log("reCAPTCHA checked:", checked);
 
         if (checked !== "true") {
-          console.log("🖼️ Esperando challenge (máx 30s)...");
+          console.log("🖼️ Esperando resolución challenge (máx 30s)...");
           await page
             .waitForFunction(
               () => {
@@ -290,7 +216,7 @@ exports.consultarAntecedentes = async (req, res) => {
       console.log("⚠️ reCAPTCHA:", e.message);
     }
 
-    // ── PASO 9: Enviar ─────────────────────────────────────────────
+    // ── PASO 8: Enviar formulario ──────────────────────────────────
     console.log("🚀 Enviando...");
     const btnSubmit = await buscar(page, [
       "input[id$='consultarBtn']",
@@ -317,7 +243,7 @@ exports.consultarAntecedentes = async (req, res) => {
       .catch(() => {});
     await sleep(2000);
 
-    // ── PASO 10: Resultado ─────────────────────────────────────────
+    // ── PASO 9: Resultado ──────────────────────────────────────────
     const contenido = await page.evaluate(() => document.body.innerText || "");
     const texto = contenido.replace(/\s+/g, " ").trim().toUpperCase();
     console.log("Respuesta (600):", texto.substring(0, 600));
