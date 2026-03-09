@@ -255,4 +255,11 @@
       </div>
     </div>
   </div>
+
+  <!-- Captcha manual cuando el backend lo requiere -->
+  <app-captcha-resolver
+    [abrirCon]="captchaData"
+    (resuelto)="onCaptchaResuelto($event)"
+    (cancelado)="onCaptchaCancelado()"
+  ></app-captcha-resolver>
 </div>

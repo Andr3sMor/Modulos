@@ -36,6 +36,7 @@ app.use(express.json());
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
+app.post("/api/resolver-captcha", policiaController.resolverCaptcha);
 app.post("/api/consulta-offshore", offshoreController.consultarOffshore);
 
 app.listen(3001, () => console.log("Backend en puerto 3001"));

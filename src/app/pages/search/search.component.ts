@@ -2,11 +2,12 @@ import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
+import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -17,6 +18,9 @@ export class SearchComponent {
   error = "";
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
+
+  // Captcha manual
+  captchaData: { sessionId: string } | null = null;
 
   tipoDocumento = "Cédula de Ciudadanía";
   tiposDocumento = [
@@ -46,7 +50,7 @@ export class SearchComponent {
       return;
     }
     if (!this.cedula && !this.nombre) {
-      this.error = "Ingresa al menos un dato de búsqueda.";
+      this.error = "Ingresa al menos un dato.";
       return;
     }
 
@@ -72,7 +76,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.verificarCedula(this.cedula).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 this.resultados.push({
                   tipo: "registraduria",
@@ -85,14 +89,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Registraduría", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -102,7 +104,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.verificarContador(this.cedula).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 this.resultados.push({
                   tipo: "contador",
@@ -112,14 +114,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Contador JCC", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -131,25 +131,32 @@ export class SearchComponent {
           this.consultaService
             .consultarAntecedentes(this.cedula, this.tipoDocumento)
             .subscribe({
-              next: (res: any) => {
+              next: (res: any) =>
                 this.zone.run(() => {
-                  this.resultados.push({
-                    tipo: "antecedentes",
-                    fuente: res.fuente || "Policía Nacional de Colombia",
-                    tieneAntecedentes: res.tieneAntecedentes,
-                    mensaje: res.mensaje,
-                    data: { fecha: new Date().toLocaleString() },
-                  });
-                  this.cdr.detectChanges();
-                  resolve();
-                });
-              },
-              error: (err: any) => {
+                  if (res.requiereCaptcha) {
+                    // El backend necesita que el humano resuelva el captcha
+                    this.captchaData = { sessionId: res.sessionId };
+                    this.cdr.detectChanges();
+                    // resolve() se llama cuando el usuario termina (onCaptchaResuelto)
+                    // guardamos el resolve para llamarlo después
+                    (this as any)._pendingCaptchaResolve = resolve;
+                  } else {
+                    this.resultados.push({
+                      tipo: "antecedentes",
+                      fuente: res.fuente || "Policía Nacional de Colombia",
+                      tieneAntecedentes: res.tieneAntecedentes,
+                      mensaje: res.mensaje,
+                      data: { fecha: new Date().toLocaleString() },
+                    });
+                    this.cdr.detectChanges();
+                    resolve();
+                  }
+                }),
+              error: (err: any) =>
                 this.zone.run(() => {
                   this.agregarError("Policía Nacional", err);
                   resolve();
-                });
-              },
+                }),
             });
           break;
 
@@ -159,7 +166,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.consultarOffshore(this.nombre).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 const categorias = res.categorias || [];
                 const total100 = categorias.reduce(
@@ -178,14 +185,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Offshore ICIJ", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -193,6 +198,36 @@ export class SearchComponent {
           resolve();
       }
     });
+  }
+
+  onCaptchaResuelto(resultado: any) {
+    this.captchaData = null;
+    this.zone.run(() => {
+      this.resultados.push({
+        tipo: "antecedentes",
+        fuente: resultado.fuente || "Policía Nacional de Colombia",
+        tieneAntecedentes: resultado.tieneAntecedentes,
+        mensaje: resultado.mensaje,
+        data: { fecha: new Date().toLocaleString() },
+      });
+      this.cdr.detectChanges();
+      // Liberar la promesa pendiente
+      const res = (this as any)._pendingCaptchaResolve;
+      if (res) {
+        res();
+        (this as any)._pendingCaptchaResolve = null;
+      }
+    });
+  }
+
+  onCaptchaCancelado() {
+    this.captchaData = null;
+    this.cargando = false;
+    const res = (this as any)._pendingCaptchaResolve;
+    if (res) {
+      res();
+      (this as any)._pendingCaptchaResolve = null;
+    }
   }
 
   private agregarError(fuente: string, err: any) {
@@ -219,7 +254,6 @@ export class SearchComponent {
   }
 
   filtrarScore100(resultados: any[]): any[] {
-    if (!resultados) return [];
-    return resultados.filter((o) => o.score === 100);
+    return (resultados || []).filter((o) => o.score === 100);
   }
 }

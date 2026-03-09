@@ -31,12 +31,16 @@ export class ConsultaService {
     cedula: string,
     tipoDocumento = "Cédula de Ciudadanía",
   ) {
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-antecedentes`, {
+      cedula,
+      tipoDocumento,
+    });
+  }
+
+  resolverCaptcha(sessionId: string, token: string) {
     return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/consulta-antecedentes`,
-      {
-        cedula,
-        tipoDocumento,
-      },
+      `${this.apiUrl}/api/resolver-captcha`,
+      { sessionId, token },
     );
   }
 
