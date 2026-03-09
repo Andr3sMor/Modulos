@@ -7,8 +7,7 @@
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
 
-const FORM_URL =
-  "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
+const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TIPO_MAP = {
@@ -54,16 +53,28 @@ function resolverCaptcha(pregunta) {
   return String(+a * +b);
 }
 
-// Respuestas a captchas de texto conocidos
 const RESPUESTAS_TEXTO = {
   "capital de colombia": "BOGOTA",
   "capital colombia": "BOGOTA",
+  "capital del valle del cauca": "CALI",
+  "capital valle del cauca": "CALI",
+  "capital valle": "CALI",
+  "capital de antioquia": "MEDELLIN",
+  "capital antioquia": "MEDELLIN",
+  "capital de cundinamarca": "BOGOTA",
+  "capital cundinamarca": "BOGOTA",
+  "capital de atlantico": "BARRANQUILLA",
+  "capital atlantico": "BARRANQUILLA",
+  "capital de bolivar": "CARTAGENA",
+  "capital bolivar": "CARTAGENA",
+  "capital de santander": "BUCARAMANGA",
+  "capital santander": "BUCARAMANGA",
+  "capital de narino": "PASTO",
+  "capital narino": "PASTO",
   "color del cielo": "AZUL",
   "color cielo": "AZUL",
   "color del sol": "AMARILLO",
   "color sol": "AMARILLO",
-  "pais de colombia": "COLOMBIA",
-  "continente colombia": "AMERICA",
   "dias semana": "7",
   "meses año": "12",
   "meses del año": "12",
@@ -185,10 +196,18 @@ exports.consultarProcuraduria = async (req, res) => {
     });
     console.log("🔑 IdPregunta:", idPregunta);
 
-    // ── Seleccionar tipo de ID ─────────────────────────────────────────────
+    // ── Seleccionar tipo de ID (dispara postback) ──────────────────────────
     console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
     await page.select("select[name='ddlTipoID']", ddlTipoID);
-    await sleep(800);
+    // Esperar el postback que dispara el onchange del select
+    await sleep(2500);
+
+    // Verificar que el select quedó seleccionado
+    const selectedVal = await page.evaluate(() => {
+      const sel = document.querySelector("select[name='ddlTipoID']");
+      return sel ? sel.value : "NO SELECT";
+    });
+    console.log("✅ ddlTipoID valor actual:", selectedVal);
 
     // ── Ingresar cédula ────────────────────────────────────────────────────
     console.log("✏️ Ingresando cédula:", cedula);
@@ -198,9 +217,45 @@ exports.consultarProcuraduria = async (req, res) => {
     // ── Tipo certificado ───────────────────────────────────────────────────
     try {
       await page.click(`input[name='rblTipoCert'][value='${tipoCertificado}']`);
+      await sleep(500);
     } catch (_) {}
 
-    // ── ddlCargo (dejar vacío / primer valor) ──────────────────────────────
+    // ── Leer captcha DESPUÉS del postback (ya con el select seleccionado) ──
+    const captchaInfo2 = await page.evaluate(() => {
+      const inp = document.querySelector("input[name='txtRespuestaPregunta']");
+      if (!inp) return { texto: "", html: "no input" };
+      let parent = inp.parentElement;
+      for (let i = 0; i < 8; i++) {
+        if (!parent) break;
+        const texto = parent.innerText?.trim() || "";
+        if (texto.includes("?"))
+          return { texto, html: parent.outerHTML.substring(0, 600) };
+        parent = parent.parentElement;
+      }
+      // Buscar en toda la página
+      const all = [...document.querySelectorAll("label, span, td, div, p, li")];
+      for (const el of all) {
+        const t = el.innerText?.trim();
+        if (
+          t &&
+          t.includes("?") &&
+          t.length < 200 &&
+          !t.includes("<") &&
+          t.match(
+            /[Cc]apital|[Cc]uanto|[Cc]olor|[Cc]iudad|[Pp]ais|[Dd]ias|[Mm]eses/,
+          )
+        ) {
+          return { texto: t, html: el.outerHTML.substring(0, 300) };
+        }
+      }
+      return { texto: "", html: "not found" };
+    });
+
+    console.log("🔢 Captcha (post-select):", captchaInfo2.texto);
+    const respuestaCaptcha2 = resolverCaptchaCompleto(captchaInfo2.texto);
+    console.log("🔢 Respuesta final:", respuestaCaptcha2);
+
+    // ── ddlCargo opciones ──────────────────────────────────────────────────
     try {
       const cargoOptions = await page.evaluate(() => {
         const sel = document.querySelector("select[name='ddlCargo']");
@@ -214,8 +269,8 @@ exports.consultarProcuraduria = async (req, res) => {
 
     // ── Respuesta captcha ──────────────────────────────────────────────────
     await page.click("input[name='txtRespuestaPregunta']", { clickCount: 3 });
-    await page.type("input[name='txtRespuestaPregunta']", respuestaCaptcha);
-    console.log("✅ Captcha ingresado:", respuestaCaptcha);
+    await page.type("input[name='txtRespuestaPregunta']", respuestaCaptcha2);
+    console.log("✅ Captcha ingresado:", respuestaCaptcha2);
 
     // Screenshot antes de submit
     const ss2 = await page.screenshot({ encoding: "base64" });
@@ -278,9 +333,11 @@ exports.consultarProcuraduria = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
     if (browser) await browser.close().catch(() => {});
-    return res.status(502).json({
-      error: "Error consultando Procuraduría",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({
+        error: "Error consultando Procuraduría",
+        detalle: error.message,
+      });
   }
 };
