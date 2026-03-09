@@ -111,7 +111,7 @@ exports.consultarAntecedentes = async (req, res) => {
       "✅ Aceptando términos y esperando redirección a antecedentes.xhtml...",
     );
     await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 35000 }),
       btnContinuar.click(),
     ]);
 
