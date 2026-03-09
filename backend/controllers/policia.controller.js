@@ -1,205 +1,206 @@
 /**
  * policia.controller.js
- * Acepta términos automáticamente y consulta antecedentes sin reCAPTCHA
+ * Usa Puppeteer + @sparticuz/chromium para evadir reCAPTCHA v2
+ * navegando como un browser real.
  */
 
-const axios = require("axios");
-const https = require("https");
+const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
 const POLICIA_BASE = "https://antecedentes.policia.gov.co:7005";
 const POLICIA_URL = `${POLICIA_BASE}/WebJudicial/index.xhtml`;
 const POLICIA_FORM = `${POLICIA_BASE}/WebJudicial/antecedentes.xhtml`;
 
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-const BASE_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
-  Connection: "keep-alive",
+const TIPO_MAP = {
+  "Cédula de Ciudadanía": "cc",
+  "Cédula de Extranjería": "cx",
+  Pasaporte: "pa",
+  "Documento País Origen": "dp",
+  cc: "cc",
+  cx: "cx",
+  pa: "pa",
+  dp: "dp",
 };
 
-function parseCookies(existing, header) {
-  const cookies = { ...existing };
-  const headers = Array.isArray(header) ? header : [header].filter(Boolean);
-  headers.forEach((h) => {
-    const [pair] = h.split(";");
-    const [name, ...rest] = pair.split("=");
-    if (name?.trim()) cookies[name.trim()] = rest.join("=").trim();
+async function lanzarBrowser() {
+  const isLocal = !process.env.RENDER;
+
+  if (isLocal) {
+    // Entorno local: usa el Chromium descargado por puppeteer
+    const puppeteerFull = require("puppeteer");
+    return puppeteerFull.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--ignore-certificate-errors",
+      ],
+    });
+  }
+
+  // Entorno Render/producción: usa @sparticuz/chromium
+  return puppeteer.launch({
+    args: [
+      ...chromium.args,
+      "--ignore-certificate-errors",
+      "--disable-web-security",
+    ],
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
   });
-  return cookies;
 }
 
-function cookiesToHeader(c) {
-  return Object.entries(c)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("; ");
-}
-
-function extraerCamposOcultos(html) {
-  const campos = {};
-  (html.match(/<input[^>]+type=["']hidden["'][^>]*>/gi) || []).forEach(
-    (tag) => {
-      const name = tag.match(/name=["']([^"']+)["']/i)?.[1];
-      const value = tag.match(/value=["']([^"']*)/i)?.[1] ?? "";
-      if (name) campos[name] = value;
-    },
-  );
-  return campos;
-}
-
-function htmlContieneFormulario(html) {
-  return (
-    html.includes("cedulaTipo") ||
-    html.includes("cedulaInput") ||
-    html.includes("formAntecedentes")
-  );
-}
-
-async function aceptarTerminos(cookies) {
-  const r1 = await axios.get(POLICIA_URL, {
-    httpsAgent,
-    headers: { ...BASE_HEADERS, Cookie: cookiesToHeader(cookies) },
-    timeout: 15000,
-  });
-  cookies = parseCookies(cookies, r1.headers["set-cookie"]);
-  const campos1 = extraerCamposOcultos(r1.data);
-  if (!campos1["javax.faces.ViewState"])
-    throw new Error("Sin ViewState en términos.");
-
-  const r2 = await axios.post(
-    POLICIA_URL,
-    new URLSearchParams({
-      ...campos1,
-      aceptaOption: "true",
-      "javax.faces.partial.ajax": "true",
-      "javax.faces.source": "continuarBtn",
-      "javax.faces.partial.execute": "@all",
-      "javax.faces.partial.render": "@all",
-      "javax.faces.behavior.event": "action",
-      "javax.faces.partial.event": "click",
-      form: "form",
-      continuarBtn: "continuarBtn",
-    }).toString(),
-    {
-      httpsAgent,
-      headers: {
-        ...BASE_HEADERS,
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Faces-Request": "partial/ajax",
-        "X-Requested-With": "XMLHttpRequest",
-        Referer: POLICIA_URL,
-        Origin: POLICIA_BASE,
-        Cookie: cookiesToHeader(cookies),
-      },
-      timeout: 15000,
-    },
-  );
-  cookies = parseCookies(cookies, r2.headers["set-cookie"]);
-  return cookies;
-}
-
-// ── Controller principal ──────────────────────────────────────────────────────
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "cc" } = req.body;
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  const tipoMap = {
-    "Cédula de Ciudadanía": "cc",
-    "Cédula de Extranjería": "cx",
-    Pasaporte: "pa",
-    "Documento País Origen": "dp",
-    cc: "cc",
-    cx: "cx",
-    pa: "pa",
-    dp: "dp",
-  };
-  const tipoValor = tipoMap[tipoDocumento] || "cc";
+  const tipoValor = TIPO_MAP[tipoDocumento] || "cc";
+  console.log(`--- Consultando antecedentes Puppeteer para: ${cedula} ---`);
 
-  console.log(`--- Consultando antecedentes para: ${cedula} ---`);
-  let cookies = {};
-
+  let browser;
   try {
-    let campos;
+    browser = await lanzarBrowser();
+    const page = await browser.newPage();
 
-    // ── INTENTO 1: acceso directo al formulario ──
-    console.log("⚡ Intentando acceso directo al formulario...");
-    const rDirect = await axios.get(POLICIA_FORM, {
-      httpsAgent,
-      headers: { ...BASE_HEADERS },
-      maxRedirects: 0,
-      validateStatus: (s) => s < 400,
-      timeout: 15000,
-    });
-    cookies = parseCookies(cookies, rDirect.headers["set-cookie"]);
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
+    await page.setBypassCSP(true);
 
-    if (htmlContieneFormulario(rDirect.data)) {
-      console.log("✅ Acceso directo exitoso.");
-      campos = extraerCamposOcultos(rDirect.data);
-    } else {
-      // ── INTENTO 2: aceptar términos y reintentar ──
-      console.log("🔄 Aceptando términos automáticamente...");
-      cookies = await aceptarTerminos(cookies);
+    // ── PASO 1: Página de términos ─────────────────────────────────
+    console.log("📄 Cargando términos...");
+    await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 30000 });
 
-      const r2 = await axios.get(POLICIA_FORM, {
-        httpsAgent,
-        headers: {
-          ...BASE_HEADERS,
-          Referer: POLICIA_URL,
-          Cookie: cookiesToHeader(cookies),
-        },
-        timeout: 15000,
-      });
-      cookies = parseCookies(cookies, r2.headers["set-cookie"]);
-
-      if (!htmlContieneFormulario(r2.data)) {
-        throw new Error(
-          "No se pudo acceder al formulario tras aceptar términos.",
-        );
-      }
-      campos = extraerCamposOcultos(r2.data);
+    // ── PASO 2: Aceptar términos ───────────────────────────────────
+    const btnContinuar = await page.$("#continuarBtn");
+    if (btnContinuar) {
+      console.log("✅ Aceptando términos...");
+      const checkbox = await page.$("#aceptaOption");
+      if (checkbox) await checkbox.click();
+      await btnContinuar.click();
+      await page
+        .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
+        .catch(() => {});
     }
 
-    if (!campos["javax.faces.ViewState"])
-      throw new Error("Sin ViewState en formulario.");
+    // ── PASO 3: Formulario ─────────────────────────────────────────
+    console.log("📋 Cargando formulario...");
+    await page.goto(POLICIA_FORM, {
+      waitUntil: "networkidle2",
+      timeout: 30000,
+    });
 
-    // ── POST consulta (sin reCAPTCHA) ────────────────────────────────
-    console.log(`🔍 Enviando consulta: ${tipoValor} ${cedula}`);
-    const rConsulta = await axios.post(
-      POLICIA_FORM,
-      new URLSearchParams({
-        ...campos,
-        formAntecedentes: "formAntecedentes",
-        cedulaTipo: tipoValor,
-        cedulaInput: cedula,
-        "g-recaptcha-response": "",
-        captchaAntecedentes_response: "",
-        j_idt17: "",
-      }).toString(),
-      {
-        httpsAgent,
-        headers: {
-          ...BASE_HEADERS,
-          "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-          Referer: POLICIA_FORM,
-          Origin: POLICIA_BASE,
-          Cookie: cookiesToHeader(cookies),
-        },
-        timeout: 20000,
-      },
+    // Si redirigió de vuelta a términos, aceptar de nuevo
+    const btnContinuar2 = await page.$("#continuarBtn");
+    if (btnContinuar2) {
+      const checkbox2 = await page.$("#aceptaOption");
+      if (checkbox2) await checkbox2.click();
+      await btnContinuar2.click();
+      await page
+        .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
+        .catch(() => {});
+      await page.goto(POLICIA_FORM, {
+        waitUntil: "networkidle2",
+        timeout: 30000,
+      });
+    }
+
+    // ── PASO 4: Llenar formulario ──────────────────────────────────
+    console.log(`📝 Completando: ${tipoValor} - ${cedula}`);
+
+    await page
+      .select("select[id='cedulaTipo']", tipoValor)
+      .catch(() =>
+        page.select("select[name*='cedulaTipo']", tipoValor).catch(() => {}),
+      );
+
+    const inputCedula =
+      (await page.$("input[id='cedulaInput']")) ||
+      (await page.$("input[name*='cedulaInput']"));
+    if (!inputCedula) throw new Error("No se encontró campo de cédula.");
+    await inputCedula.click({ clickCount: 3 });
+    await inputCedula.type(cedula, { delay: 50 });
+
+    // ── PASO 5: reCAPTCHA ──────────────────────────────────────────
+    console.log("⏳ Esperando reCAPTCHA...");
+    await page
+      .waitForSelector("iframe[src*='recaptcha']", { timeout: 12000 })
+      .catch(() => {});
+
+    try {
+      const frames = page.frames();
+      const anchorFrame = frames.find(
+        (f) => f.url().includes("recaptcha") && f.url().includes("anchor"),
+      );
+
+      if (anchorFrame) {
+        await anchorFrame.waitForSelector("#recaptcha-anchor", {
+          timeout: 8000,
+        });
+        await anchorFrame.click("#recaptcha-anchor");
+        console.log("🖱️ Click en checkbox reCAPTCHA...");
+        await page.waitForTimeout(4000);
+
+        const checked = await anchorFrame.evaluate(() =>
+          document
+            .querySelector("#recaptcha-anchor")
+            ?.getAttribute("aria-checked"),
+        );
+
+        if (checked === "true") {
+          console.log("✅ reCAPTCHA resuelto (solo checkbox).");
+        } else {
+          // Esperar hasta 30s por si el challenge se resuelve solo
+          console.log("🖼️ Esperando resolución de challenge...");
+          await page
+            .waitForFunction(
+              () => {
+                const ta = document.querySelector(
+                  "textarea[name='g-recaptcha-response']",
+                );
+                return ta && ta.value && ta.value.length > 10;
+              },
+              { timeout: 30000 },
+            )
+            .catch(() =>
+              console.log("⚠️ Challenge no resuelto automáticamente."),
+            );
+        }
+      }
+    } catch (e) {
+      console.log("⚠️ reCAPTCHA:", e.message);
+    }
+
+    // ── PASO 6: Enviar formulario ──────────────────────────────────
+    console.log("🚀 Enviando...");
+    const btnSubmit = await page.$(
+      "input[id*='consultarBtn'], button[id*='consultarBtn'], " +
+        "input[value*='Consultar'], input[type='submit'], button[type='submit']",
     );
 
-    const texto = (
-      typeof rConsulta.data === "string"
-        ? rConsulta.data
-        : JSON.stringify(rConsulta.data)
-    )
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toUpperCase();
+    if (btnSubmit) {
+      await btnSubmit.click();
+    } else {
+      await page.evaluate(() => {
+        const form =
+          document.querySelector("form#formAntecedentes") ||
+          document.querySelector("form");
+        if (form) form.submit();
+      });
+    }
+
+    await page
+      .waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 })
+      .catch(() => {});
+    await page.waitForTimeout(2000);
+
+    // ── PASO 7: Leer resultado ─────────────────────────────────────
+    const contenido = await page.evaluate(() => document.body.innerText || "");
+    const texto = contenido.replace(/\s+/g, " ").trim().toUpperCase();
 
     console.log("Respuesta (600):", texto.substring(0, 600));
 
@@ -211,6 +212,16 @@ exports.consultarAntecedentes = async (req, res) => {
       texto.includes("REGISTRA ANTECEDENTES") ||
       texto.includes("PRESENTA ANTECEDENTES") ||
       texto.includes("CONDENA");
+    const captchaRechazado =
+      !noRegistra &&
+      !registra &&
+      (texto.includes("CAPTCHA") || texto.includes("DEBE SELECCIONAR"));
+
+    if (captchaRechazado) {
+      throw new Error(
+        "El servidor rechazó la consulta por reCAPTCHA. Intenta de nuevo.",
+      );
+    }
 
     const mensaje = noRegistra
       ? "La persona NO registra antecedentes judiciales."
@@ -233,5 +244,7 @@ exports.consultarAntecedentes = async (req, res) => {
       error: "Error en consulta Policía Nacional",
       detalle: error.message,
     });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
   }
 };
