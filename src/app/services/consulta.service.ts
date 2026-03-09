@@ -15,7 +15,7 @@ export interface AntecedentesResult {
 
 @Injectable({ providedIn: "root" })
 export class ConsultaService {
-  private apiUrl = "https://modulos-backend.onrender.com"; // ← reemplaza con tu URL de Render
+  private apiUrl = "https://modulos-backend.onrender.com";
 
   constructor(private http: HttpClient) {}
 
@@ -31,16 +31,9 @@ export class ConsultaService {
     cedula: string,
     tipoDocumento = "Cédula de Ciudadanía",
   ) {
-    return this.http.post<any>(`${this.apiUrl}/api/consulta-antecedentes`, {
-      cedula,
-      tipoDocumento,
-    });
-  }
-
-  resolverCaptcha(sessionId: string, token: string) {
     return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/resolver-captcha`,
-      { sessionId, token },
+      `${this.apiUrl}/api/consulta-antecedentes`,
+      { cedula, tipoDocumento },
     );
   }
 
@@ -51,27 +44,21 @@ export class ConsultaService {
   ) {
     return this.http.post<AntecedentesResult>(
       `${this.apiUrl}/api/consulta-antecedentes`,
-      {
-        cedula,
-        tipoDocumento,
-        recaptchaToken,
-      },
+      { cedula, tipoDocumento, recaptchaToken },
     );
   }
 
+  // ✅ NUEVO
   consultarProcuraduria(
     cedula: string,
     tipoDocumento = "CC",
     tipoCertificado = "1",
   ) {
-    return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/consulta-procuraduria`,
-      {
-        cedula,
-        tipoDocumento,
-        tipoCertificado,
-      },
-    );
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-procuraduria`, {
+      cedula,
+      tipoDocumento,
+      tipoCertificado,
+    });
   }
 
   consultarOffshore(nombre: string) {

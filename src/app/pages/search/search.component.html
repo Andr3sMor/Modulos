@@ -125,6 +125,18 @@
               }}
             </span>
             <span
+              *ngIf="r.tipo === 'procuraduria'"
+              [class]="
+                r.tieneSanciones
+                  ? 'status-badge badge-danger'
+                  : 'status-badge badge-success'
+              "
+            >
+              {{
+                r.tieneSanciones ? "⚠️ Registra sanciones" : "✅ Sin sanciones"
+              }}
+            </span>
+            <span
               *ngIf="r.tipo === 'offshore'"
               [class]="
                 r.tieneRegistros
@@ -167,6 +179,21 @@
             >
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
+            </div>
+            <div class="result-item" *ngIf="r.tipo === 'procuraduria'">
+              <span class="item-label">Resultado</span>
+              <span class="item-value">{{ r.mensaje }}</span>
+            </div>
+            <div
+              class="result-item"
+              *ngIf="r.tipo === 'procuraduria' && r.certificadoUrl"
+            >
+              <span class="item-label">Certificado</span>
+              <span class="item-value">
+                <a [href]="r.certificadoUrl" target="_blank"
+                  >Ver certificado →</a
+                >
+              </span>
             </div>
             <div class="result-item" *ngIf="r.data?.fecha">
               <span class="item-label">Fecha consulta</span>
@@ -254,12 +281,12 @@
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- Captcha manual cuando el backend lo requiere -->
-  <app-captcha-resolver
-    [abrirCon]="captchaData"
-    (resuelto)="onCaptchaResuelto($event)"
-    (cancelado)="onCaptchaCancelado()"
-  ></app-captcha-resolver>
+    <!-- Captcha Policía -->
+    <app-policia-captcha
+      [visible]="mostrarCaptchaPolicia"
+      (resultadoObtenido)="onResultadoPolicia($event)"
+      (cancelado)="onCaptchaCancelado()"
+    ></app-policia-captcha>
+  </div>
 </div>
