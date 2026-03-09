@@ -134,7 +134,7 @@
             >
               {{
                 r.tieneRegistros
-                  ? "⚠️ " + r.totalResultados + " registro(s)"
+                  ? "⚠️ " + r.totalResultados + " coincidencia(s) exacta(s)"
                   : "✅ Sin registros"
               }}
             </span>
@@ -174,82 +174,81 @@
             </div>
           </div>
 
-          <!-- ── Offshore: tabs por categoría ── -->
-          <div *ngIf="r.tipo === 'offshore'" class="offshore-list">
+          <!-- ── Offshore: informe por categoría ── -->
+          <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
+            <!-- Sin resultados -->
             <div *ngIf="!r.tieneRegistros" class="sin-resultados">
-              ✅ No se encontraron registros en bases de datos offshore
+              ✅ No se encontraron registros con coincidencia exacta (100%) en
+              bases de datos offshore
             </div>
 
+            <!-- Con resultados -->
             <ng-container *ngIf="r.tieneRegistros">
-              <div class="offshore-title">
-                📋 {{ r.totalResultados }} registro(s) distribuidos en las
-                siguientes categorías
+              <!-- Resumen general -->
+              <div class="informe-resumen">
+                <span class="informe-icono">📋</span>
+                Se encontraron
+                <strong
+                  >{{ r.totalResultados }} coincidencia(s) exacta(s)</strong
+                >
+                para <strong>"{{ nombre }}"</strong> en las bases de datos del
+                ICIJ Offshore Leaks.
               </div>
 
-              <!-- Menú de tabs -->
-              <div class="tabs-menu">
-                <button
-                  *ngFor="let cat of r.categorias"
-                  class="tab-btn"
-                  [class.tab-activo]="
-                    getTabActivo(i, r.categorias) === cat.tipo
-                  "
-                  (click)="seleccionarTab(i, cat.tipo)"
+              <!-- Una sección por cada categoría que tenga resultados con score 100 -->
+              <ng-container *ngFor="let cat of r.categorias">
+                <ng-container
+                  *ngIf="filtrarScore100(cat.resultados).length > 0"
                 >
-                  {{ cat.nombre }}
-                  <span
-                    class="tab-count"
-                    [class.tab-count-activo]="cat.total > 0"
-                  >
-                    {{ cat.total }}
-                  </span>
-                </button>
-              </div>
+                  <div class="informe-categoria">
+                    <!-- Título de la categoría -->
+                    <div class="categoria-header">
+                      <span class="categoria-icono">📁</span>
+                      <span class="categoria-nombre">{{ cat.nombre }}</span>
+                      <span class="categoria-count">
+                        {{ filtrarScore100(cat.resultados).length }} registro(s)
+                      </span>
+                    </div>
 
-              <!-- Contenido del tab activo -->
-              <div *ngFor="let cat of r.categorias">
-                <div
-                  *ngIf="getTabActivo(i, r.categorias) === cat.tipo"
-                  class="tab-content"
-                >
-                  <div
-                    *ngIf="cat.resultados.length === 0"
-                    class="sin-resultados"
-                  >
-                    Sin registros en esta categoría
-                  </div>
+                    <!-- Descripción -->
+                    <p class="categoria-descripcion">
+                      En la base de datos <strong>{{ cat.nombre }}</strong> se
+                      encontraron
+                      <strong>{{
+                        filtrarScore100(cat.resultados).length
+                      }}</strong>
+                      registro(s) con coincidencia exacta:
+                    </p>
 
-                  <div
-                    *ngFor="let o of cat.resultados; let j = index"
-                    class="offshore-item"
-                  >
-                    <div class="offshore-row">
-                      <div class="offshore-name">
-                        <span class="offshore-num">{{ j + 1 }}.</span>
-                        {{ o.nombre }}
-                      </div>
-                      <div class="offshore-meta">
-                        <span
-                          class="meta-tag"
-                          [class.meta-score-alto]="o.score >= 80"
-                          [class.meta-score-medio]="
-                            o.score >= 50 && o.score < 80
-                          "
-                          [class.meta-score-bajo]="o.score < 50"
-                        >
-                          {{ o.score }}%
-                        </span>
-                        <span *ngIf="o.match" class="meta-tag meta-match"
-                          >✅ Exacto</span
-                        >
-                        <a [href]="o.url" target="_blank" class="meta-link"
-                          >Ver en ICIJ →</a
-                        >
+                    <!-- Lista de registros -->
+                    <div class="registros-lista">
+                      <div
+                        *ngFor="
+                          let o of filtrarScore100(cat.resultados);
+                          let j = index
+                        "
+                        class="registro-item"
+                      >
+                        <div class="registro-numero">{{ j + 1 }}</div>
+                        <div class="registro-contenido">
+                          <div class="registro-nombre">{{ o.nombre }}</div>
+                          <div class="registro-meta">
+                            <span class="meta-score-exacto"
+                              >✅ 100% coincidencia</span
+                            >
+                            <span *ngIf="o.match" class="meta-exacto"
+                              >Nombre exacto</span
+                            >
+                            <a [href]="o.url" target="_blank" class="meta-link">
+                              Ver en ICIJ →
+                            </a>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-              </div>
+                </ng-container>
+              </ng-container>
             </ng-container>
           </div>
           <!-- fin offshore -->

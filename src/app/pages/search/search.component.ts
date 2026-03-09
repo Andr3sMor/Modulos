@@ -148,12 +148,20 @@ export class SearchComponent {
           this.consultaService.consultarOffshore(this.nombre).subscribe({
             next: (res: any) => {
               this.zone.run(() => {
+                const categorias = res.categorias || [];
+                const total100 = categorias.reduce(
+                  (acc: number, cat: any) =>
+                    acc +
+                    cat.resultados.filter((o: any) => o.score === 100).length,
+                  0,
+                );
+
                 this.resultados.push({
                   tipo: "offshore",
                   fuente: "ICIJ Offshore Leaks",
-                  tieneRegistros: res.tieneRegistros,
-                  totalResultados: res.totalResultados,
-                  categorias: res.categorias || [],
+                  tieneRegistros: total100 > 0,
+                  totalResultados: total100,
+                  categorias,
                   data: { fecha: new Date().toLocaleString() },
                 });
                 this.cdr.detectChanges();
@@ -215,5 +223,10 @@ export class SearchComponent {
       return this.tabOffshoreActivo[resultadoIndex];
     const primera = categorias?.find((c) => c.total > 0);
     return primera?.tipo || "";
+  }
+
+  filtrarScore100(resultados: any[]): any[] {
+    if (!resultados) return [];
+    return resultados.filter((o) => o.score === 100);
   }
 }
