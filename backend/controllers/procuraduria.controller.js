@@ -12,7 +12,7 @@ const https = require("https");
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const BASE_URL = "https://procuraduria.gov.co";
+const BASE_URL = "https://www.procuraduria.gov.co";
 const FORM_URL = `${BASE_URL}/Pages/Generacion-de-antecedentes.aspx`;
 const CERT_BASE = "https://apps.procuraduria.gov.co/webcert";
 
