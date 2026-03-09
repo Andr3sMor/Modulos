@@ -6,18 +6,7 @@ const jccController = require("./controllers/jcc.controller");
 const regController = require("./controllers/registraduria.controller");
 const policiaController = require("./controllers/policia.controller");
 const offshoreController = require("./controllers/offshore.controller");
-
-// DEBUG - identificar cual controlador falla
-console.log("jcc.consultarContador:", typeof jccController.consultarContador);
-console.log("reg.consultarCedula:", typeof regController.consultarCedula);
-console.log(
-  "policia.consultarAntecedentes:",
-  typeof policiaController.consultarAntecedentes,
-);
-console.log(
-  "offshore.consultarOffshore:",
-  typeof offshoreController.consultarOffshore,
-);
+const procuraduriaController = require("./controllers/procuraduria.controller");
 
 const corsOptions = {
   origin: [
@@ -36,7 +25,10 @@ app.use(express.json());
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
-app.post("/api/resolver-captcha", policiaController.resolverCaptcha);
 app.post("/api/consulta-offshore", offshoreController.consultarOffshore);
+app.post(
+  "/api/consulta-procuraduria",
+  procuraduriaController.consultarProcuraduria,
+);
 
-app.listen(3001, () => console.log("Backend en puerto 3001"));
+app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
