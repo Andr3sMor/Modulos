@@ -2,12 +2,11 @@ import { Component, ViewChild, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
-import { PoliciaCaptchaComponent } from "./policia-captcha.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule, PoliciaCaptchaComponent],
+  imports: [CommonModule, FormsModule],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -35,8 +34,6 @@ export class SearchComponent {
     { id: "procuraduria", nombre: "Procuraduría", activo: false }, // ✅ NUEVO
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
   ];
-
-  @ViewChild(PoliciaCaptchaComponent) captchaComp!: PoliciaCaptchaComponent;
 
   constructor(
     private consultaService: ConsultaService,
@@ -135,9 +132,7 @@ export class SearchComponent {
           }
           this.error = "";
           this.mostrarCaptchaPolicia = true;
-          setTimeout(() => {
-            this.captchaComp?.iniciar(this.cedula, this.tipoDocumento);
-          }, 100);
+          setTimeout(() => {}, 100);
           resolve();
           break;
 
