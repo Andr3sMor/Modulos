@@ -7,7 +7,8 @@
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
 
-const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
+const FORM_URL =
+  "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TIPO_MAP = {
@@ -226,11 +227,9 @@ exports.consultarProcuraduria = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
     if (browser) await browser.close().catch(() => {});
-    return res
-      .status(502)
-      .json({
-        error: "Error consultando Procuraduría",
-        detalle: error.message,
-      });
+    return res.status(502).json({
+      error: "Error consultando Procuraduría",
+      detalle: error.message,
+    });
   }
 };
