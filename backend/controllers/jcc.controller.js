@@ -1,29 +1,36 @@
 /**
- * jcc.controller.js - CORREGIDO
- * Fix principal: forzar HTTPS en todas las peticiones y redirecciones
- * El error "plain HTTP request was sent to HTTPS port" ocurre porque
- * axios sigue redirecciones cambiando https:// por http://
+ * jcc.controller.js - CORREGIDO v3
+ *
+ * Problemas resueltos:
+ * 1. JCC_WORKER_URL tenía "/" al final → doble barra en la URL (/apex → //apex)
+ * 2. El Worker de Cloudflare reenviaba HTTP en vez de HTTPS al origen
+ * 3. axios seguía redirecciones cambiando https:// por http://
  */
 
 const axios = require("axios");
 const https = require("https");
 
-// Agente HTTPS que ignora certificados autofirmados Y fuerza siempre HTTPS
 const httpsAgent = new https.Agent({
   rejectUnauthorized: false,
   keepAlive: true,
 });
 
-const JCC_BASE = process.env.JCC_WORKER_URL || "https://sgr.jcc.gov.co:8181";
+// ✅ FIX 1: Limpiar slash final de la variable de entorno
+const JCC_BASE = (
+  process.env.JCC_WORKER_URL || "https://sgr.jcc.gov.co:8181"
+).replace(/\/+$/, ""); // elimina cualquier "/" al final
+
 const JCC_URL = `${JCC_BASE}/apex/f?p=138:1:::NO:::`;
 
-// Función para garantizar que una URL siempre use HTTPS
-function forzarHttps(url) {
-  if (!url) return url;
-  // Si es ruta relativa, agregar la base
-  if (url.startsWith("/")) return `${JCC_BASE}${url}`;
-  // Si empieza con http:// reemplazar por https://
-  if (url.startsWith("http://")) return url.replace("http://", "https://");
+console.log("🔧 JCC_BASE configurado como:", JCC_BASE);
+
+// ✅ FIX 2: Función robusta para garantizar HTTPS y rutas correctas
+function resolverUrl(url, base) {
+  if (!url) return base;
+  // Ruta relativa → agregar base sin slash doble
+  if (url.startsWith("/")) return `${base}${url}`;
+  // http:// → https://
+  if (url.startsWith("http://")) return url.replace(/^http:\/\//, "https://");
   return url;
 }
 
@@ -39,40 +46,42 @@ const HEADERS_BASE = {
   "Cache-Control": "max-age=0",
 };
 
-// Instancia de axios con redirecciones manuales para forzar HTTPS
+// ✅ FIX 3: Instancia con maxRedirects:0 para controlar redirecciones manualmente
 const axiosJCC = axios.create({
   httpsAgent,
   timeout: 30000,
-  maxRedirects: 0, // Manejamos redirecciones manualmente para forzar HTTPS
-  validateStatus: (status) => status < 400 || status === 302 || status === 301,
+  maxRedirects: 0,
+  validateStatus: (s) => s < 600, // nunca lanzar excepción por status
 });
 
-// Función para hacer GET siguiendo redirecciones y forzando HTTPS
-async function getConHttps(url, headers = {}) {
-  let currentUrl = forzarHttps(url);
+// Seguir redirecciones manualmente forzando HTTPS en cada paso
+async function getSeguro(url, extraHeaders = {}) {
+  let currentUrl = resolverUrl(url, JCC_BASE);
   let cookies = "";
   let response;
-  let intentos = 0;
 
-  while (intentos < 5) {
+  for (let i = 0; i < 6; i++) {
     console.log(`  → GET ${currentUrl}`);
     response = await axiosJCC.get(currentUrl, {
-      headers: { ...HEADERS_BASE, ...headers, Cookie: cookies },
+      headers: { ...HEADERS_BASE, ...extraHeaders, Cookie: cookies },
     });
 
-    // Acumular cookies
-    const nuevasCookies = (response.headers["set-cookie"] || [])
-      .map((c) => c.split(";")[0])
-      .join("; ");
-    if (nuevasCookies)
-      cookies = cookies ? `${cookies}; ${nuevasCookies}` : nuevasCookies;
+    // Acumular cookies de cada respuesta
+    const setCookie = response.headers["set-cookie"] || [];
+    setCookie.forEach((c) => {
+      const par = c.split(";")[0];
+      cookies = cookies
+        ? cookies.includes(par.split("=")[0])
+          ? cookies
+          : `${cookies}; ${par}`
+        : par;
+    });
 
-    // Si hay redirección, seguirla forzando HTTPS
-    if (response.status === 301 || response.status === 302) {
+    const { status } = response;
+    if (status === 301 || status === 302 || status === 303) {
       const location = response.headers["location"];
       if (!location) break;
-      currentUrl = forzarHttps(location);
-      intentos++;
+      currentUrl = resolverUrl(location, JCC_BASE);
       continue;
     }
     break;
@@ -86,54 +95,60 @@ exports.consultarContador = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  console.log(`\n--- Consultando JCC para: ${cedula} ---`);
+  console.log(`\n=== Consulta JCC: ${cedula} ===`);
+  console.log("URL base:", JCC_BASE);
+  console.log("URL inicial:", JCC_URL);
 
   try {
-    // Paso 1: GET página inicial siguiendo redirecciones con HTTPS forzado
-    console.log("📄 GET página JCC...");
-    const { response: r1, cookies, finalUrl } = await getConHttps(JCC_URL);
-
-    console.log("✅ Status GET:", r1.status, "| URL final:", finalUrl);
-    console.log("🍪 Cookies:", cookies ? "Sí" : "No");
-
-    const html1 = r1.data.toString();
-
-    // Extraer campos ocultos del formulario APEX
-    const campos = {};
-    const hiddenRegex = /<input[^>]+type=["']?hidden["']?[^>]*>/gi;
-    (html1.match(hiddenRegex) || []).forEach((tag) => {
-      const name = tag.match(/name=["']([^"']+)["']/i)?.[1];
-      const value = tag.match(/value=["']([^"']*)["']/i)?.[1] ?? "";
-      if (name) campos[name] = value;
-    });
+    // ── Paso 1: GET formulario ──────────────────────────────────────────────
+    const { response: r1, cookies, finalUrl } = await getSeguro(JCC_URL);
 
     console.log(
-      "📋 Campos APEX encontrados:",
+      `✅ GET completado — Status: ${r1.status} | URL final: ${finalUrl}`,
+    );
+
+    if (r1.status >= 400) {
+      return res.status(502).json({
+        error: "Error en consulta JCC",
+        detalle: `No se pudo cargar el formulario JCC (HTTP ${r1.status}). URL: ${finalUrl}`,
+      });
+    }
+
+    const html = r1.data.toString();
+
+    // Extraer campos ocultos del formulario Oracle APEX
+    const campos = {};
+    (html.match(/<input[^>]+type=["']?hidden["']?[^>]*>/gi) || []).forEach(
+      (tag) => {
+        const name = tag.match(/name=["']([^"']+)["']/i)?.[1];
+        const value = tag.match(/value=["']([^"']*)["']/i)?.[1] ?? "";
+        if (name) campos[name] = value;
+      },
+    );
+
+    console.log(
+      "📋 Campos ocultos:",
       Object.keys(campos).join(", ") || "NINGUNO",
     );
 
     if (!campos["p_instance"]) {
       console.warn(
-        "⚠️  ADVERTENCIA: p_instance no encontrado — puede que el HTML cambió",
+        "⚠️  p_instance no encontrado — el formulario puede haber cambiado",
       );
     }
 
-    // Determinar URL del POST (desde action del form, o default)
-    const formActionMatch = html1.match(
+    // Obtener la URL de acción del formulario
+    const formAction = html.match(
       /action=["']([^"']*wwv_flow[^"']*)["']/i,
+    )?.[1];
+    const postUrl = resolverUrl(
+      formAction || "/apex/wwv_flow.accept",
+      JCC_BASE,
     );
-    const postUrl = forzarHttps(
-      formActionMatch
-        ? formActionMatch[1].startsWith("http")
-          ? formActionMatch[1]
-          : `${JCC_BASE}${formActionMatch[1]}`
-        : `${JCC_BASE}/apex/wwv_flow.accept`,
-    );
-
     console.log("🎯 POST URL:", postUrl);
 
-    // Paso 2: POST con campos del formulario + datos de búsqueda
-    const postData = {
+    // ── Paso 2: POST búsqueda ───────────────────────────────────────────────
+    const postData = new URLSearchParams({
       ...campos,
       p_request: "CONSULTAR",
       p_reload_on_submit: "S",
@@ -141,34 +156,32 @@ exports.consultarContador = async (req, res) => {
       p_widget_action: "DEFAULT",
       p_t01: cedula,
       p_t02: "CC",
-    };
-
-    const body = new URLSearchParams(postData);
+    });
 
     console.log("🔍 Enviando POST...");
-    const r2 = await axiosJCC.post(forzarHttps(postUrl), body.toString(), {
+    const r2 = await axiosJCC.post(postUrl, postData.toString(), {
       headers: {
         ...HEADERS_BASE,
         "Content-Type": "application/x-www-form-urlencoded",
-        Referer: forzarHttps(JCC_URL),
+        Referer: finalUrl,
         Origin: JCC_BASE,
         Cookie: cookies,
       },
-      validateStatus: (status) => status < 600,
     });
 
     console.log("✅ Status POST:", r2.status);
 
     if (r2.status >= 400) {
-      const htmlError = r2.data
+      const detalle = r2.data
         ?.toString()
         .replace(/<[^>]+>/g, " ")
         .replace(/\s+/g, " ")
+        .trim()
         .substring(0, 400);
-      console.error("❌ Error en POST:", htmlError);
+      console.error("❌ POST fallido:", detalle);
       return res.status(502).json({
         error: "Error en consulta JCC",
-        detalle: `Servidor JCC respondió ${r2.status}. Detalle: ${htmlError}`,
+        detalle: `Servidor respondió ${r2.status}: ${detalle}`,
       });
     }
 
@@ -178,19 +191,18 @@ exports.consultarContador = async (req, res) => {
       .replace(/\s+/g, " ")
       .trim();
 
-    console.log("📝 Respuesta:", texto.substring(0, 600));
+    console.log("📝 Texto resultado:", texto.substring(0, 600));
 
-    const textoUpper = texto.toUpperCase();
+    const up = texto.toUpperCase();
     const esContador =
-      textoUpper.includes("CONTADOR PÚBLICO") ||
-      textoUpper.includes("CONTADOR PUBLICO") ||
-      textoUpper.includes("HABILITADO") ||
-      textoUpper.includes("TARJETA PROFESIONAL");
-
+      up.includes("CONTADOR PÚBLICO") ||
+      up.includes("CONTADOR PUBLICO") ||
+      up.includes("HABILITADO") ||
+      up.includes("TARJETA PROFESIONAL");
     const noEsContador =
-      textoUpper.includes("NO REGISTRA") ||
-      textoUpper.includes("NO SE ENCUENTRA") ||
-      textoUpper.includes("NO EXISTE");
+      up.includes("NO REGISTRA") ||
+      up.includes("NO SE ENCUENTRA") ||
+      up.includes("NO EXISTE");
 
     return res.json({
       fuente: "Junta Central de Contadores",
@@ -207,12 +219,14 @@ exports.consultarContador = async (req, res) => {
     console.error("❌ ERROR JCC:", error.message);
     if (error.response) {
       console.error("  Status:", error.response.status);
-      const body = error.response.data
-        ?.toString()
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .substring(0, 400);
-      console.error("  Body:", body);
+      console.error(
+        "  Body:",
+        error.response.data
+          ?.toString()
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .substring(0, 300),
+      );
     }
     return res.status(502).json({
       error: "Error en consulta JCC",
