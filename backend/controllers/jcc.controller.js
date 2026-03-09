@@ -1,35 +1,30 @@
 /**
- * jcc.controller.js - CORREGIDO v3
+ * jcc.controller.js - CORREGIDO v4
  *
- * Problemas resueltos:
- * 1. JCC_WORKER_URL tenía "/" al final → doble barra en la URL (/apex → //apex)
- * 2. El Worker de Cloudflare reenviaba HTTP en vez de HTTPS al origen
- * 3. axios seguía redirecciones cambiando https:// por http://
+ * El formulario JCC usa Oracle APEX con endpoint AJAX moderno:
+ * POST /apex/wwv_flow.ajax
+ * con payload p_json que contiene los campos del formulario.
+ *
+ * Flujo:
+ * 1. GET /apex/f?p=138:1:::NO::: → extraer p_instance y salt del HTML
+ * 2. POST /apex/wwv_flow.ajax → con p_json construido correctamente
  */
 
 const axios = require("axios");
 const https = require("https");
 
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: false,
-  keepAlive: true,
-});
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ✅ FIX 1: Limpiar slash final de la variable de entorno
+// JCC_WORKER_URL debe ser la URL del Worker SIN slash final
 const JCC_BASE = (
   process.env.JCC_WORKER_URL || "https://sgr.jcc.gov.co:8181"
-).replace(/\/+$/, ""); // elimina cualquier "/" al final
+).replace(/\/+$/, "");
 
-const JCC_URL = `${JCC_BASE}/apex/f?p=138:1:::NO:::`;
+console.log("🔧 JCC_BASE:", JCC_BASE);
 
-console.log("🔧 JCC_BASE configurado como:", JCC_BASE);
-
-// ✅ FIX 2: Función robusta para garantizar HTTPS y rutas correctas
 function resolverUrl(url, base) {
   if (!url) return base;
-  // Ruta relativa → agregar base sin slash doble
   if (url.startsWith("/")) return `${base}${url}`;
-  // http:// → https://
   if (url.startsWith("http://")) return url.replace(/^http:\/\//, "https://");
   return url;
 }
@@ -40,22 +35,18 @@ const HEADERS_BASE = {
   Accept:
     "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
   "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
-  "Accept-Encoding": "gzip, deflate, br",
   Connection: "keep-alive",
   "Upgrade-Insecure-Requests": "1",
-  "Cache-Control": "max-age=0",
 };
 
-// ✅ FIX 3: Instancia con maxRedirects:0 para controlar redirecciones manualmente 1
 const axiosJCC = axios.create({
   httpsAgent,
   timeout: 30000,
   maxRedirects: 0,
-  validateStatus: (s) => s < 600, // nunca lanzar excepción por status
+  validateStatus: (s) => s < 600,
 });
 
-// Seguir redirecciones manualmente forzando HTTPS en cada paso
-async function getSeguro(url, extraHeaders = {}) {
+async function getSeguro(url) {
   let currentUrl = resolverUrl(url, JCC_BASE);
   let cookies = "";
   let response;
@@ -63,22 +54,23 @@ async function getSeguro(url, extraHeaders = {}) {
   for (let i = 0; i < 6; i++) {
     console.log(`  → GET ${currentUrl}`);
     response = await axiosJCC.get(currentUrl, {
-      headers: { ...HEADERS_BASE, ...extraHeaders, Cookie: cookies },
+      headers: { ...HEADERS_BASE, Cookie: cookies },
     });
 
-    // Acumular cookies de cada respuesta
     const setCookie = response.headers["set-cookie"] || [];
     setCookie.forEach((c) => {
       const par = c.split(";")[0];
-      cookies = cookies
-        ? cookies.includes(par.split("=")[0])
-          ? cookies
-          : `${cookies}; ${par}`
-        : par;
+      const key = par.split("=")[0];
+      if (!cookies.includes(key)) {
+        cookies = cookies ? `${cookies}; ${par}` : par;
+      }
     });
 
-    const { status } = response;
-    if (status === 301 || status === 302 || status === 303) {
+    if (
+      response.status === 301 ||
+      response.status === 302 ||
+      response.status === 303
+    ) {
       const location = response.headers["location"];
       if (!location) break;
       currentUrl = resolverUrl(location, JCC_BASE);
@@ -96,80 +88,96 @@ exports.consultarContador = async (req, res) => {
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
   console.log(`\n=== Consulta JCC: ${cedula} ===`);
-  console.log("URL base:", JCC_BASE);
-  console.log("URL inicial:", JCC_URL);
 
   try {
-    // ── Paso 1: GET formulario ──────────────────────────────────────────────
+    // ── Paso 1: GET para obtener p_instance y salt ─────────────────────────
+    const JCC_URL = `${JCC_BASE}/apex/f?p=138:1:::NO:::`;
     const { response: r1, cookies, finalUrl } = await getSeguro(JCC_URL);
 
-    console.log(
-      `✅ GET completado — Status: ${r1.status} | URL final: ${finalUrl}`,
-    );
+    console.log(`✅ GET — Status: ${r1.status} | URL: ${finalUrl}`);
 
     if (r1.status >= 400) {
       return res.status(502).json({
         error: "Error en consulta JCC",
-        detalle: `No se pudo cargar el formulario JCC (HTTP ${r1.status}). URL: ${finalUrl}`,
+        detalle: `No se pudo cargar el formulario JCC (HTTP ${r1.status})`,
       });
     }
 
     const html = r1.data.toString();
 
-    // Extraer campos ocultos del formulario Oracle APEX
-    const campos = {};
-    (html.match(/<input[^>]+type=["']?hidden["']?[^>]*>/gi) || []).forEach(
-      (tag) => {
-        const name = tag.match(/name=["']([^"']+)["']/i)?.[1];
-        const value = tag.match(/value=["']([^"']*)["']/i)?.[1] ?? "";
-        if (name) campos[name] = value;
-      },
-    );
+    // Extraer p_instance
+    const pInstance =
+      html.match(/name="p_instance"\s+value="([^"]+)"/i)?.[1] ||
+      html.match(/"p_instance"\s*:\s*"([^"]+)"/i)?.[1] ||
+      html.match(/p_instance[=,:"'\s]+([0-9]+)/i)?.[1];
 
-    console.log(
-      "📋 Campos ocultos:",
-      Object.keys(campos).join(", ") || "NINGUNO",
-    );
+    // Extraer salt (p_page_submission_id) — aparece como dato en el HTML de APEX
+    const salt =
+      html.match(/\"salt\"\s*:\s*\"([^"]+)\"/i)?.[1] ||
+      html.match(/apex\.server\.pluginUrl[^;]*salt[^"]*"([0-9]+)"/i)?.[1] ||
+      html.match(/name="p_page_submission_id"\s+value="([^"]+)"/i)?.[1];
 
-    if (!campos["p_instance"]) {
-      console.warn(
-        "⚠️  p_instance no encontrado — el formulario puede haber cambiado",
-      );
+    // Extraer protected
+    const protectedVal =
+      html.match(/\"protected\"\s*:\s*\"([^"]+)\"/i)?.[1] || "";
+
+    console.log("📋 p_instance:", pInstance || "NO ENCONTRADO");
+    console.log("📋 salt:", salt || "NO ENCONTRADO");
+    console.log("📋 protected:", protectedVal || "vacío");
+
+    if (!pInstance) {
+      return res.status(502).json({
+        error: "Error en consulta JCC",
+        detalle:
+          "No se pudo extraer p_instance del formulario JCC. El sitio puede haber cambiado.",
+      });
     }
 
-    // Obtener la URL de acción del formulario
-    const formAction = html.match(
-      /action=["']([^"']*wwv_flow[^"']*)["']/i,
-    )?.[1];
-    const postUrl = resolverUrl(
-      formAction || "/apex/wwv_flow.accept",
-      JCC_BASE,
-    );
-    console.log("🎯 POST URL:", postUrl);
+    // Usar salt encontrado o generar uno numérico aleatorio de 42 dígitos
+    const saltValue =
+      salt ||
+      Array.from({ length: 42 }, () => Math.floor(Math.random() * 10)).join("");
 
-    // ── Paso 2: POST búsqueda ───────────────────────────────────────────────
-    const postData = new URLSearchParams({
-      ...campos,
-      p_request: "CONSULTAR",
-      p_reload_on_submit: "S",
-      p_widget_name: "wwv_flow",
-      p_widget_action: "DEFAULT",
-      p_t01: cedula,
-      p_t02: "CC",
+    // ── Paso 2: POST con payload APEX AJAX correcto ────────────────────────
+    const pJson = JSON.stringify({
+      salt: saltValue,
+      pageItems: {
+        itemsToSubmit: [
+          { n: "P1_CRITERIO", v: "CC" },
+          { n: "P1_TIPO_DE_TARJETA", v: "A" },
+          { n: "P1_VALOR", v: cedula },
+        ],
+        protected: protectedVal,
+        rowVersion: "",
+      },
     });
 
-    console.log("🔍 Enviando POST...");
+    const postData = new URLSearchParams({
+      p_json: pJson,
+      p_flow_id: "138",
+      p_flow_step_id: "1",
+      p_instance: pInstance,
+      p_page_submission_id: saltValue,
+      p_request: "P1_CONSULTAR",
+      p_reload_on_submit: "A",
+    });
+
+    const postUrl = `${JCC_BASE}/apex/wwv_flow.ajax`;
+    console.log("🔍 POST →", postUrl);
+
     const r2 = await axiosJCC.post(postUrl, postData.toString(), {
       headers: {
         ...HEADERS_BASE,
         "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json, text/javascript, */*; q=0.01",
+        "X-Requested-With": "XMLHttpRequest",
         Referer: finalUrl,
         Origin: JCC_BASE,
         Cookie: cookies,
       },
     });
 
-    console.log("✅ Status POST:", r2.status);
+    console.log("✅ POST Status:", r2.status);
 
     if (r2.status >= 400) {
       const detalle = r2.data
@@ -185,13 +193,20 @@ exports.consultarContador = async (req, res) => {
       });
     }
 
-    const texto = r2.data
-      .toString()
-      .replace(/<[^>]+>/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    console.log("📝 Texto resultado:", texto.substring(0, 600));
+    // La respuesta puede ser JSON (APEX AJAX) o HTML
+    let texto = "";
+    try {
+      const json = typeof r2.data === "string" ? JSON.parse(r2.data) : r2.data;
+      console.log("📦 Respuesta JSON:", JSON.stringify(json).substring(0, 600));
+      texto = JSON.stringify(json).toUpperCase();
+    } catch {
+      texto = r2.data
+        .toString()
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      console.log("📝 Respuesta texto:", texto.substring(0, 600));
+    }
 
     const up = texto.toUpperCase();
     const esContador =
