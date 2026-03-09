@@ -1,31 +1,47 @@
-const axios = require("axios");
-const https = require("https");
+/**
+ * procuraduria.controller.js
+ * Usa Puppeteer para navegar el formulario de la Procuraduría,
+ * resolver el captcha matemático y obtener el resultado.
+ */
 
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
-const APPS_BASE = "https://apps.procuraduria.gov.co";
-const FORM_URL = `${APPS_BASE}/webcert/Certificado.aspx`;
+const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
-  Connection: "keep-alive",
+const TIPO_MAP = {
+  CC: "1",
+  CE: "2",
+  PA: "3",
+  "Cédula de Ciudadanía": "1",
+  "Cédula de Extranjería": "2",
+  Pasaporte: "3",
 };
 
-const axiosInst = axios.create({
-  httpsAgent,
-  timeout: 30000,
-  maxRedirects: 5,
-  validateStatus: (s) => s < 600,
-});
-
-function extraerInput(html, name) {
-  const m =
-    html.match(new RegExp(`name="${name}"[^>]*value="([^"]*)"`, "i")) ||
-    html.match(new RegExp(`value="([^"]*)"[^>]*name="${name}"`, "i"));
-  return m ? m[1] : "";
+async function lanzarBrowser() {
+  if (!process.env.RENDER) {
+    const pf = require("puppeteer");
+    return pf.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--ignore-certificate-errors",
+      ],
+    });
+  }
+  return puppeteer.launch({
+    args: [
+      ...chromium.args,
+      "--ignore-certificate-errors",
+      "--disable-web-security",
+    ],
+    defaultViewport: chromium.defaultViewport,
+    executablePath: await chromium.executablePath(),
+    headless: chromium.headless,
+  });
 }
 
 function resolverCaptcha(pregunta) {
@@ -37,74 +53,184 @@ function resolverCaptcha(pregunta) {
   return String(+a * +b);
 }
 
-function parseCookies(headers, existing = "") {
-  const setCookie = headers["set-cookie"] || [];
-  let result = existing;
-  setCookie.forEach((c) => {
-    const par = c.split(";")[0];
-    const key = par.split("=")[0].trim();
-    if (!result.includes(key + "="))
-      result = result ? `${result}; ${par}` : par;
-  });
-  return result;
-}
-
-const tipoIDMap = {
-  CC: "1",
-  CE: "2",
-  PA: "3",
-  "Cédula de Ciudadanía": "1",
-  "Cédula de Extranjería": "2",
-  Pasaporte: "3",
-};
-
 exports.consultarProcuraduria = async (req, res) => {
   const { cedula, tipoDocumento = "CC", tipoCertificado = "1" } = req.body;
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  const ddlTipoID = tipoIDMap[tipoDocumento] || "1";
+  const ddlTipoID = TIPO_MAP[tipoDocumento] || "1";
   console.log(`\n=== Consulta Procuraduría: ${cedula} ===`);
 
+  let browser;
   try {
-    // ── GET directo al webcert (no al SharePoint) ──────────────────────────
-    console.log("📄 GET webcert/Certificado.aspx...");
-    const r1 = await axiosInst.get(FORM_URL, { headers: HEADERS });
-    console.log("✅ GET Status:", r1.status);
-    console.log(
-      "📍 GET URL final (tras redirects):",
-      r1.request?.res?.responseUrl || r1.config?.url,
+    browser = await lanzarBrowser();
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
     );
+    await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
 
-    let cookies = parseCookies(r1.headers);
-    const html = r1.data.toString();
+    // ── Navegar al formulario ──────────────────────────────────────────────
+    console.log("📄 Navegando al formulario...");
+    await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 40000 });
+    console.log("✅ Página cargada:", page.url());
 
-    // Log completo de inputs para ver qué tiene este formulario
-    const todosInputs = [...html.matchAll(/<input[^>]+>/gi)]
-      .map((m) => m[0])
-      .join("\n");
-    console.log("📋 TODOS LOS INPUTS:\n", todosInputs.substring(0, 2000));
+    // Screenshot para debug
+    const ss1 = await page.screenshot({ encoding: "base64" });
+    console.log("📸 Screenshot inicial (base64 length):", ss1.length);
 
-    const todosNames = [...html.matchAll(/name="([^"]+)"/gi)]
-      .map((m) => m[1])
-      .join(" | ");
-    console.log("📋 NAMES:", todosNames.substring(0, 800));
+    // Log de inputs visibles
+    const inputs = await page.evaluate(() =>
+      [...document.querySelectorAll("input, select")]
+        .map(
+          (el) => `${el.tagName} name=${el.name} id=${el.id} type=${el.type}`,
+        )
+        .join(" | "),
+    );
+    console.log("📋 Inputs en página:", inputs.substring(0, 800));
 
     // Captcha
-    const captchaMatch =
-      html.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i) ||
-      html.match(/[Cc]uanto\s+es\s+([0-9\s\+\-\*xX×]+)/i);
-    const textoCaptcha = captchaMatch?.[1]?.trim() || "NO ENCONTRADO";
-    console.log(`🔢 Captcha raw: "${textoCaptcha}"`);
+    const textoCaptcha = await page.evaluate(() => {
+      const labels = [...document.querySelectorAll("label, span, td, div")];
+      for (const el of labels) {
+        if (el.textContent.match(/[Cc]uanto\s+es/))
+          return el.textContent.trim();
+      }
+      return "";
+    });
+    console.log("🔢 Captcha encontrado:", textoCaptcha);
+    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
+    console.log("🔢 Respuesta captcha:", respuestaCaptcha);
+
+    // ── Seleccionar tipo de ID ─────────────────────────────────────────────
+    console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
+    const selectores = ["select[name='ddlTipoID']", "#ddlTipoID", "select"];
+    for (const sel of selectores) {
+      try {
+        await page.select(sel, ddlTipoID);
+        console.log("✅ Select tipo ID con:", sel);
+        break;
+      } catch (_) {}
+    }
+    await sleep(1000);
+
+    // ── Ingresar cédula ────────────────────────────────────────────────────
+    console.log("✏️ Ingresando cédula:", cedula);
+    const inputSels = [
+      "input[name='txtNumID']",
+      "#txtNumID",
+      "input[type='text']:not([name*='captcha']):not([name*='email'])",
+    ];
+    for (const sel of inputSels) {
+      try {
+        await page.click(sel, { clickCount: 3 });
+        await page.type(sel, cedula);
+        console.log("✅ Cédula ingresada con:", sel);
+        break;
+      } catch (_) {}
+    }
+
+    // ── Tipo certificado ───────────────────────────────────────────────────
+    try {
+      await page.click(`input[name='rblTipoCert'][value='${tipoCertificado}']`);
+    } catch (_) {
+      console.log("⚠️ No se pudo seleccionar tipo certificado");
+    }
+
+    // ── Respuesta captcha ──────────────────────────────────────────────────
+    const captchaSels = [
+      "input[name='txtRespuestaPregunta']",
+      "#txtRespuestaPregunta",
+      "input[type='text'][name*='Respuesta']",
+      "input[type='text'][name*='captcha']",
+    ];
+    for (const sel of captchaSels) {
+      try {
+        await page.click(sel, { clickCount: 3 });
+        await page.type(sel, respuestaCaptcha);
+        console.log("✅ Captcha ingresado con:", sel);
+        break;
+      } catch (_) {}
+    }
+
+    // Screenshot antes de submit
+    const ss2 = await page.screenshot({ encoding: "base64" });
+    console.log("📸 Screenshot pre-submit (length):", ss2.length);
+
+    // ── Click Generar ──────────────────────────────────────────────────────
+    console.log("🚀 Clickeando Generar...");
+    const btnSels = [
+      "input[name='btnExportar']",
+      "#btnExportar",
+      "input[type='submit'][value*='Generar']",
+      "input[type='submit']",
+      "button[type='submit']",
+    ];
+    let clicked = false;
+    for (const sel of btnSels) {
+      try {
+        await Promise.all([
+          page
+            .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
+            .catch(() => {}),
+          page.click(sel),
+        ]);
+        console.log("✅ Click con:", sel);
+        clicked = true;
+        break;
+      } catch (_) {}
+    }
+
+    if (!clicked) console.log("⚠️ No se pudo clickear el botón");
+
+    await sleep(2000);
+    const urlFinal = page.url();
+    console.log("📍 URL final:", urlFinal);
+
+    // Screenshot del resultado
+    const ss3 = await page.screenshot({ encoding: "base64" });
+    console.log("📸 Screenshot resultado (length):", ss3.length);
+
+    // ── Leer resultado ─────────────────────────────────────────────────────
+    const textoPagina = await page.evaluate(() =>
+      document.body.innerText.toUpperCase(),
+    );
+    console.log("📝 Texto resultado (500):", textoPagina.substring(0, 500));
+
+    const sinSanciones =
+      textoPagina.includes("NO REGISTRA") ||
+      textoPagina.includes("SIN ANTECEDENTES") ||
+      textoPagina.includes("NO SE ENCONTRARON") ||
+      textoPagina.includes("NO TIENE SANCIONES");
+    const conSanciones =
+      textoPagina.includes("SANCIONADO") ||
+      textoPagina.includes("INHABILIT") ||
+      textoPagina.includes("SUSPENDIDO") ||
+      textoPagina.includes("DESTITUIDO");
+
+    await browser.close();
 
     return res.json({
-      debug: true,
-      status: r1.status,
-      inputs: todosNames,
-      captcha: textoCaptcha,
+      fuente: "Procuraduría General de la Nación",
+      tieneSanciones: conSanciones,
+      sinSanciones,
+      documento: cedula,
+      mensaje: conSanciones
+        ? "La persona REGISTRA sanciones en la Procuraduría."
+        : sinSanciones
+          ? "La persona NO registra sanciones en la Procuraduría."
+          : "No se pudo determinar el resultado con claridad.",
+      certificadoUrl: urlFinal !== FORM_URL ? urlFinal : "",
+      detalle: textoPagina.substring(0, 500),
     });
   } catch (error) {
-    console.error("❌ ERROR:", error.message);
-    return res.status(502).json({ error: error.message });
+    console.error("❌ ERROR Procuraduría:", error.message);
+    if (browser) await browser.close().catch(() => {});
+    return res
+      .status(502)
+      .json({
+        error: "Error consultando Procuraduría",
+        detalle: error.message,
+      });
   }
 };
