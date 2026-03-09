@@ -2,12 +2,11 @@ import { Component, ViewChild, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
-import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
+  imports: [CommonModule, FormsModule],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -35,8 +34,6 @@ export class SearchComponent {
     { id: "procuraduria", nombre: "Procuraduría", activo: false }, // ✅ NUEVO
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
   ];
-
-  @ViewChild(CaptchaResolverComponent) captchaComp!: CaptchaResolverComponent;
 
   constructor(
     private consultaService: ConsultaService,
