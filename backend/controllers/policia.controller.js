@@ -97,7 +97,7 @@ exports.consultarAntecedentes = async (req, res) => {
         "input[type='checkbox']",
       ]);
       if (checkbox) await checkbox.click();
-      await page.setTimeout(500);
+      await new Promise((r) => setTimeout(r, 500));
       await btnContinuar.click();
       await page
         .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
@@ -123,7 +123,7 @@ exports.consultarAntecedentes = async (req, res) => {
         "input[type='checkbox']",
       ]);
       if (checkbox2) await checkbox2.click();
-      await page.setTimeout(500);
+      await new Promise((r) => setTimeout(r, 500));
       await btnContinuar2.click();
       await page
         .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
@@ -236,7 +236,7 @@ exports.consultarAntecedentes = async (req, res) => {
         });
         await anchorFrame.click("#recaptcha-anchor");
         console.log("🖱️ Click en checkbox reCAPTCHA...");
-        await page.setTimeout(4000);
+        await new Promise((r) => setTimeout(r, 4000));
 
         const checked = await anchorFrame.evaluate(() =>
           document
@@ -291,7 +291,7 @@ exports.consultarAntecedentes = async (req, res) => {
     await page
       .waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 })
       .catch(() => {});
-    await page.setTimeout(2000);
+    await new Promise((r) => setTimeout(r, 2000));
 
     // ── PASO 9: Leer resultado ─────────────────────────────────────
     const contenido = await page.evaluate(() => document.body.innerText || "");
