@@ -12,9 +12,9 @@ const https = require("https");
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-const BASE_URL = "https://www.procuraduria.gov.co";
-const FORM_URL = `${BASE_URL}/Pages/Generacion-de-antecedentes.aspx`;
-const CERT_BASE = "https://apps.procuraduria.gov.co/webcert";
+const APPS_BASE = "https://apps.procuraduria.gov.co";
+const FORM_URL = `${APPS_BASE}/webcert/Certificado.aspx`;
+const CERT_BASE = `${APPS_BASE}/webcert`;
 
 const HEADERS = {
   "User-Agent":
@@ -174,7 +174,7 @@ exports.consultarProcuraduria = async (req, res) => {
         "X-Requested-With": "XMLHttpRequest",
         "X-MicrosoftAjax": "Delta=true",
         Referer: FORM_URL,
-        Origin: BASE_URL,
+        Origin: APPS_BASE,
         Cookie: cookies,
       },
     });
@@ -184,7 +184,6 @@ exports.consultarProcuraduria = async (req, res) => {
 
     const respuestaTexto = r2.data.toString();
     console.log("📄 Respuesta POST (500):", respuestaTexto.substring(0, 500));
-    console.log("📄 RESPUESTA COMPLETA:", respuestaTexto.substring(0, 2000));
 
     // ── Paso 3: Extraer URL del certificado ────────────────────────────────
     let certUrl = "";
@@ -244,6 +243,7 @@ exports.consultarProcuraduria = async (req, res) => {
       .toUpperCase();
 
     console.log("📝 Certificado (400):", textoCert.substring(0, 400));
+
     const sinSanciones =
       textoCert.includes("NO REGISTRA") ||
       textoCert.includes("SIN ANTECEDENTES") ||
