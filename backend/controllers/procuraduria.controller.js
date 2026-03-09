@@ -180,11 +180,11 @@ exports.consultarProcuraduria = async (req, res) => {
     });
 
     console.log("✅ POST Status:", r2.status);
-    console.log("📄 RESPUESTA COMPLETA:", respuestaTexto.substring(0, 2000));
     cookies = parseCookies(r2.headers, cookies);
 
     const respuestaTexto = r2.data.toString();
     console.log("📄 Respuesta POST (500):", respuestaTexto.substring(0, 500));
+    console.log("📄 RESPUESTA COMPLETA:", respuestaTexto.substring(0, 2000));
 
     // ── Paso 3: Extraer URL del certificado ────────────────────────────────
     let certUrl = "";
