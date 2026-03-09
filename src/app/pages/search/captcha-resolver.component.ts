@@ -1,7 +1,6 @@
 import { Component, Input, Output, EventEmitter } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { ConsultaService } from "../../services/consulta.service";
-import { DomSanitizer, SafeHtml } from "@angular/platform-browser";
 
 @Component({
   selector: "app-captcha-resolver",
@@ -218,12 +217,12 @@ export class CaptchaResolverComponent {
     this.consultaService
       .resolverCaptcha(this.sessionId, this.tokenResuelto)
       .subscribe({
-        next: (resultado) => {
+        next: (resultado: any) => {
           this.cargando = false;
           this.visible = false;
           this.resuelto.emit(resultado);
         },
-        error: (err) => {
+        error: (err: any) => {
           this.cargando = false;
           this.error =
             err.error?.detalle || "Error al verificar. Intenta de nuevo.";

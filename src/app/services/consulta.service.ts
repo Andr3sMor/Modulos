@@ -48,7 +48,13 @@ export class ConsultaService {
     );
   }
 
-  // ✅ NUEVO
+  resolverCaptcha(sessionId: string, token: string) {
+    return this.http.post<AntecedentesResult>(
+      `${this.apiUrl}/api/resolver-captcha`,
+      { sessionId, token },
+    );
+  }
+
   consultarProcuraduria(
     cedula: string,
     tipoDocumento = "CC",
