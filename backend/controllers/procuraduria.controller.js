@@ -20,7 +20,7 @@ const HEADERS = {
 
 const axiosInst = axios.create({
   httpsAgent,
-  timeout: 30000,
+  timeout: 10000,
   maxRedirects: 0,
   validateStatus: (s) => s < 600,
 });
@@ -115,61 +115,119 @@ exports.consultarProcuraduria = async (req, res) => {
     const eventValidation = extraerInput(html, "__EVENTVALIDATION");
     const idPregunta = extraerInput(html, "IdPregunta") || "20";
 
-    // Detectar nombre real del ScriptManager (puede variar)
-    const smMatch =
-      html.match(/id="((?:ctl\d+|ScriptManager)[^"]*)"[^>]*ScriptManager/i) ||
-      html.match(/<script[^>]*ScriptManager[^>]*id="([^"]+)"/i) ||
-      html.match(/ScriptManager[^)]*id="([^"]+)"/i);
-    const scriptManagerId = smMatch ? smMatch[1] : "ctl05";
-    console.log("📡 ScriptManager ID:", scriptManagerId);
-
-    // Detectar nombre real del botón submit
-    const btnMatch =
-      html.match(/id="(btn[^"]+)"[^>]*type="submit"/i) ||
-      html.match(/type="submit"[^>]*id="(btn[^"]+)"/i);
-    const btnId = btnMatch ? btnMatch[1] : "btnExportar";
-    console.log("🔘 Botón submit ID:", btnId);
-
-    // Extraer captcha
-    const textoCaptcha =
-      html.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i)?.[1]?.trim() ||
-      html.match(/Cuanto\s+es\s+([0-9\s\+\-\*x×]+)/i)?.[1]?.trim() ||
-      "6 + 2";
-
-    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
-    console.log(
-      `📋 VIEWSTATE: ${viewState ? "OK" : "NO"} | Captcha: ${textoCaptcha} → ${respuestaCaptcha}`,
-    );
-
     // Log de inputs para debug
     const inputsDebug = [
       ...html.matchAll(/name="([^"]+)"[^>]*value="([^"]*)"/gi),
     ]
       .map((m) => `${m[1]}=${m[2].substring(0, 20)}`)
       .join(" | ");
-    console.log("📋 Inputs formulario:", inputsDebug.substring(0, 400));
+    console.log("📋 Inputs formulario:", inputsDebug.substring(0, 600));
 
-    // ── POST UpdatePanel ───────────────────────────────────────────────────
-    const postData = new URLSearchParams({
-      [`${scriptManagerId}`]: `UpdatePanel1|${btnId}`,
+    // ── Paso 2: POST btnNuevaConsulta para cargar el formulario real ───────
+    // El formulario inicial solo tiene btnNuevaConsulta — hay que clickearlo
+    // para que el UpdatePanel cargue los campos ddlTipoID, txtNumID, etc.
+    console.log("🔄 POST Nueva Consulta (cargar formulario)...");
+    const postPaso1 = new URLSearchParams({
+      ctl05: "UpdatePanel1|btnNuevaConsulta",
       __EVENTTARGET: "",
       __EVENTARGUMENT: "",
       __LASTFOCUS: "",
       __VIEWSTATE: viewState,
       __VIEWSTATEGENERATOR: viewStateGenerator,
       __EVENTVALIDATION: eventValidation,
-      foo: "",
+      rblTipoCert: tipoCertificado,
+      __ASYNCPOST: "true",
+      btnNuevaConsulta: "Nueva Consulta",
+    });
+
+    const r1b = await axiosInst.post(FORM_URL, postPaso1.toString(), {
+      headers: {
+        ...HEADERS,
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Accept: "*/*",
+        "X-Requested-With": "XMLHttpRequest",
+        "X-MicrosoftAjax": "Delta=true",
+        Referer: FORM_URL,
+        Origin: APPS_BASE,
+        Cookie: cookies,
+      },
+    });
+
+    cookies = parseCookies(r1b.headers, cookies);
+    console.log("✅ POST Nueva Consulta Status:", r1b.status);
+
+    // Extraer el HTML del UpdatePanel de la respuesta async
+    const respPaso1 = r1b.data.toString();
+    console.log(
+      "📄 Respuesta Nueva Consulta (800):",
+      respPaso1.substring(0, 800),
+    );
+
+    // Parsear HTML embebido en la respuesta UpdatePanel
+    // Formato: len|updatePanel|id|htmlContent|
+    const upMatch = respPaso1.match(
+      /\d+\|updatePanel\|[^|]+\|([\s\S]+?)\|\d+\|/,
+    );
+    const htmlFormulario = upMatch ? upMatch[1] : respPaso1;
+
+    // Extraer nuevos ViewState del panel de respuesta
+    const vs2 = extraerInput(respPaso1, "__VIEWSTATE") || viewState;
+    const vsg2 =
+      extraerInput(respPaso1, "__VIEWSTATEGENERATOR") || viewStateGenerator;
+    const ev2 = extraerInput(respPaso1, "__EVENTVALIDATION") || eventValidation;
+
+    // Detectar campos reales del formulario de consulta
+    const inputsForm2 = [
+      ...respPaso1.matchAll(/name="([^"]+)"[^>]*value="([^"]*)"/gi),
+    ]
+      .map((m) => `${m[1]}=${m[2].substring(0, 20)}`)
+      .join(" | ");
+    console.log("📋 Inputs paso 2:", inputsForm2.substring(0, 600));
+
+    // Extraer captcha del HTML del UpdatePanel
+    const textoCaptcha =
+      htmlFormulario.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i)?.[1]?.trim() ||
+      htmlFormulario.match(/Cuanto\s+es\s+([0-9\s\+\-\*x×]+)/i)?.[1]?.trim() ||
+      respPaso1.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i)?.[1]?.trim() ||
+      "6 + 2";
+
+    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
+    console.log(`🔢 Captcha: "${textoCaptcha}" → ${respuestaCaptcha}`);
+
+    // Extraer IdPregunta del HTML actualizado
+    const idPregunta2 =
+      extraerInput(htmlFormulario, "IdPregunta") ||
+      extraerInput(respPaso1, "IdPregunta") ||
+      idPregunta;
+
+    // Detectar botón de generar
+    const btnGenMatch =
+      respPaso1.match(
+        /id="(btn[^"]*(?:Generar|Exportar|Consultar|Enviar)[^"]*)"[^>]*type="submit"/i,
+      ) || respPaso1.match(/type="submit"[^>]*id="(btn[^"]+)"/i);
+    const btnGenerar = btnGenMatch ? btnGenMatch[1] : "btnExportar";
+    console.log("🔘 Botón generar:", btnGenerar);
+
+    // ── POST final con datos de consulta ──────────────────────────────────
+    const postData = new URLSearchParams({
+      ctl05: `UpdatePanel1|${btnGenerar}`,
+      __EVENTTARGET: "",
+      __EVENTARGUMENT: "",
+      __LASTFOCUS: "",
+      __VIEWSTATE: vs2,
+      __VIEWSTATEGENERATOR: vsg2,
+      __EVENTVALIDATION: ev2,
       ddlTipoID: ddlTipoID,
       txtNumID: cedula,
       rblTipoCert: tipoCertificado,
       txtRespuestaPregunta: respuestaCaptcha,
       txtEmail: "",
-      IdPregunta: idPregunta,
+      IdPregunta: idPregunta2,
       __ASYNCPOST: "true",
-      [btnId]: "Generar",
+      [btnGenerar]: "Generar",
     });
 
-    console.log("🔍 POST formulario...");
+    console.log("🔍 POST consulta final...");
     const r2 = await axiosInst.post(FORM_URL, postData.toString(), {
       headers: {
         ...HEADERS,
@@ -265,11 +323,15 @@ exports.consultarProcuraduria = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
-    return res
-      .status(502)
-      .json({
-        error: "Error consultando Procuraduría",
-        detalle: error.message,
-      });
+    const esTimeout =
+      error.code === "ETIMEDOUT" ||
+      error.code === "ECONNREFUSED" ||
+      error.code === "ECONNRESET";
+    return res.status(502).json({
+      error: "Error consultando Procuraduría",
+      detalle: esTimeout
+        ? "El servidor de la Procuraduría no es accesible desde este servidor cloud. El portal puede estar bloqueando IPs de Render/AWS."
+        : error.message,
+    });
   }
 };
