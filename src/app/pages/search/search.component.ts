@@ -133,11 +133,33 @@ export class SearchComponent {
             return;
           }
           this.error = "";
-          this.mostrarCaptchaPolicia = true;
-          setTimeout(() => {
-            this.captchaComp?.iniciar(this.cedula, this.tipoDocumento);
-          }, 100);
-          resolve();
+          this.consultaService
+            .consultarAntecedentes(this.cedula, this.tipoDocumento)
+            .subscribe({
+              next: (res: any) => {
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "antecedentes",
+                    fuente: res.fuente || "Policía Nacional de Colombia",
+                    tieneAntecedentes: res.tieneAntecedentes,
+                    mensaje: res.mensaje,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                });
+              },
+              error: (err: any) => {
+                this.zone.run(() => {
+                  // Si el backend falla, abrir el iframe como fallback
+                  this.mostrarCaptchaPolicia = true;
+                  setTimeout(() => {
+                    this.captchaComp?.iniciar(this.cedula, this.tipoDocumento);
+                  }, 100);
+                  resolve();
+                });
+              },
+            });
           break;
 
         case "offshore":
