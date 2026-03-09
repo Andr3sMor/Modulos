@@ -19,8 +19,47 @@
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
 
+const PORTAL_URL =
+  "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
 const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Navega a la URL pública y retorna el frame que contiene el formulario real.
+ * Si la página embebe el formulario en un <iframe> apuntando a apps.procuraduria.gov.co,
+ * devuelve ese frame. Si no hay iframe (o el formulario está en la página principal),
+ * devuelve el frame principal.
+ */
+async function obtenerFrameFormulario(page) {
+  // Esperar hasta 12s a que aparezca un iframe hacia apps.procuraduria.gov.co
+  try {
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("iframe")].some(
+          (f) => f.src && f.src.includes("apps.procuraduria.gov.co"),
+        ),
+      { timeout: 12000 },
+    );
+    // Buscar el frame en page.frames()
+    for (const frame of page.frames()) {
+      if (frame.url().includes("apps.procuraduria.gov.co")) {
+        console.log("✅ iframe del formulario encontrado:", frame.url());
+        return frame;
+      }
+    }
+    console.log(
+      "⚠️ iframe en DOM pero no en page.frames() — navegando directo al formulario",
+    );
+  } catch (_) {
+    console.log(
+      "ℹ️ No se detectó iframe en la URL pública — navegando directo al formulario",
+    );
+  }
+
+  // Fallback: ir directamente a la URL técnica del formulario
+  await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 45000 });
+  return page.mainFrame();
+}
 
 const TIPO_MAP = {
   CC: "1",
@@ -262,14 +301,81 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
 
-    // ── 1. Cargar formulario ──────────────────────────────────────────────
-    console.log("📄 Cargando formulario...");
-    await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 45000 });
-    console.log("✅ URL:", page.url());
-    await sleep(2000);
+    // ── 1. Entrar por la URL pública (como un usuario real) ──────────────
+    console.log("📄 Navegando al portal público...");
+    await page.goto(PORTAL_URL, { waitUntil: "networkidle2", timeout: 45000 });
+    console.log("✅ URL portal:", page.url());
+    await sleep(3000);
+
+    // Verificar si el formulario está embebido en un iframe
+    const iframes = await page.evaluate(() =>
+      [...document.querySelectorAll("iframe")].map((f) => f.src),
+    );
+    console.log("🖼️ Iframes encontrados:", iframes);
+
+    // Si hay un iframe apuntando al formulario técnico, cambiar a él
+    const iframeFormUrl = iframes.find(
+      (src) => src.includes("procuraduria") && src.includes("Certificado"),
+    );
+    let workingFrame = page; // por defecto trabajar sobre la página principal
+
+    if (iframeFormUrl) {
+      console.log("🖼️ Formulario en iframe:", iframeFormUrl);
+      // Obtener el frame de Puppeteer correspondiente
+      await page.waitForSelector("iframe", { timeout: 10000 });
+      const frameHandle =
+        (await page.$("iframe[src*='Certificado']")) ||
+        (await page.$(`iframe[src='${iframeFormUrl}']`));
+      if (frameHandle) {
+        const frame = await frameHandle.contentFrame();
+        if (frame) {
+          workingFrame = frame;
+          console.log("✅ Usando iframe como contexto de trabajo");
+        }
+      }
+    } else {
+      // El portal puede redirigir directamente o no tener iframe visible
+      // Si la URL actual ya es el formulario técnico, continuar
+      const urlActual = page.url();
+      if (urlActual.includes("Certificado.aspx")) {
+        console.log("✅ Portal redirigió directamente al formulario");
+      } else {
+        // Buscar un link/botón que lleve al formulario y hacer click
+        const linkFormulario = await page.$(
+          `a[href*='Certificado'], a[href*='webcert']`,
+        );
+        if (linkFormulario) {
+          console.log("🔗 Encontrado link al formulario, haciendo click...");
+          await Promise.all([
+            page
+              .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
+              .catch(() => {}),
+            linkFormulario.click(),
+          ]);
+          await sleep(2000);
+          console.log("✅ URL tras click:", page.url());
+        } else {
+          // Último recurso: ir directamente al formulario técnico
+          console.log(
+            "⚠️ No se encontró iframe ni link, navegando directo al formulario técnico...",
+          );
+          await page.goto(FORM_URL, {
+            waitUntil: "networkidle2",
+            timeout: 45000,
+          });
+          await sleep(2000);
+        }
+      }
+    }
+
+    console.log(
+      "✅ URL de trabajo:",
+      workingFrame === page ? page.url() : "(iframe)",
+    );
+    await sleep(1500);
 
     // ── 2. Log de inputs (diagnóstico) ───────────────────────────────────
-    const inputsLog = await page.evaluate(() =>
+    const inputsLog = await workingFrame.evaluate(() =>
       [...document.querySelectorAll("input,select")]
         .map((el) => `${el.tagName}[name=${el.name} type=${el.type}]`)
         .join(" | "),
@@ -278,11 +384,11 @@ exports.consultarProcuraduria = async (req, res) => {
 
     // ── 3. Seleccionar tipo de documento → dispara postback ASP.NET ──────
     console.log("🔽 Tipo documento:", ddlTipoID);
-    await page.select("select[name='ddlTipoID']", ddlTipoID);
+    await workingFrame.select("select[name='ddlTipoID']", ddlTipoID);
 
     // Esperar que el postback regenere la página con el captcha actualizado
     try {
-      await page.waitForFunction(
+      await workingFrame.waitForFunction(
         () => !!document.querySelector("input[name='txtRespuestaPregunta']"),
         { timeout: 8000 },
       );
@@ -290,7 +396,7 @@ exports.consultarProcuraduria = async (req, res) => {
     await sleep(2000); // margen para que el label del captcha se renderice
 
     // ── 4. Leer captcha ──────────────────────────────────────────────────
-    const captchaInfo = await extraerCaptcha(page);
+    const captchaInfo = await extraerCaptcha(workingFrame);
     console.log(
       "🔢 Captcha:",
       captchaInfo.texto || "(vacío)",
@@ -304,7 +410,9 @@ exports.consultarProcuraduria = async (req, res) => {
     // Si el captcha sigue vacío, buscar en el innerText completo
     let textoCaptcha = captchaInfo.texto;
     if (!textoCaptcha) {
-      const innerText = await page.evaluate(() => document.body.innerText);
+      const innerText = await workingFrame.evaluate(
+        () => document.body.innerText,
+      );
       const lineas = innerText
         .split("\n")
         .map((l) => l.trim())
@@ -343,18 +451,25 @@ exports.consultarProcuraduria = async (req, res) => {
 
     // ── 5. Número de documento ───────────────────────────────────────────
     console.log("✏️ Cédula:", cedula);
-    await page.click("input[name='txtNumID']", { clickCount: 3 });
-    await page.type("input[name='txtNumID']", cedula);
+    await workingFrame.click("input[name='txtNumID']", { clickCount: 3 });
+    await workingFrame.type("input[name='txtNumID']", cedula);
 
     // ── 6. Tipo de certificado ───────────────────────────────────────────
     try {
-      await page.click(`input[name='rblTipoCert'][value='${tipoCertificado}']`);
+      await workingFrame.click(
+        `input[name='rblTipoCert'][value='${tipoCertificado}']`,
+      );
       await sleep(400);
     } catch (_) {}
 
     // ── 7. Ingresar captcha ──────────────────────────────────────────────
-    await page.click("input[name='txtRespuestaPregunta']", { clickCount: 3 });
-    await page.type("input[name='txtRespuestaPregunta']", respuestaCaptcha);
+    await workingFrame.click("input[name='txtRespuestaPregunta']", {
+      clickCount: 3,
+    });
+    await workingFrame.type(
+      "input[name='txtRespuestaPregunta']",
+      respuestaCaptcha,
+    );
     console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
     // ── 8. Submit ────────────────────────────────────────────────────────
@@ -363,12 +478,12 @@ exports.consultarProcuraduria = async (req, res) => {
       page
         .waitForNavigation({ waitUntil: "networkidle2", timeout: 35000 })
         .catch(() => {}),
-      page.click("input[name='ImageButton1']"),
+      workingFrame.click("input[name='ImageButton1']"),
     ]);
     await sleep(2000);
 
     const urlFinal = page.url();
-    const textoPagina = await page.evaluate(() =>
+    const textoPagina = await workingFrame.evaluate(() =>
       document.body.innerText.toUpperCase(),
     );
     console.log("📍 URL final:", urlFinal);
@@ -386,8 +501,8 @@ exports.consultarProcuraduria = async (req, res) => {
       textoPagina.includes(p),
     );
 
-    if (urlFinal === FORM_URL && !tieneResultado) {
-      const captchaNuevo = await extraerCaptcha(page);
+    if (!tieneResultado && page.url().includes("Certificado.aspx")) {
+      const captchaNuevo = await extraerCaptcha(workingFrame);
       await browser.close();
       return res.status(422).json({
         error: "Formulario rechazado",
