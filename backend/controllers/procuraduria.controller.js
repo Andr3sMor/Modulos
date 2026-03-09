@@ -1,10 +1,5 @@
 /**
  * procuraduria.controller.js
- *
- * El formulario usa ASP.NET UpdatePanel con __ASYNCPOST=true.
- * La respuesta NO es una redirección HTTP 302 sino texto plano con formato:
- *   length|type|id|content|length|type|id|content|...
- * donde uno de los bloques es "pageRedirect" con la URL destino.
  */
 
 const axios = require("axios");
@@ -14,16 +9,13 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const APPS_BASE = "https://apps.procuraduria.gov.co";
 const FORM_URL = `${APPS_BASE}/webcert/Certificado.aspx`;
-const CERT_BASE = `${APPS_BASE}/webcert`;
 
 const HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-  Accept:
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
   Connection: "keep-alive",
-  "Upgrade-Insecure-Requests": "1",
 };
 
 const axiosInst = axios.create({
@@ -66,25 +58,19 @@ function parseCookies(headers, existing = "") {
   return result;
 }
 
-/**
- * Parsea la respuesta de ASP.NET ScriptManager (UpdatePanel / __ASYNCPOST)
- * Formato: "len|tipo|id|contenido|len|tipo|id|contenido|..."
- * Busca un bloque de tipo "pageRedirect" que contiene la URL destino.
- */
 function parsearRespuestaAsync(texto) {
-  // Buscar pageRedirect directamente
+  // Formato UpdatePanel: len|tipo|id|contenido|
+  // pageRedirect viene URL-encoded → decodificar
   const redirectMatch = texto.match(/pageRedirect\|\|([^|]+)\|/);
-  if (redirectMatch) return redirectMatch[1];
+  if (redirectMatch) return decodeURIComponent(redirectMatch[1]);
 
-  // Buscar también en formato scriptBlock con window.location
   const locationMatch = texto.match(
     /window\.location[^=]*=\s*['"]([^'"]+)['"]/,
   );
   if (locationMatch) return locationMatch[1];
 
-  // Buscar URL de certificado directamente
   const certMatch = texto.match(/Certificado\.aspx\?t=([^|&\s"']+)/i);
-  if (certMatch) return `${CERT_BASE}/Certificado.aspx?t=${certMatch[1]}`;
+  if (certMatch) return `/webcert/Certificado.aspx?t=${certMatch[1]}`;
 
   return null;
 }
@@ -100,25 +86,25 @@ const tipoIDMap = {
 
 exports.consultarProcuraduria = async (req, res) => {
   const { cedula, tipoDocumento = "CC", tipoCertificado = "1" } = req.body;
-
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
   const ddlTipoID = tipoIDMap[tipoDocumento] || "1";
-
   console.log(`\n=== Consulta Procuraduría: ${cedula} ===`);
 
   try {
-    // ── Paso 1: GET formulario ─────────────────────────────────────────────
+    // ── GET formulario ─────────────────────────────────────────────────────
     console.log("📄 GET formulario...");
     const r1 = await axiosInst.get(FORM_URL, { headers: HEADERS });
     console.log("✅ GET Status:", r1.status);
 
     if (r1.status >= 400) {
-      return res.status(502).json({
-        error: "Error consultando Procuraduría",
-        detalle: `No se pudo cargar el formulario (HTTP ${r1.status})`,
-      });
+      return res
+        .status(502)
+        .json({
+          error: "Error consultando Procuraduría",
+          detalle: `HTTP ${r1.status}`,
+        });
     }
 
     let cookies = parseCookies(r1.headers);
@@ -129,25 +115,43 @@ exports.consultarProcuraduria = async (req, res) => {
     const eventValidation = extraerInput(html, "__EVENTVALIDATION");
     const idPregunta = extraerInput(html, "IdPregunta") || "20";
 
+    // Detectar nombre real del ScriptManager (puede variar)
+    const smMatch =
+      html.match(/id="((?:ctl\d+|ScriptManager)[^"]*)"[^>]*ScriptManager/i) ||
+      html.match(/<script[^>]*ScriptManager[^>]*id="([^"]+)"/i) ||
+      html.match(/ScriptManager[^)]*id="([^"]+)"/i);
+    const scriptManagerId = smMatch ? smMatch[1] : "ctl05";
+    console.log("📡 ScriptManager ID:", scriptManagerId);
+
+    // Detectar nombre real del botón submit
+    const btnMatch =
+      html.match(/id="(btn[^"]+)"[^>]*type="submit"/i) ||
+      html.match(/type="submit"[^>]*id="(btn[^"]+)"/i);
+    const btnId = btnMatch ? btnMatch[1] : "btnExportar";
+    console.log("🔘 Botón submit ID:", btnId);
+
+    // Extraer captcha
     const textoCaptcha =
       html.match(/¿\s*[Cc]uanto\s+es\s+([^?<]+)\?/i)?.[1]?.trim() ||
       html.match(/Cuanto\s+es\s+([0-9\s\+\-\*x×]+)/i)?.[1]?.trim() ||
       "6 + 2";
 
-    console.log("📋 VIEWSTATE:", viewState ? "OK" : "NO ENCONTRADO");
+    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
     console.log(
-      "📋 Captcha:",
-      textoCaptcha,
-      "→",
-      resolverCaptcha(textoCaptcha),
+      `📋 VIEWSTATE: ${viewState ? "OK" : "NO"} | Captcha: ${textoCaptcha} → ${respuestaCaptcha}`,
     );
 
-    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
+    // Log de inputs para debug
+    const inputsDebug = [
+      ...html.matchAll(/name="([^"]+)"[^>]*value="([^"]*)"/gi),
+    ]
+      .map((m) => `${m[1]}=${m[2].substring(0, 20)}`)
+      .join(" | ");
+    console.log("📋 Inputs formulario:", inputsDebug.substring(0, 400));
 
-    // ── Paso 2: POST con __ASYNCPOST=true (UpdatePanel) ───────────────────
-    // El campo ctl05 es el ScriptManager trigger, crítico para el async post
+    // ── POST UpdatePanel ───────────────────────────────────────────────────
     const postData = new URLSearchParams({
-      ctl05: "UpdatePanel1|btnExportar", // ScriptManager trigger
+      [`${scriptManagerId}`]: `UpdatePanel1|${btnId}`,
       __EVENTTARGET: "",
       __EVENTARGUMENT: "",
       __LASTFOCUS: "",
@@ -162,10 +166,10 @@ exports.consultarProcuraduria = async (req, res) => {
       txtEmail: "",
       IdPregunta: idPregunta,
       __ASYNCPOST: "true",
-      btnExportar: "Generar",
+      [btnId]: "Generar",
     });
 
-    console.log("🔍 POST formulario (ASYNCPOST)...");
+    console.log("🔍 POST formulario...");
     const r2 = await axiosInst.post(FORM_URL, postData.toString(), {
       headers: {
         ...HEADERS,
@@ -183,65 +187,55 @@ exports.consultarProcuraduria = async (req, res) => {
     cookies = parseCookies(r2.headers, cookies);
 
     const respuestaTexto = r2.data.toString();
-    console.log("📄 Respuesta POST (500):", respuestaTexto.substring(0, 500));
+    console.log("📄 Respuesta POST (600):", respuestaTexto.substring(0, 600));
 
-    // ── Paso 3: Extraer URL del certificado ────────────────────────────────
+    // ── Extraer URL certificado ────────────────────────────────────────────
     let certUrl = "";
 
-    // Caso A: redirección HTTP clásica
     if (r2.status === 301 || r2.status === 302) {
       const location = r2.headers["location"] || "";
       certUrl = location.startsWith("http")
         ? location
-        : `${CERT_BASE}${location}`;
+        : `${APPS_BASE}${location}`;
     }
 
-    // Caso B: respuesta async de UpdatePanel
     if (!certUrl) {
       const urlExtraida = parsearRespuestaAsync(respuestaTexto);
       if (urlExtraida) {
         certUrl = urlExtraida.startsWith("http")
           ? urlExtraida
-          : `${CERT_BASE}/${urlExtraida.replace(/^\//, "")}`;
+          : `${APPS_BASE}${urlExtraida.startsWith("/") ? "" : "/"}${urlExtraida}`;
       }
     }
 
     console.log(
       "🎟️  URL certificado:",
-      certUrl ? certUrl.substring(0, 80) + "..." : "NO ENCONTRADA",
+      certUrl ? certUrl.substring(0, 100) : "NO ENCONTRADA",
     );
 
-    if (!certUrl) {
-      // Mostrar texto plano para diagnóstico
-      const textoPlano = respuestaTexto
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim()
-        .substring(0, 600);
-      console.error("❌ Sin URL de certificado. Respuesta:", textoPlano);
+    // Si redirigió a Error.aspx el POST falló
+    if (!certUrl || certUrl.includes("Error.aspx")) {
       return res.status(502).json({
         error: "Error consultando Procuraduría",
-        detalle:
-          "No se obtuvo URL del certificado. Respuesta del servidor: " +
-          textoPlano,
+        detalle: certUrl.includes("Error.aspx")
+          ? "El servidor rechazó el formulario. Posible cambio en los campos o captcha."
+          : "No se obtuvo URL del certificado.",
       });
     }
 
-    // ── Paso 4: GET certificado ────────────────────────────────────────────
+    // ── GET certificado ────────────────────────────────────────────────────
     console.log("📜 GET certificado...");
     const r3 = await axiosInst.get(certUrl, {
       headers: { ...HEADERS, Referer: FORM_URL, Cookie: cookies },
     });
-
     console.log("✅ Certificado Status:", r3.status);
 
-    const htmlCert = r3.data.toString();
-    const textoCert = htmlCert
+    const textoCert = r3.data
+      .toString()
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
       .trim()
       .toUpperCase();
-
     console.log("📝 Certificado (400):", textoCert.substring(0, 400));
 
     const sinSanciones =
@@ -271,12 +265,11 @@ exports.consultarProcuraduria = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
-    if (error.response) {
-      console.error("  Status:", error.response.status);
-    }
-    return res.status(502).json({
-      error: "Error consultando Procuraduría",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({
+        error: "Error consultando Procuraduría",
+        detalle: error.message,
+      });
   }
 };
