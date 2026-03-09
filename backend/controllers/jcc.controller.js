@@ -46,7 +46,7 @@ const HEADERS_BASE = {
   "Cache-Control": "max-age=0",
 };
 
-// ✅ FIX 3: Instancia con maxRedirects:0 para controlar redirecciones manualmente
+// ✅ FIX 3: Instancia con maxRedirects:0 para controlar redirecciones manualmente 1
 const axiosJCC = axios.create({
   httpsAgent,
   timeout: 30000,
