@@ -53,6 +53,40 @@ function resolverCaptcha(pregunta) {
   return String(+a * +b);
 }
 
+// Respuestas a captchas de texto conocidos
+const RESPUESTAS_TEXTO = {
+  "capital de colombia": "BOGOTA",
+  "capital colombia": "BOGOTA",
+  "color del cielo": "AZUL",
+  "color cielo": "AZUL",
+  "color del sol": "AMARILLO",
+  "color sol": "AMARILLO",
+  "pais de colombia": "COLOMBIA",
+  "continente colombia": "AMERICA",
+  "dias semana": "7",
+  "meses año": "12",
+  "meses del año": "12",
+};
+
+function resolverCaptchaCompleto(pregunta) {
+  if (!pregunta) return "8"; // fallback
+  const p = pregunta.toUpperCase();
+
+  // Primero intentar matemático
+  if (p.match(/\d+\s*[\+\-\*xX×]\s*\d+/)) {
+    return resolverCaptcha(pregunta);
+  }
+
+  // Buscar en el diccionario de respuestas de texto
+  for (const [clave, respuesta] of Object.entries(RESPUESTAS_TEXTO)) {
+    if (p.includes(clave.toUpperCase())) return respuesta;
+  }
+
+  // Si no reconoce, loguear para agregar al diccionario
+  console.log("⚠️ Captcha de texto no reconocido:", pregunta);
+  return "BOGOTA"; // respuesta más común como fallback
+}
+
 exports.consultarProcuraduria = async (req, res) => {
   const { cedula, tipoDocumento = "CC", tipoCertificado = "1" } = req.body;
   if (!cedula)
@@ -89,52 +123,51 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("📋 Inputs en página:", inputs.substring(0, 800));
 
-    // Captcha — buscar el texto que contiene la pregunta matemática
-    const textoCaptcha = await page.evaluate(() => {
-      // Buscar en todo el body el patrón del captcha
-      const all = document.body.innerHTML;
-      const m =
-        all.match(/¿\s*[Cc]uanto\s+es\s+([^?<"]+)\?/i) ||
-        all.match(/[Cc]uanto\s+es\s+([0-9\s\+\-\*xX×]+)/i);
-      if (m) return m[1].trim();
-      // Buscar la imagen del captcha o el span con la pregunta
-      const spans = [...document.querySelectorAll("span, label, td")];
-      for (const el of spans) {
-        if (el.innerText && el.innerText.match(/\d+\s*[\+\-\*xX×]\s*\d+/)) {
-          return el.innerText.trim();
+    // Esperar a que el captcha cargue dinámicamente
+    await sleep(2000);
+
+    // Captcha — puede ser matemático o de texto
+    const captchaInfo = await page.evaluate(() => {
+      // Buscar el label/span que contiene la pregunta del captcha
+      // Está cerca del input txtRespuestaPregunta
+      const inp = document.querySelector("input[name='txtRespuestaPregunta']");
+      if (!inp) return { texto: "", html: "no input" };
+
+      // Subir por el DOM hasta encontrar el contenedor
+      let parent = inp.parentElement;
+      for (let i = 0; i < 6; i++) {
+        if (!parent) break;
+        const texto = parent.innerText || "";
+        if (texto.match(/\?/))
+          return {
+            texto: texto.trim(),
+            html: parent.outerHTML.substring(0, 500),
+          };
+        parent = parent.parentElement;
+      }
+
+      // Fallback: buscar cualquier elemento con "?" cerca del input
+      const allTexts = [
+        ...document.querySelectorAll("label, span, td, div, p"),
+      ];
+      for (const el of allTexts) {
+        const t = el.innerText?.trim();
+        if (
+          t &&
+          t.includes("?") &&
+          t.length < 200 &&
+          t.match(/[Cc]uanto|[Cc]apital|[Cc]olor|[Cc]iudad|[Pp]ais/)
+        ) {
+          return { texto: t, html: el.outerHTML.substring(0, 300) };
         }
       }
-      return "";
+      return { texto: "", html: "not found" };
     });
 
-    // Si no encontró captcha, loguear el HTML del área del captcha para diagnóstico
-    if (!textoCaptcha) {
-      const captchaAreaHtml = await page.evaluate(() => {
-        // Buscar el input de respuesta y ver su contexto
-        const inp = document.querySelector(
-          "input[name='txtRespuestaPregunta']",
-        );
-        if (inp) {
-          // Subir al tr o div padre para ver la pregunta
-          let parent = inp.parentElement;
-          for (let i = 0; i < 5; i++) {
-            if (parent && parent.tagName === "TABLE") break;
-            parent = parent?.parentElement;
-          }
-          return parent ? parent.outerHTML.substring(0, 1000) : "no parent";
-        }
-        // También buscar cualquier texto con números y operadores
-        const body = document.body.innerHTML;
-        const idx = body.search(/\d+\s*[xX×\+\-\*]\s*\d+/);
-        return idx >= 0
-          ? body.substring(Math.max(0, idx - 200), idx + 200)
-          : "NOT FOUND";
-      });
-      console.log("🔍 HTML área captcha:", captchaAreaHtml);
-    }
+    console.log("🔢 Captcha texto:", captchaInfo.texto);
+    console.log("🔍 Captcha HTML:", captchaInfo.html);
 
-    console.log("🔢 Captcha encontrado:", textoCaptcha || "NO DETECTADO");
-    const respuestaCaptcha = resolverCaptcha(textoCaptcha || "6+2");
+    const respuestaCaptcha = resolverCaptchaCompleto(captchaInfo.texto);
     console.log("🔢 Respuesta captcha:", respuestaCaptcha);
 
     // Leer el valor del campo foo (token anti-CSRF)
