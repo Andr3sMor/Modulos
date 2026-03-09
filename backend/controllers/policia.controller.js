@@ -1,7 +1,7 @@
 /**
  * policia.controller.js
- * Usa Puppeteer + @sparticuz/chromium para evadir reCAPTCHA v2
- * navegando como un browser real.
+ * Puppeteer + @sparticuz/chromium
+ * Selectores ajustados para PrimeFaces/JSF con namespace "formAntecedentes:"
  */
 
 const puppeteer = require("puppeteer-core");
@@ -23,10 +23,8 @@ const TIPO_MAP = {
 };
 
 async function lanzarBrowser() {
-  const isLocal = !process.env.RENDER;
-
-  if (isLocal) {
-    // Entorno local: usa el Chromium descargado por puppeteer
+  if (!process.env.RENDER) {
+    // Local: puppeteer completo con su propio Chromium
     const puppeteerFull = require("puppeteer");
     return puppeteerFull.launch({
       headless: true,
@@ -38,8 +36,7 @@ async function lanzarBrowser() {
       ],
     });
   }
-
-  // Entorno Render/producción: usa @sparticuz/chromium
+  // Render/producción: @sparticuz/chromium
   return puppeteer.launch({
     args: [
       ...chromium.args,
@@ -50,6 +47,15 @@ async function lanzarBrowser() {
     executablePath: await chromium.executablePath(),
     headless: chromium.headless,
   });
+}
+
+/** Busca un elemento por múltiples selectores, devuelve el primero que exista */
+async function buscarElemento(page, selectores) {
+  for (const sel of selectores) {
+    const el = await page.$(sel);
+    if (el) return el;
+  }
+  return null;
 }
 
 exports.consultarAntecedentes = async (req, res) => {
@@ -71,16 +77,27 @@ exports.consultarAntecedentes = async (req, res) => {
     await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
     await page.setBypassCSP(true);
 
-    // ── PASO 1: Página de términos ─────────────────────────────────
+    // ── PASO 1: Términos ───────────────────────────────────────────
     console.log("📄 Cargando términos...");
     await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 30000 });
 
     // ── PASO 2: Aceptar términos ───────────────────────────────────
-    const btnContinuar = await page.$("#continuarBtn");
+    const btnContinuar = await buscarElemento(page, [
+      "#continuarBtn",
+      "input[id$='continuarBtn']",
+      "button[id$='continuarBtn']",
+      "input[value*='Continuar']",
+      "button[value*='Continuar']",
+    ]);
     if (btnContinuar) {
       console.log("✅ Aceptando términos...");
-      const checkbox = await page.$("#aceptaOption");
+      const checkbox = await buscarElemento(page, [
+        "#aceptaOption",
+        "input[id$='aceptaOption']",
+        "input[type='checkbox']",
+      ]);
       if (checkbox) await checkbox.click();
+      await page.waitForTimeout(500);
       await btnContinuar.click();
       await page
         .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
@@ -94,11 +111,19 @@ exports.consultarAntecedentes = async (req, res) => {
       timeout: 30000,
     });
 
-    // Si redirigió de vuelta a términos, aceptar de nuevo
-    const btnContinuar2 = await page.$("#continuarBtn");
+    // Si volvió a términos, aceptar de nuevo
+    const btnContinuar2 = await buscarElemento(page, [
+      "#continuarBtn",
+      "input[id$='continuarBtn']",
+      "button[id$='continuarBtn']",
+    ]);
     if (btnContinuar2) {
-      const checkbox2 = await page.$("#aceptaOption");
+      const checkbox2 = await buscarElemento(page, [
+        "#aceptaOption",
+        "input[type='checkbox']",
+      ]);
       if (checkbox2) await checkbox2.click();
+      await page.waitForTimeout(500);
       await btnContinuar2.click();
       await page
         .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
@@ -109,34 +134,102 @@ exports.consultarAntecedentes = async (req, res) => {
       });
     }
 
-    // ── PASO 4: Llenar formulario ──────────────────────────────────
-    console.log(`📝 Completando: ${tipoValor} - ${cedula}`);
+    // ── PASO 4: Volcar todos los inputs para debug ─────────────────
+    const todosLosElementos = await page.evaluate(() =>
+      Array.from(
+        document.querySelectorAll("input, select, textarea, button"),
+      ).map((el) => ({
+        tag: el.tagName,
+        id: el.id,
+        name: el.name,
+        type: el.type,
+        value: (el.value || "").substring(0, 40),
+      })),
+    );
+    console.log(
+      "🔍 Elementos en formulario:",
+      JSON.stringify(todosLosElementos),
+    );
 
-    await page
-      .select("select[id='cedulaTipo']", tipoValor)
-      .catch(() =>
-        page.select("select[name*='cedulaTipo']", tipoValor).catch(() => {}),
+    // ── PASO 5: Llenar tipo de documento ──────────────────────────
+    // JSF genera IDs como "formAntecedentes:cedulaTipo" pero también puede ser solo "cedulaTipo"
+    const selectTipo = await buscarElemento(page, [
+      "select[id='formAntecedentes:cedulaTipo']",
+      "select[id='cedulaTipo']",
+      "select[name*='cedulaTipo']",
+      "select",
+    ]);
+
+    if (selectTipo) {
+      // Obtener opciones disponibles para mapear el valor correcto
+      const opciones = await page.evaluate(
+        (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return [];
+          return Array.from(el.options).map((o) => ({
+            value: o.value,
+            text: o.text,
+          }));
+        },
+        await page
+          .evaluate((el) => {
+            // Devolver selector único del elemento
+            return el.id ? `#${el.id}` : `select[name='${el.name}']`;
+          }, selectTipo)
+          .catch(() => "select"),
       );
 
-    const inputCedula =
-      (await page.$("input[id='cedulaInput']")) ||
-      (await page.$("input[name*='cedulaInput']"));
-    if (!inputCedula) throw new Error("No se encontró campo de cédula.");
+      console.log("📋 Opciones de tipo doc:", JSON.stringify(opciones));
+
+      // Intentar seleccionar por value
+      const elId = await page.evaluate(
+        (el) => (el.id ? `#${el.id}` : `select[name='${el.name}']`),
+        selectTipo,
+      );
+      await page.select(elId, tipoValor).catch(async () => {
+        // Si falla por value, intentar por texto visible
+        const opcionCC = opciones.find((o) =>
+          o.text?.toLowerCase().includes("ciudadan"),
+        );
+        if (opcionCC) await page.select(elId, opcionCC.value).catch(() => {});
+      });
+    }
+
+    // ── PASO 6: Llenar cédula ──────────────────────────────────────
+    console.log(`📝 Ingresando cédula: ${cedula}`);
+    const inputCedula = await buscarElemento(page, [
+      "input[id='formAntecedentes:cedulaInput']",
+      "input[id='cedulaInput']",
+      "input[name*='cedulaInput']",
+      "input[id*='cedula']:not([type='hidden'])",
+      "input[name*='cedula']:not([type='hidden'])",
+      "input[type='text']",
+    ]);
+
+    if (!inputCedula) {
+      const url = page.url();
+      const html = await page.content();
+      console.log("URL actual:", url);
+      console.log("HTML (500):", html.substring(0, 500));
+      throw new Error(`No se encontró campo de cédula. URL: ${url}`);
+    }
+
     await inputCedula.click({ clickCount: 3 });
     await inputCedula.type(cedula, { delay: 50 });
 
-    // ── PASO 5: reCAPTCHA ──────────────────────────────────────────
+    // ── PASO 7: reCAPTCHA ──────────────────────────────────────────
     console.log("⏳ Esperando reCAPTCHA...");
     await page
       .waitForSelector("iframe[src*='recaptcha']", { timeout: 12000 })
-      .catch(() => {});
+      .catch(() => {
+        console.log("⚠️ No se detectó iframe de reCAPTCHA.");
+      });
 
     try {
       const frames = page.frames();
       const anchorFrame = frames.find(
         (f) => f.url().includes("recaptcha") && f.url().includes("anchor"),
       );
-
       if (anchorFrame) {
         await anchorFrame.waitForSelector("#recaptcha-anchor", {
           timeout: 8000,
@@ -150,12 +243,10 @@ exports.consultarAntecedentes = async (req, res) => {
             .querySelector("#recaptcha-anchor")
             ?.getAttribute("aria-checked"),
         );
+        console.log(`reCAPTCHA aria-checked: ${checked}`);
 
-        if (checked === "true") {
-          console.log("✅ reCAPTCHA resuelto (solo checkbox).");
-        } else {
-          // Esperar hasta 30s por si el challenge se resuelve solo
-          console.log("🖼️ Esperando resolución de challenge...");
+        if (checked !== "true") {
+          console.log("🖼️ Esperando resolución de challenge (máx 30s)...");
           await page
             .waitForFunction(
               () => {
@@ -172,15 +263,19 @@ exports.consultarAntecedentes = async (req, res) => {
         }
       }
     } catch (e) {
-      console.log("⚠️ reCAPTCHA:", e.message);
+      console.log("⚠️ Error en reCAPTCHA:", e.message);
     }
 
-    // ── PASO 6: Enviar formulario ──────────────────────────────────
-    console.log("🚀 Enviando...");
-    const btnSubmit = await page.$(
-      "input[id*='consultarBtn'], button[id*='consultarBtn'], " +
-        "input[value*='Consultar'], input[type='submit'], button[type='submit']",
-    );
+    // ── PASO 8: Enviar formulario ──────────────────────────────────
+    console.log("🚀 Enviando formulario...");
+    const btnSubmit = await buscarElemento(page, [
+      "input[id$='consultarBtn']",
+      "button[id$='consultarBtn']",
+      "input[value*='Consultar']",
+      "button[value*='Consultar']",
+      "input[type='submit']",
+      "button[type='submit']",
+    ]);
 
     if (btnSubmit) {
       await btnSubmit.click();
@@ -198,10 +293,9 @@ exports.consultarAntecedentes = async (req, res) => {
       .catch(() => {});
     await page.waitForTimeout(2000);
 
-    // ── PASO 7: Leer resultado ─────────────────────────────────────
+    // ── PASO 9: Leer resultado ─────────────────────────────────────
     const contenido = await page.evaluate(() => document.body.innerText || "");
     const texto = contenido.replace(/\s+/g, " ").trim().toUpperCase();
-
     console.log("Respuesta (600):", texto.substring(0, 600));
 
     const noRegistra =
