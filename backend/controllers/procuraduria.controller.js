@@ -7,8 +7,7 @@
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
 
-const FORM_URL =
-  "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
+const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TIPO_MAP = {
@@ -90,99 +89,117 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("📋 Inputs en página:", inputs.substring(0, 800));
 
-    // Captcha
+    // Captcha — buscar el texto que contiene la pregunta matemática
     const textoCaptcha = await page.evaluate(() => {
-      const labels = [...document.querySelectorAll("label, span, td, div")];
-      for (const el of labels) {
-        if (el.textContent.match(/[Cc]uanto\s+es/))
-          return el.textContent.trim();
+      // Buscar en todo el body el patrón del captcha
+      const all = document.body.innerHTML;
+      const m =
+        all.match(/¿\s*[Cc]uanto\s+es\s+([^?<"]+)\?/i) ||
+        all.match(/[Cc]uanto\s+es\s+([0-9\s\+\-\*xX×]+)/i);
+      if (m) return m[1].trim();
+      // Buscar la imagen del captcha o el span con la pregunta
+      const spans = [...document.querySelectorAll("span, label, td")];
+      for (const el of spans) {
+        if (el.innerText && el.innerText.match(/\d+\s*[\+\-\*xX×]\s*\d+/)) {
+          return el.innerText.trim();
+        }
       }
       return "";
     });
-    console.log("🔢 Captcha encontrado:", textoCaptcha);
-    const respuestaCaptcha = resolverCaptcha(textoCaptcha);
+
+    // Si no encontró captcha, loguear el HTML del área del captcha para diagnóstico
+    if (!textoCaptcha) {
+      const captchaAreaHtml = await page.evaluate(() => {
+        // Buscar el input de respuesta y ver su contexto
+        const inp = document.querySelector(
+          "input[name='txtRespuestaPregunta']",
+        );
+        if (inp) {
+          // Subir al tr o div padre para ver la pregunta
+          let parent = inp.parentElement;
+          for (let i = 0; i < 5; i++) {
+            if (parent && parent.tagName === "TABLE") break;
+            parent = parent?.parentElement;
+          }
+          return parent ? parent.outerHTML.substring(0, 1000) : "no parent";
+        }
+        // También buscar cualquier texto con números y operadores
+        const body = document.body.innerHTML;
+        const idx = body.search(/\d+\s*[xX×\+\-\*]\s*\d+/);
+        return idx >= 0
+          ? body.substring(Math.max(0, idx - 200), idx + 200)
+          : "NOT FOUND";
+      });
+      console.log("🔍 HTML área captcha:", captchaAreaHtml);
+    }
+
+    console.log("🔢 Captcha encontrado:", textoCaptcha || "NO DETECTADO");
+    const respuestaCaptcha = resolverCaptcha(textoCaptcha || "6+2");
     console.log("🔢 Respuesta captcha:", respuestaCaptcha);
+
+    // Leer el valor del campo foo (token anti-CSRF)
+    const fooVal = await page.evaluate(() => {
+      const el = document.querySelector("input[name='foo']");
+      return el ? el.value : "";
+    });
+    console.log("🔑 foo token:", fooVal);
+
+    // Leer IdPregunta
+    const idPregunta = await page.evaluate(() => {
+      const el = document.querySelector("input[name='IdPregunta']");
+      return el ? el.value : "20";
+    });
+    console.log("🔑 IdPregunta:", idPregunta);
 
     // ── Seleccionar tipo de ID ─────────────────────────────────────────────
     console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
-    const selectores = ["select[name='ddlTipoID']", "#ddlTipoID", "select"];
-    for (const sel of selectores) {
-      try {
-        await page.select(sel, ddlTipoID);
-        console.log("✅ Select tipo ID con:", sel);
-        break;
-      } catch (_) {}
-    }
-    await sleep(1000);
+    await page.select("select[name='ddlTipoID']", ddlTipoID);
+    await sleep(800);
 
     // ── Ingresar cédula ────────────────────────────────────────────────────
     console.log("✏️ Ingresando cédula:", cedula);
-    const inputSels = [
-      "input[name='txtNumID']",
-      "#txtNumID",
-      "input[type='text']:not([name*='captcha']):not([name*='email'])",
-    ];
-    for (const sel of inputSels) {
-      try {
-        await page.click(sel, { clickCount: 3 });
-        await page.type(sel, cedula);
-        console.log("✅ Cédula ingresada con:", sel);
-        break;
-      } catch (_) {}
-    }
+    await page.click("input[name='txtNumID']", { clickCount: 3 });
+    await page.type("input[name='txtNumID']", cedula);
 
     // ── Tipo certificado ───────────────────────────────────────────────────
     try {
       await page.click(`input[name='rblTipoCert'][value='${tipoCertificado}']`);
-    } catch (_) {
-      console.log("⚠️ No se pudo seleccionar tipo certificado");
-    }
+    } catch (_) {}
+
+    // ── ddlCargo (dejar vacío / primer valor) ──────────────────────────────
+    try {
+      const cargoOptions = await page.evaluate(() => {
+        const sel = document.querySelector("select[name='ddlCargo']");
+        return sel ? [...sel.options].map((o) => `${o.value}:${o.text}`) : [];
+      });
+      console.log(
+        "📋 ddlCargo opciones:",
+        cargoOptions.join(" | ").substring(0, 200),
+      );
+    } catch (_) {}
 
     // ── Respuesta captcha ──────────────────────────────────────────────────
-    const captchaSels = [
-      "input[name='txtRespuestaPregunta']",
-      "#txtRespuestaPregunta",
-      "input[type='text'][name*='Respuesta']",
-      "input[type='text'][name*='captcha']",
-    ];
-    for (const sel of captchaSels) {
-      try {
-        await page.click(sel, { clickCount: 3 });
-        await page.type(sel, respuestaCaptcha);
-        console.log("✅ Captcha ingresado con:", sel);
-        break;
-      } catch (_) {}
-    }
+    await page.click("input[name='txtRespuestaPregunta']", { clickCount: 3 });
+    await page.type("input[name='txtRespuestaPregunta']", respuestaCaptcha);
+    console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
     // Screenshot antes de submit
     const ss2 = await page.screenshot({ encoding: "base64" });
     console.log("📸 Screenshot pre-submit (length):", ss2.length);
 
-    // ── Click Generar ──────────────────────────────────────────────────────
-    console.log("🚀 Clickeando Generar...");
-    const btnSels = [
-      "input[name='btnExportar']",
-      "#btnExportar",
-      "input[type='submit'][value*='Generar']",
-      "input[type='submit']",
-      "button[type='submit']",
-    ];
-    let clicked = false;
-    for (const sel of btnSels) {
-      try {
-        await Promise.all([
-          page
-            .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-            .catch(() => {}),
-          page.click(sel),
-        ]);
-        console.log("✅ Click con:", sel);
-        clicked = true;
-        break;
-      } catch (_) {}
+    // ── Click ImageButton1 (el botón Generar real) ─────────────────────────
+    console.log("🚀 Clickeando ImageButton1...");
+    try {
+      await Promise.all([
+        page
+          .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
+          .catch(() => {}),
+        page.click("input[name='ImageButton1']"),
+      ]);
+      console.log("✅ Click ImageButton1 OK");
+    } catch (e) {
+      console.log("⚠️ Error click ImageButton1:", e.message);
     }
-
-    if (!clicked) console.log("⚠️ No se pudo clickear el botón");
 
     await sleep(2000);
     const urlFinal = page.url();
@@ -227,9 +244,11 @@ exports.consultarProcuraduria = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
     if (browser) await browser.close().catch(() => {});
-    return res.status(502).json({
-      error: "Error consultando Procuraduría",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({
+        error: "Error consultando Procuraduría",
+        detalle: error.message,
+      });
   }
 };
