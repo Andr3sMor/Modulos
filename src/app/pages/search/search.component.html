@@ -282,11 +282,11 @@
       </div>
     </div>
 
-    <!-- Captcha Policía 
-    <app-policia-captcha
-      [visible]="mostrarCaptchaPolicia"
-      (resultadoObtenido)="onResultadoPolicia($event)"
+    <!-- Captcha manual cuando el backend lo requiere -->
+    <app-captcha-resolver
+      [abrirCon]="captchaData"
+      (resuelto)="onCaptchaResuelto($event)"
       (cancelado)="onCaptchaCancelado()"
-    ></app-policia-captcha> -->
+    ></app-captcha-resolver>
   </div>
 </div>

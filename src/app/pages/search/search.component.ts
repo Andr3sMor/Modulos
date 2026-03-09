@@ -1,12 +1,13 @@
-import { Component, ViewChild, NgZone, ChangeDetectorRef } from "@angular/core";
+import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
+import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -16,8 +17,10 @@ export class SearchComponent {
   cargando = false;
   error = "";
   resultados: any[] = [];
-  mostrarCaptchaPolicia = false;
   tabOffshoreActivo: { [key: string]: string } = {};
+
+  // Captcha manual
+  captchaData: { sessionId: string } | null = null;
 
   tipoDocumento = "Cédula de Ciudadanía";
   tiposDocumento = [
@@ -31,7 +34,7 @@ export class SearchComponent {
     { id: "registraduria", nombre: "Registraduría", activo: true },
     { id: "contador", nombre: "Contador JCC", activo: false },
     { id: "antecedentes", nombre: "Policía", activo: false },
-    { id: "procuraduria", nombre: "Procuraduría", activo: false }, // ✅ NUEVO
+    { id: "procuraduria", nombre: "Procuraduría", activo: false },
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
   ];
 
@@ -48,7 +51,7 @@ export class SearchComponent {
       return;
     }
     if (!this.cedula && !this.nombre) {
-      this.error = "Ingresa al menos un dato de búsqueda.";
+      this.error = "Ingresa al menos un dato.";
       return;
     }
 
@@ -74,7 +77,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.verificarCedula(this.cedula).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 this.resultados.push({
                   tipo: "registraduria",
@@ -87,14 +90,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Registraduría", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -104,7 +105,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.verificarContador(this.cedula).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 this.resultados.push({
                   tipo: "contador",
@@ -114,14 +115,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Contador JCC", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -130,13 +129,35 @@ export class SearchComponent {
             resolve();
             return;
           }
-          this.error = "";
-          this.mostrarCaptchaPolicia = true;
-          setTimeout(() => {}, 100);
-          resolve();
+          this.consultaService
+            .consultarAntecedentes(this.cedula, this.tipoDocumento)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  if (res.requiereCaptcha) {
+                    this.captchaData = { sessionId: res.sessionId };
+                    this.cdr.detectChanges();
+                    (this as any)._pendingCaptchaResolve = resolve;
+                  } else {
+                    this.resultados.push({
+                      tipo: "antecedentes",
+                      fuente: res.fuente || "Policía Nacional de Colombia",
+                      tieneAntecedentes: res.tieneAntecedentes,
+                      mensaje: res.mensaje,
+                      data: { fecha: new Date().toLocaleString() },
+                    });
+                    this.cdr.detectChanges();
+                    resolve();
+                  }
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Policía Nacional", err);
+                  resolve();
+                }),
+            });
           break;
 
-        // ✅ NUEVO: Procuraduría
         case "procuraduria":
           if (!this.cedula) {
             resolve();
@@ -145,7 +166,7 @@ export class SearchComponent {
           this.consultaService
             .consultarProcuraduria(this.cedula, this.tipoDocumento)
             .subscribe({
-              next: (res: any) => {
+              next: (res: any) =>
                 this.zone.run(() => {
                   this.resultados.push({
                     tipo: "procuraduria",
@@ -158,14 +179,12 @@ export class SearchComponent {
                   });
                   this.cdr.detectChanges();
                   resolve();
-                });
-              },
-              error: (err: any) => {
+                }),
+              error: (err: any) =>
                 this.zone.run(() => {
                   this.agregarError("Procuraduría", err);
                   resolve();
-                });
-              },
+                }),
             });
           break;
 
@@ -175,7 +194,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService.consultarOffshore(this.nombre).subscribe({
-            next: (res: any) => {
+            next: (res: any) =>
               this.zone.run(() => {
                 const categorias = res.categorias || [];
                 const total100 = categorias.reduce(
@@ -194,14 +213,12 @@ export class SearchComponent {
                 });
                 this.cdr.detectChanges();
                 resolve();
-              });
-            },
-            error: (err: any) => {
+              }),
+            error: (err: any) =>
               this.zone.run(() => {
                 this.agregarError("Offshore ICIJ", err);
                 resolve();
-              });
-            },
+              }),
           });
           break;
 
@@ -209,6 +226,35 @@ export class SearchComponent {
           resolve();
       }
     });
+  }
+
+  onCaptchaResuelto(resultado: any) {
+    this.captchaData = null;
+    this.zone.run(() => {
+      this.resultados.push({
+        tipo: "antecedentes",
+        fuente: resultado.fuente || "Policía Nacional de Colombia",
+        tieneAntecedentes: resultado.tieneAntecedentes,
+        mensaje: resultado.mensaje,
+        data: { fecha: new Date().toLocaleString() },
+      });
+      this.cdr.detectChanges();
+      const res = (this as any)._pendingCaptchaResolve;
+      if (res) {
+        res();
+        (this as any)._pendingCaptchaResolve = null;
+      }
+    });
+  }
+
+  onCaptchaCancelado() {
+    this.captchaData = null;
+    this.cargando = false;
+    const res = (this as any)._pendingCaptchaResolve;
+    if (res) {
+      res();
+      (this as any)._pendingCaptchaResolve = null;
+    }
   }
 
   private agregarError(fuente: string, err: any) {
@@ -223,25 +269,6 @@ export class SearchComponent {
     this.cdr.detectChanges();
   }
 
-  onResultadoPolicia(evento: { tieneAntecedentes: boolean; mensaje: string }) {
-    this.mostrarCaptchaPolicia = false;
-    this.zone.run(() => {
-      this.resultados.push({
-        tipo: "antecedentes",
-        fuente: "Policía Nacional de Colombia",
-        tieneAntecedentes: evento.tieneAntecedentes,
-        mensaje: evento.mensaje,
-        data: { fecha: new Date().toLocaleString() },
-      });
-      this.cdr.detectChanges();
-    });
-  }
-
-  onCaptchaCancelado() {
-    this.mostrarCaptchaPolicia = false;
-    this.cargando = false;
-  }
-
   seleccionarTab(resultadoIndex: number, tab: string) {
     this.tabOffshoreActivo[resultadoIndex] = tab;
   }
@@ -254,7 +281,6 @@ export class SearchComponent {
   }
 
   filtrarScore100(resultados: any[]): any[] {
-    if (!resultados) return [];
-    return resultados.filter((o) => o.score === 100);
+    return (resultados || []).filter((o) => o.score === 100);
   }
 }
