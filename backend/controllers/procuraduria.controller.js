@@ -4,17 +4,17 @@
  * Flujo real del formulario:
  *   URL pública:  https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx
  *   URL técnica:  https://apps.procuraduria.gov.co/webcert/Certificado.aspx
+ *   PDF:          https://apps.procuraduria.gov.co/webcert/verpdf.aspx
  *
  * El formulario es ASP.NET WebForms con UpdatePanel (AJAX parcial).
- * Al seleccionar el tipo de documento dispara un __doPostBack que recarga el estado.
- * El captcha es un campo de texto con una pregunta en un label cercano al input
- * "txtRespuestaPregunta". El <h1> decorativo también tiene "?" y se debe ignorar.
+ * El submit correcto usa el botón "btnExportar" con __ASYNCPOST=true.
+ * Tras el submit exitoso aparece el botón "btnDescargar" que carga verpdf.aspx.
  *
  * TIPOS DE CAPTCHA SOPORTADOS:
  *  1. Matemático:        "¿ CUANTO ES 5 + 3 ?"
  *  2. Geográfico:        "¿ CAPITAL DE COLOMBIA ?"
- *  3. Nombre:            "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE ...?"
- *  4. Últimos dígitos:   "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO A CONSULTAR?"
+ *  3. Nombre:            "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE?"
+ *  4. Últimos dígitos:   "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO?"
  */
 
 const puppeteer = require("puppeteer-core");
@@ -69,22 +69,34 @@ async function lanzarBrowser() {
   });
 }
 
+// ─── Normalización ────────────────────────────────────────────────────────────
+
+function norm(t) {
+  return t
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // quitar tildes
+    .replace(/[¿?¡!()]/g, "")
+    .replace(/(.)\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // ─── Diccionario geográfico / general ─────────────────────────────────────────
 
 const RESPUESTAS_GEO = {
-  // Colombia general
   "CAPITAL DE COLOMBIA": "BOGOTA",
   "CAPITAL COLOMBIA": "BOGOTA",
   "CUAL ES LA CAPITAL DE COLOMBIA": "BOGOTA",
-  // Departamentos
   "CAPITAL DE CUNDINAMARCA": "BOGOTA",
   "CAPITAL CUNDINAMARCA": "BOGOTA",
   "CAPITAL DE ANTIOQUIA": "MEDELLIN",
   "CAPITAL ANTIOQUIA": "MEDELLIN",
-  "CAPITAL DE ANTIOQUIA SIN TILDE": "MEDELLIN",
   "CUAL ES LA CAPITAL DE ANTIOQUIA": "MEDELLIN",
+  "CAPITAL DEL VALE DEL CAUCA": "CALI",
   "CAPITAL DEL VALLE DEL CAUCA": "CALI",
   "CAPITAL VALLE DEL CAUCA": "CALI",
+  "CAPITAL VALE DEL CAUCA": "CALI",
   "CAPITAL VALLE": "CALI",
   "CAPITAL DE ATLANTICO": "BARRANQUILLA",
   "CAPITAL ATLANTICO": "BARRANQUILLA",
@@ -97,8 +109,8 @@ const RESPUESTAS_GEO = {
   "CAPITAL DE TOLIMA": "IBAGUE",
   "CAPITAL TOLIMA": "IBAGUE",
   "CAPITAL DE HUILA": "NEIVA",
-  "CAPITAL HUILA": "NEIVA",
   "CAPITAL DEL HUILA": "NEIVA",
+  "CAPITAL HUILA": "NEIVA",
   "CAPITAL DE BOYACA": "TUNJA",
   "CAPITAL BOYACA": "TUNJA",
   "CAPITAL DE CALDAS": "MANIZALES",
@@ -123,8 +135,6 @@ const RESPUESTAS_GEO = {
   "CAPITAL META": "VILLAVICENCIO",
   "CAPITAL DE CASANARE": "YOPAL",
   "CAPITAL CASANARE": "YOPAL",
-  "CAPITAL DE NARIÑO": "PASTO",
-  // Colores / datos generales
   "COLOR DEL CIELO": "AZUL",
   "COLOR CIELO": "AZUL",
   "COLOR DEL SOL": "AMARILLO",
@@ -133,30 +143,16 @@ const RESPUESTAS_GEO = {
   "DIAS SEMANA": "7",
   "MESES DEL ANO": "12",
   "MESES ANO": "12",
-  "MESES DEL AÑO": "12",
 };
 
-// ─── Normalización de texto ────────────────────────────────────────────────────
-
-function norm(t) {
-  return t
-    .toUpperCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[¿?¡!()]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 // ─── Resolver captcha ─────────────────────────────────────────────────────────
-// Recibe el texto crudo del captcha, el primer nombre y la cédula completa.
 
 function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
   if (!textoCrudo) return null;
   const texto = norm(textoCrudo);
   console.log("🔍 Captcha normalizado:", texto);
 
-  // 1. Matemático:  "CUANTO ES 5 + 3"
+  // 1. Matemático
   const mat = texto.match(/(\d+)\s*([\+\-\*xX×])\s*(\d+)/);
   if (mat) {
     const [, a, op, b] = mat;
@@ -169,40 +165,28 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
   }
 
   // 2. Últimos N dígitos del documento
-  //    "ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO A CONSULTAR"
-  //    "ESCRIBA LOS 2 ULTIMOS DIGITOS..."
-  //    "ULTIMOS 3 DIGITOS"
-  const digitosRe =
-    /(?:ULTIMOS?|ÚLTIMOS?)\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*D[IÍ]GITOS?/i;
+  const digitosRe = /ULTIMOS?\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*DIGITOS?/i;
   const digitosMatch = texto.match(digitosRe);
   if (
     digitosMatch ||
     texto.includes("ULTIMOS DIGITOS") ||
     texto.includes("ULTIMO DIGITO")
   ) {
-    let n = 2; // por defecto 2
+    const MAP_N = { UN: 1, UNO: 1, DOS: 2, TRES: 3, CUATRO: 4, CINCO: 5 };
+    let n = 2;
     if (digitosMatch) {
       const raw = digitosMatch[1].toUpperCase();
-      const MAP_N = {
-        UN: 1,
-        UNO: 1,
-        DOS: 2,
-        TRES: 3,
-        CUATRO: 4,
-        CINCO: 5,
-      };
       n = MAP_N[raw] !== undefined ? MAP_N[raw] : parseInt(raw) || 2;
     }
-    if (cedula && cedula.length >= n) {
-      const r = cedula.slice(-n);
+    if (cedula && String(cedula).length >= n) {
+      const r = String(cedula).slice(-n);
       console.log(`✅ Captcha dígitos: últimos ${n} de "${cedula}" → "${r}"`);
       return r;
     }
-    console.log("⚠️ Captcha dígitos sin cédula disponible");
     return "__CEDULA_REQUERIDA__";
   }
 
-  // 3. Primeras letras del primer nombre
+  // 3. Primeras letras del nombre
   if (
     texto.includes("PRIMERAS LETRAS") ||
     texto.includes("PRIMER NOMBRE") ||
@@ -214,14 +198,13 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
       console.log(`✅ Captcha nombre: "${pn}" → "${r}"`);
       return r;
     }
-    console.log("⚠️ Captcha nombre sin parámetro 'nombre'");
     return "__NOMBRE_REQUERIDO__";
   }
 
-  // 4. Geográfico / diccionario — buscar cualquier clave contenida en el texto
+  // 4. Geográfico / diccionario
   for (const [clave, resp] of Object.entries(RESPUESTAS_GEO)) {
     if (texto.includes(clave)) {
-      console.log(`✅ Geo: "${clave}"→"${resp}"`);
+      console.log(`✅ Geo: "${clave}" → "${resp}"`);
       return resp;
     }
   }
@@ -246,7 +229,6 @@ async function extraerCaptcha(frame) {
       "NAV",
       "ASIDE",
     ]);
-
     const esCaptchaValido = (t) =>
       t &&
       t.includes("?") &&
@@ -291,7 +273,7 @@ async function extraerCaptcha(frame) {
       parent = parent.parentElement;
     }
 
-    // D: TreeWalker sobre nodos de texto
+    // D: TreeWalker
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
@@ -310,10 +292,9 @@ async function extraerCaptcha(frame) {
       }
       if (decorativo) continue;
       const t = node.textContent.trim();
-      if (esCaptchaValido(t)) return { texto: t, via: "TreeWalker textNode" };
+      if (esCaptchaValido(t)) return { texto: t, via: "TreeWalker" };
     }
 
-    // E: fallback diagnóstico
     let cont = inp.parentElement;
     for (let i = 0; i < 5 && cont; i++) cont = cont.parentElement;
     return {
@@ -324,59 +305,13 @@ async function extraerCaptcha(frame) {
   });
 }
 
-// ─── Verificar campos hidden de ASP.NET ──────────────────────────────────────
+// ─── Obtener frame activo de apps.procuraduria ───────────────────────────────
 
-async function verificarHiddenFields(frame) {
-  const fields = await frame.evaluate(() =>
-    ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"].map((name) => {
-      const el = document.querySelector(`input[name="${name}"]`);
-      return { name, exists: !!el, len: el?.value?.length || 0 };
-    }),
-  );
-  console.log("🔒 Hidden fields ASP.NET:", fields);
-  return fields;
-}
-
-// ─── Esperar resultado del UpdatePanel ────────────────────────────────────────
-
-const PALABRAS_RESULTADO = [
-  "NO REGISTRA",
-  "SANCIONADO",
-  "INHABILIT",
-  "NO PRESENTA",
-  "SIN ANTECEDENTES",
-  "NO SE ENCONTRARON",
-  "NO TIENE SANCIONES",
-  "SUSPENDIDO",
-  "DESTITUIDO",
-  "MULTA",
-];
-
-async function esperarResultadoUpdatePanel(frame, timeoutMs = 30000) {
-  try {
-    await frame.waitForFunction(
-      (palabras) => {
-        const body = document.body.innerText.toUpperCase();
-        // Resultado positivo
-        if (palabras.some((p) => body.includes(p))) return true;
-        // Volvió al formulario con nuevo captcha (postback completó, aunque con error)
-        const tieneFormNuevo =
-          !!document.querySelector("input[name='ImageButton1']") &&
-          body.includes("?") &&
-          (body.includes("DIGITO") ||
-            body.includes("CAPITAL") ||
-            body.includes("CUANTO") ||
-            body.includes("NOMBRE") ||
-            body.includes("LETRAS"));
-        return tieneFormNuevo;
-      },
-      { timeout: timeoutMs },
-      PALABRAS_RESULTADO,
-    );
-    console.log("✅ UpdatePanel respondió");
-  } catch (_) {
-    console.log("⚠️ Timeout esperando UpdatePanel");
+function obtenerFrameActivo(page) {
+  for (const f of page.frames()) {
+    if (f.url().includes("apps.procuraduria.gov.co")) return f;
   }
+  return page.mainFrame();
 }
 
 // ─── Controlador principal ───────────────────────────────────────────────────
@@ -386,7 +321,7 @@ exports.consultarProcuraduria = async (req, res) => {
     cedula,
     tipoDocumento = "CC",
     tipoCertificado = "1",
-    nombre = "", // primer nombre (necesario si captcha lo pide)
+    nombre = "",
   } = req.body;
 
   if (!cedula)
@@ -420,45 +355,30 @@ exports.consultarProcuraduria = async (req, res) => {
 
     let workingFrame = page.mainFrame();
 
-    // Buscar iframe que apunte al formulario técnico
-    const iframeFormSrc = iframeSrcs.find(
-      (src) =>
-        src.includes("apps.procuraduria.gov.co") &&
-        (src.includes("Certificado") || src.includes("inicio")),
+    const iframeFormSrc = iframeSrcs.find((src) =>
+      src.includes("apps.procuraduria.gov.co"),
     );
 
     if (iframeFormSrc) {
       console.log("🖼️ Formulario en iframe:", iframeFormSrc);
       try {
-        // Esperar a que Puppeteer registre el frame
         await page.waitForFunction(
-          (url) =>
+          () =>
             [...document.querySelectorAll("iframe")].some((f) =>
-              f.src.includes(url),
+              f.src.includes("apps.procuraduria.gov.co"),
             ),
           { timeout: 10000 },
-          "apps.procuraduria.gov.co",
         );
-
-        // Buscar en page.frames() — puede tener URL diferente a iframeSrc (redirect)
-        for (const f of page.frames()) {
-          if (f.url().includes("apps.procuraduria.gov.co")) {
-            workingFrame = f;
-            console.log("✅ Frame activo:", f.url());
-            break;
-          }
-        }
-
-        // Si no lo encontramos en frames(), usar contentFrame del elemento
-        if (workingFrame === page.mainFrame()) {
-          const handle =
-            (await page.$("iframe[src*='Certificado']")) ||
-            (await page.$("iframe[src*='apps.procuraduria']"));
+        workingFrame = obtenerFrameActivo(page);
+        if (workingFrame !== page.mainFrame()) {
+          console.log("✅ Frame activo:", workingFrame.url());
+        } else {
+          const handle = await page.$("iframe[src*='apps.procuraduria']");
           if (handle) {
             const cf = await handle.contentFrame();
             if (cf) {
               workingFrame = cf;
-              console.log("✅ Frame activo (contentFrame):", cf.url());
+              console.log("✅ Frame (contentFrame):", cf.url());
             }
           }
         }
@@ -467,7 +387,7 @@ exports.consultarProcuraduria = async (req, res) => {
       }
     }
 
-    // Si seguimos en mainFrame y no es el formulario, ir directo
+    // Fallback: ir directo al formulario técnico
     if (
       workingFrame === page.mainFrame() &&
       !page.url().includes("Certificado.aspx")
@@ -479,33 +399,28 @@ exports.consultarProcuraduria = async (req, res) => {
       console.log("✅ URL formulario:", page.url());
     }
 
-    // ── 3. Verificar que el formulario esté listo ─────────────────────────
+    // ── 3. Esperar que el formulario esté listo ───────────────────────────
     try {
       await workingFrame.waitForSelector("select[name='ddlTipoID']", {
         timeout: 10000,
       });
     } catch (_) {
       throw new Error(
-        "No se encontró el selector 'ddlTipoID' en el frame. El formulario no cargó.",
+        "No se encontró 'ddlTipoID'. El formulario no cargó correctamente.",
       );
     }
 
-    // Diagnóstico de inputs
     const inputsLog = await workingFrame.evaluate(() =>
       [...document.querySelectorAll("input,select")]
-        .map((el) => `${el.tagName}[name=${el.name} type=${el.type}]`)
+        .map((el) => `${el.tagName}[name=${el.name}]`)
         .join(" | "),
     );
-    console.log("📋 Inputs:", inputsLog.substring(0, 800));
+    console.log("📋 Inputs:", inputsLog.substring(0, 600));
 
-    // Verificar campos hidden ASP.NET (diagnóstico, no bloquea)
-    await verificarHiddenFields(workingFrame);
-
-    // ── 4. Seleccionar tipo de documento → dispara postback ASP.NET ───────
+    // ── 4. Seleccionar tipo de documento → postback ASP.NET ───────────────
     console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
     await workingFrame.select("select[name='ddlTipoID']", ddlTipoID);
 
-    // Esperar a que el postback regenere el captcha
     try {
       await workingFrame.waitForFunction(
         () => !!document.querySelector("input[name='txtRespuestaPregunta']"),
@@ -514,7 +429,7 @@ exports.consultarProcuraduria = async (req, res) => {
     } catch (_) {
       console.log("⚠️ txtRespuestaPregunta no apareció tras postback");
     }
-    await sleep(1500); // margen para que el label del captcha se renderice
+    await sleep(1200);
 
     // ── 5. Leer y resolver captcha ────────────────────────────────────────
     const captchaInfo = await extraerCaptcha(workingFrame);
@@ -524,12 +439,11 @@ exports.consultarProcuraduria = async (req, res) => {
       "| vía:",
       captchaInfo.via,
     );
-    if (captchaInfo.htmlDebug) {
-      console.log("🔍 HTML debug:", captchaInfo.htmlDebug.substring(0, 1000));
-    }
+    if (captchaInfo.htmlDebug)
+      console.log("🔍 HTML debug:", captchaInfo.htmlDebug.substring(0, 800));
 
-    // Fallback: buscar en innerText completo
     let textoCaptcha = captchaInfo.texto;
+
     if (!textoCaptcha) {
       const innerText = await workingFrame.evaluate(
         () => document.body.innerText,
@@ -554,50 +468,41 @@ exports.consultarProcuraduria = async (req, res) => {
     let respuestaCaptcha = resolverCaptcha(textoCaptcha, nombre, cedula);
     console.log("🔢 Respuesta:", respuestaCaptcha);
 
-    // Captcha requiere nombre → abortar con instrucción al llamante
     if (respuestaCaptcha === "__NOMBRE_REQUERIDO__") {
       await browser.close();
       return res.status(422).json({
         error: "Captcha de nombre requerido",
         detalle:
-          "El formulario pide las 2 primeras letras del primer nombre. Incluya 'nombre' en el body.",
+          "El formulario pide las 2 primeras letras del nombre. Incluya 'nombre' en el body.",
         captchaPregunta: textoCaptcha,
       });
     }
-
-    // Captcha requiere cédula (no debería ocurrir, ya viene en el body)
     if (respuestaCaptcha === "__CEDULA_REQUERIDA__") {
       await browser.close();
       return res.status(422).json({
         error: "Captcha de dígitos requerido pero cédula vacía",
-        detalle:
-          "El formulario pide los últimos dígitos del documento. Incluya 'cedula' en el body.",
         captchaPregunta: textoCaptcha,
       });
     }
-
-    // Fallback si no se pudo resolver
     if (!respuestaCaptcha) {
-      console.log("⚠️ Captcha irreconocible — usando fallback '8'");
+      console.log("⚠️ Captcha irreconocible — fallback '8'");
       respuestaCaptcha = "8";
     }
 
-    // ── 6. Número de documento ────────────────────────────────────────────
+    // ── 6. Rellenar formulario ────────────────────────────────────────────
     console.log("✏️ Ingresando cédula:", cedula);
     await workingFrame.click("input[name='txtNumID']", { clickCount: 3 });
     await workingFrame.type("input[name='txtNumID']", String(cedula));
 
-    // ── 7. Tipo de certificado ────────────────────────────────────────────
     try {
       await workingFrame.click(
         `input[name='rblTipoCert'][value='${tipoCertificado}']`,
       );
       await sleep(300);
     } catch (_) {
-      console.log("ℹ️ rblTipoCert no encontrado o ya seleccionado");
+      console.log("ℹ️ rblTipoCert no encontrado");
     }
 
-    // ── 8. Ingresar captcha ───────────────────────────────────────────────
     await workingFrame.click("input[name='txtRespuestaPregunta']", {
       clickCount: 3,
     });
@@ -607,57 +512,182 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
-    // ── 9. Submit ─────────────────────────────────────────────────────────
-    console.log("🚀 Enviando formulario...");
-    await workingFrame.click("input[name='ImageButton1']");
+    // ── 7. Submit vía btnExportar (AJAX UpdatePanel) ──────────────────────
+    // Según el network capture, el submit real usa btnExportar con __ASYNCPOST=true
+    console.log("🚀 Enviando formulario (UpdatePanel / btnExportar)...");
 
-    // Esperar respuesta del UpdatePanel (o navegación completa)
-    await Promise.race([
-      esperarResultadoUpdatePanel(workingFrame, 30000),
-      page
-        .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-        .catch(() => {}),
-    ]);
-    await sleep(1500);
+    // Interceptar respuesta AJAX para diagnóstico
+    let ajaxStatus = 0;
+    const ajaxInterceptor = (response) => {
+      const url = response.url();
+      if (
+        url.includes("Certificado.aspx") &&
+        response.request().method() === "POST"
+      ) {
+        ajaxStatus = response.status();
+        response
+          .text()
+          .then((t) =>
+            console.log(
+              `📥 AJAX response (${ajaxStatus}):`,
+              t.substring(0, 150),
+            ),
+          )
+          .catch(() => {});
+      }
+    };
+    page.on("response", ajaxInterceptor);
+
+    // Intentar primero btnExportar (el correcto según network), luego ImageButton1
+    const btnClickado = await workingFrame.evaluate(() => {
+      const btn =
+        document.querySelector("input[name='btnExportar']") ||
+        document.querySelector("input[name='ImageButton1']");
+      if (btn) {
+        const n = btn.name;
+        btn.click();
+        return n;
+      }
+      return null;
+    });
+    console.log("🖱️ Botón clickado:", btnClickado);
+
+    // Esperar resultado en el UpdatePanel
+    // Éxito: aparece btnDescargar o palabras de resultado
+    // También termina si vuelve el formulario (postback completo aunque rechazado)
+    const PALABRAS_RESULTADO = [
+      "NO REGISTRA",
+      "SANCIONADO",
+      "INHABILIT",
+      "NO PRESENTA",
+      "SIN ANTECEDENTES",
+      "NO SE ENCONTRARON",
+      "SUSPENDIDO",
+      "DESTITUIDO",
+      "MULTA",
+    ];
+
+    try {
+      await workingFrame.waitForFunction(
+        (palabras) => {
+          const body = document.body.innerText.toUpperCase();
+          if (palabras.some((p) => body.includes(p))) return true;
+          if (document.querySelector("input[name='btnDescargar']")) return true;
+          // Formulario volvió con nuevo captcha (postback completó pero rechazado)
+          const tieneNuevoCaptcha =
+            !!document.querySelector("input[name='txtRespuestaPregunta']") &&
+            body.includes("?") &&
+            (body.includes("DIGITO") ||
+              body.includes("CAPITAL") ||
+              body.includes("CUANTO") ||
+              body.includes("LETRAS"));
+          return tieneNuevoCaptcha;
+        },
+        { timeout: 30000 },
+        PALABRAS_RESULTADO,
+      );
+      console.log("✅ UpdatePanel respondió");
+    } catch (_) {
+      console.log("⚠️ Timeout esperando UpdatePanel");
+    }
+
+    page.off("response", ajaxInterceptor);
+    await sleep(1000);
+
+    // Re-buscar frame activo (puede haber cambiado tras el UpdatePanel)
+    const frameResultado = obtenerFrameActivo(page);
+    const textoPagina = await frameResultado
+      .evaluate(() => document.body.innerText.toUpperCase())
+      .catch(() => "");
 
     const urlFinal = page.url();
-    const textoPagina = await workingFrame
-      .evaluate(() => document.body.innerText.toUpperCase())
-      .catch(async () => {
-        // El frame puede haber cambiado si hubo navegación
-        return page.evaluate(() => document.body.innerText.toUpperCase());
-      });
-
     console.log("📍 URL final:", urlFinal);
     console.log("📝 Resultado (800):", textoPagina.substring(0, 800));
 
-    // ── 10. ¿Volvió al formulario sin resultado? ──────────────────────────
+    // ── 8. Verificar si hay resultado o botón de descarga ─────────────────
     const tieneResultado = PALABRAS_RESULTADO.some((p) =>
       textoPagina.includes(p),
     );
+    const tieneBtnDescarga = await frameResultado
+      .evaluate(
+        () =>
+          !!(
+            document.querySelector("input[name='btnDescargar']") ||
+            document.querySelector("input[value*='escargar']") ||
+            document.querySelector("a[id*='Descargar']")
+          ),
+      )
+      .catch(() => false);
 
-    if (!tieneResultado) {
-      // Leer nuevo captcha para diagnóstico
-      const captchaNuevo = await extraerCaptcha(workingFrame).catch(() => ({
-        texto: "(error leyendo captcha)",
-        via: "catch",
+    console.log(
+      "🔍 tieneResultado:",
+      tieneResultado,
+      "| tieneBtnDescarga:",
+      tieneBtnDescarga,
+    );
+
+    if (!tieneResultado && !tieneBtnDescarga) {
+      const captchaNuevo = await extraerCaptcha(frameResultado).catch(() => ({
+        texto: "(error leyendo)",
       }));
       await browser.close();
       return res.status(422).json({
         error: "Formulario rechazado",
         detalle:
-          "El servidor devolvió el formulario. Posibles causas: captcha incorrecto, sesión vencida o documento no encontrado.",
-        captchaUsado: {
-          pregunta: textoCaptcha,
-          respuesta: respuestaCaptcha,
-        },
+          "El servidor devolvió el formulario. Captcha incorrecto o sesión vencida.",
+        captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
         captchaNuevo: captchaNuevo.texto || "(no detectado)",
         urlFinal,
         fragmentoRespuesta: textoPagina.substring(0, 400),
       });
     }
 
-    // ── 11. Interpretar resultado ─────────────────────────────────────────
+    // ── 9. Descargar PDF desde verpdf.aspx ───────────────────────────────
+    let pdfBase64 = null;
+    let pdfUrl = "";
+
+    if (tieneBtnDescarga) {
+      console.log("📄 Capturando PDF desde verpdf.aspx...");
+      try {
+        const pdfPromise = new Promise((resolve, reject) => {
+          const tid = setTimeout(
+            () => reject(new Error("Timeout capturando PDF")),
+            20000,
+          );
+          page.on("response", async (resp) => {
+            if (resp.url().includes("verpdf.aspx")) {
+              clearTimeout(tid);
+              const buf = await resp.buffer().catch(() => null);
+              resolve({ url: resp.url(), buffer: buf });
+            }
+          });
+        });
+
+        // Click en el botón de descarga
+        await frameResultado.evaluate(() => {
+          const btn =
+            document.querySelector("input[name='btnDescargar']") ||
+            document.querySelector("input[value*='escargar']") ||
+            document.querySelector("a[id*='Descargar']");
+          if (btn) btn.click();
+        });
+
+        const pdfData = await pdfPromise.catch((e) => {
+          console.log("⚠️ No se capturó el PDF:", e.message);
+          return null;
+        });
+
+        if (pdfData?.buffer) {
+          pdfBase64 = pdfData.buffer.toString("base64");
+          pdfUrl = pdfData.url;
+          console.log("✅ PDF capturado:", pdfData.buffer.length, "bytes");
+        }
+      } catch (e) {
+        console.log("⚠️ Error en descarga de PDF:", e.message);
+      }
+    }
+
+    // ── 10. Interpretar resultado ─────────────────────────────────────────
     const sinSanciones =
       textoPagina.includes("NO REGISTRA") ||
       textoPagina.includes("SIN ANTECEDENTES") ||
@@ -683,8 +713,11 @@ exports.consultarProcuraduria = async (req, res) => {
         ? "La persona REGISTRA sanciones en la Procuraduría."
         : sinSanciones
           ? "La persona NO registra sanciones en la Procuraduría."
-          : "No se pudo determinar el resultado con claridad.",
-      certificadoUrl: urlFinal !== FORM_URL ? urlFinal : "",
+          : "Consulta procesada. Revise el PDF adjunto para el detalle completo.",
+      certificadoUrl: pdfUrl || (urlFinal !== FORM_URL ? urlFinal : ""),
+      // PDF en base64 (guardarlo como archivo .pdf en el cliente)
+      // Será null si no se pudo capturar
+      pdfBase64,
       detalle: textoPagina.substring(0, 800),
     });
   } catch (error) {
