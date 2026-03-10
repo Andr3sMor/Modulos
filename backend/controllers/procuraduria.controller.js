@@ -4,13 +4,12 @@
  * Flujo real del formulario:
  *   URL pública:  https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx
  *   URL técnica:  https://apps.procuraduria.gov.co/webcert/Certificado.aspx
- *   PDF:          https://apps.procuraduria.gov.co/webcert/verpdf.aspx  (POST redirect)
+ *   PDF:          https://apps.procuraduria.gov.co/webcert/verpdf.aspx  (POST con VIEWSTATE)
  *
- * El formulario es ASP.NET WebForms con UpdatePanel (AJAX parcial).
- * El submit usa btnExportar con __ASYNCPOST=true.
- * La respuesta AJAX contiene "pageRedirect||%2fwebcert%2fverpdf.aspx" lo que
- * significa que ScriptManager ejecuta window.location = "/webcert/verpdf.aspx"
- * automáticamente — no hay botón de descarga que clickar, el iframe navega solo.
+ * Flujo ASP.NET:
+ *  1. Submit con btnExportar → UpdatePanel responde con pageRedirect a verpdf.aspx
+ *  2. El iframe navega a verpdf.aspx → devuelve HTML con btnDescargar
+ *  3. Click en btnDescargar → POST a verpdf.aspx → devuelve el PDF binario
  *
  * TIPOS DE CAPTCHA SOPORTADOS:
  *  1. Matemático:        "¿ CUANTO ES 5 + 3 ?"
@@ -21,12 +20,13 @@
 
 const puppeteer = require("puppeteer-core");
 const chromium = require("@sparticuz/chromium");
+const https = require("https");
+const qs = require("querystring");
 
 const PORTAL_URL =
   "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
 const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
-const PDF_HOST = "apps.procuraduria.gov.co";
-const PDF_PATH = "verpdf.aspx";
+const VERPDF_URL = "https://apps.procuraduria.gov.co/webcert/verpdf.aspx";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,7 +81,7 @@ function norm(t) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[¿?¡!()]/g, "")
-    .replace(/(.)\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
+    .replace(/(.)\1+/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -156,7 +156,6 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
   const texto = norm(textoCrudo);
   console.log("🔍 Captcha normalizado:", texto);
 
-  // 1. Matemático
   const mat = texto.match(/(\d+)\s*([\+\-\*xX×])\s*(\d+)/);
   if (mat) {
     const [, a, op, b] = mat;
@@ -168,7 +167,6 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return String(r);
   }
 
-  // 2. Últimos N dígitos del documento
   const digitosRe = /ULTIMOS?\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*DIGITOS?/i;
   const digitosMatch = texto.match(digitosRe);
   if (
@@ -190,7 +188,6 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return "__CEDULA_REQUERIDA__";
   }
 
-  // 3. Primeras letras del nombre
   if (
     texto.includes("PRIMERAS LETRAS") ||
     texto.includes("PRIMER NOMBRE") ||
@@ -205,7 +202,6 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return "__NOMBRE_REQUERIDO__";
   }
 
-  // 4. Geográfico / diccionario
   for (const [clave, resp] of Object.entries(RESPUESTAS_GEO)) {
     if (texto.includes(clave)) {
       console.log(`✅ Geo: "${clave}" → "${resp}"`);
@@ -319,12 +315,10 @@ function obtenerFrameActivo(page) {
 async function esperarResultadoUpdatePanel(page, frame, ajaxResolvedPromise) {
   const inicio = Date.now();
 
-  // Paso 1: esperar que llegue la respuesta AJAX de red
   console.log("⏳ Esperando respuesta AJAX del servidor...");
   await Promise.race([ajaxResolvedPromise, sleep(35000)]);
   console.log(`✅ Respuesta AJAX recibida (${Date.now() - inicio}ms)`);
 
-  // Paso 2: esperar que aparezca el spinner (máx 5s, puede que ya pasó)
   console.log("⏳ Esperando fin del spinner en el DOM...");
   await frame
     .waitForFunction(
@@ -338,7 +332,6 @@ async function esperarResultadoUpdatePanel(page, frame, ajaxResolvedPromise) {
       console.log("ℹ️ Spinner no detectado (ya pasó o no apareció)"),
     );
 
-  // Paso 3: esperar que desaparezca el spinner (máx 30s)
   await frame
     .waitForFunction(
       () =>
@@ -351,117 +344,160 @@ async function esperarResultadoUpdatePanel(page, frame, ajaxResolvedPromise) {
       console.log("⚠️ Timeout esperando que el spinner desaparezca"),
     );
 
-  console.log(
-    `✅ Spinner desapareció del DOM (${Date.now() - inicio}ms total)`,
-  );
+  console.log(`✅ Spinner desapareció (${Date.now() - inicio}ms total)`);
   await sleep(800);
 }
 
-// ─── Capturar PDF desde verpdf.aspx ──────────────────────────────────────────
-// El ScriptManager de ASP.NET ejecuta un pageRedirect automático al iframe.
-// La respuesta AJAX contiene: "pageRedirect||%2fwebcert%2fverpdf.aspx"
-// Esto hace que el iframe navegue a verpdf.aspx via GET con las cookies de sesión.
-// Puppeteer intercepta esa respuesta y extrae los bytes del PDF.
+// ─── POST a verpdf.aspx para obtener el PDF binario ──────────────────────────
+// El flujo real es:
+//  1. pageRedirect navega el iframe a verpdf.aspx → GET → devuelve HTML con btnDescargar
+//  2. Click en btnDescargar → POST a verpdf.aspx con __VIEWSTATE de esa página → PDF binario
+//
+// Aquí replicamos ambos pasos con http nativo usando las cookies de sesión de Puppeteer.
 
-async function capturarPDF(page, ajaxBody) {
-  // Extraer la URL de redirect del cuerpo AJAX
-  // Formato: "pageRedirect||%2fwebcert%2fverpdf.aspx"
-  const redirectMatch = ajaxBody.match(/pageRedirect\|\|([^|]+)/);
-  let pdfRelUrl = redirectMatch
-    ? decodeURIComponent(redirectMatch[1].trim())
-    : "/webcert/verpdf.aspx";
+async function obtenerPDFConPost(cookieStr, previousPage) {
+  // ── Paso 1: GET a verpdf.aspx para obtener el HTML con __VIEWSTATE ──────
+  console.log(
+    "📄 GET a verpdf.aspx para obtener VIEWSTATE de la página de descarga...",
+  );
 
-  const pdfAbsUrl = `https://${PDF_HOST}${pdfRelUrl}`;
-  console.log("📄 URL del PDF detectada:", pdfAbsUrl);
-
-  // Estrategia 1: interceptar la respuesta de verpdf.aspx que ya puede estar
-  // siendo navegada por el iframe tras el redirect automático de ASP.NET
-  const pdfPromise = new Promise((resolve, reject) => {
-    const tid = setTimeout(
-      () => reject(new Error("Timeout capturando PDF")),
-      15000,
-    );
-    const handler = async (resp) => {
-      if (resp.url().includes(PDF_PATH)) {
-        clearTimeout(tid);
-        page.off("response", handler);
-        const ct = resp.headers()["content-type"] || "";
-        console.log(
-          `📥 Respuesta verpdf.aspx (${resp.status()}) content-type: ${ct}`,
-        );
-        const buf = await resp.buffer().catch(() => null);
-        resolve({ url: resp.url(), buffer: buf, contentType: ct });
-      }
+  const htmlVerpdf = await new Promise((resolve, reject) => {
+    const options = {
+      hostname: "apps.procuraduria.gov.co",
+      path: "/webcert/verpdf.aspx",
+      method: "GET",
+      headers: {
+        Cookie: cookieStr,
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,*/*",
+        "Accept-Language": "es-CO,es;q=0.9",
+        Referer: "https://apps.procuraduria.gov.co/webcert/Certificado.aspx",
+      },
+      rejectUnauthorized: false,
     };
-    page.on("response", handler);
-  });
 
-  // Si el redirect automático ya navegó el iframe, la promesa se resuelve sola.
-  // Si no, hacer GET explícito al PDF usando las cookies de sesión actuales.
-  const result = await pdfPromise.catch(async (e) => {
-    console.log("⚠️ Redirect automático no interceptado:", e.message);
-    console.log("🔄 Intentando GET explícito a verpdf.aspx...");
-
-    // Obtener cookies de sesión actuales
-    const cookies = await page.cookies();
-    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-
-    try {
-      const https = require("https");
-      const buf = await new Promise((resolve, reject) => {
-        const options = {
-          hostname: PDF_HOST,
-          path: pdfRelUrl,
-          method: "GET",
-          headers: {
-            Cookie: cookieStr,
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-            Accept: "application/pdf,*/*",
-            "Accept-Language": "es-CO,es;q=0.9",
-            Referer: `https://${PDF_HOST}/webcert/Certificado.aspx`,
-          },
-          rejectUnauthorized: false,
-        };
-        const req = https.request(options, (res) => {
-          const chunks = [];
-          res.on("data", (chunk) => chunks.push(chunk));
-          res.on("end", () => resolve(Buffer.concat(chunks)));
-          res.on("error", reject);
-        });
-        req.on("error", reject);
-        req.end();
+    // Seguir redirects manualmente
+    const doRequest = (opts, depth = 0) => {
+      if (depth > 5) return reject(new Error("Demasiados redirects"));
+      const req = https.request(opts, (res) => {
+        // Redirect 302
+        if (
+          (res.statusCode === 301 || res.statusCode === 302) &&
+          res.headers.location
+        ) {
+          const loc = res.headers.location;
+          console.log(`↪️ Redirect (${res.statusCode}) → ${loc}`);
+          // Actualizar cookies si vienen en Set-Cookie
+          const newCookies = res.headers["set-cookie"];
+          if (newCookies) {
+            const extra = newCookies.map((c) => c.split(";")[0]).join("; ");
+            opts.headers["Cookie"] = cookieStr + "; " + extra;
+          }
+          const newPath = loc.startsWith("http")
+            ? new URL(loc).pathname + (new URL(loc).search || "")
+            : loc;
+          doRequest({ ...opts, path: newPath }, depth + 1);
+          return;
+        }
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        res.on("error", reject);
       });
-      console.log("✅ PDF obtenido vía GET explícito:", buf.length, "bytes");
-      return { url: pdfAbsUrl, buffer: buf, contentType: "application/pdf" };
-    } catch (err) {
-      console.log("❌ GET explícito falló:", err.message);
-      return null;
-    }
+      req.on("error", reject);
+      req.end();
+    };
+    doRequest(options);
   });
 
-  if (!result?.buffer || result.buffer.length < 100) {
-    console.log("⚠️ Buffer del PDF vacío o muy pequeño");
-    return { pdfBase64: null, pdfUrl: "" };
+  console.log("📄 HTML verpdf.aspx obtenido, longitud:", htmlVerpdf.length);
+
+  // Verificar si ya es un PDF (poco probable pero posible)
+  if (htmlVerpdf.startsWith("%PDF")) {
+    console.log("✅ verpdf.aspx devolvió PDF directamente en GET");
+    return Buffer.from(htmlVerpdf, "binary");
   }
 
-  // Verificar que realmente sea un PDF (empieza con %PDF)
-  const header = result.buffer.slice(0, 4).toString("ascii");
-  if (header !== "%PDF") {
-    console.log("⚠️ El archivo no parece un PDF (header:", header, ")");
-    // Puede ser HTML de error — loguear inicio para diagnóstico
-    console.log(
-      "🔍 Inicio del buffer:",
-      result.buffer.slice(0, 200).toString("utf8"),
-    );
-    return { pdfBase64: null, pdfUrl: result.url };
-  }
-
-  console.log("✅ PDF válido capturado:", result.buffer.length, "bytes");
-  return {
-    pdfBase64: result.buffer.toString("base64"),
-    pdfUrl: result.url,
+  // ── Paso 2: extraer campos hidden del HTML ───────────────────────────────
+  const extractHidden = (name) => {
+    const re = new RegExp(`name="${name}"[^>]*value="([^"]*)"`, "i");
+    const m =
+      htmlVerpdf.match(re) ||
+      htmlVerpdf.match(new RegExp(`id="${name}"[^>]*value="([^"]*)"`, "i"));
+    return m ? m[1] : "";
   };
+
+  const viewstate = extractHidden("__VIEWSTATE");
+  const viewstateGenerator = extractHidden("__VIEWSTATEGENERATOR");
+  const eventValidation = extractHidden("__EVENTVALIDATION");
+  const prevPage = extractHidden("__PREVIOUSPAGE") || previousPage || "";
+
+  console.log(
+    "🔒 VIEWSTATE len:",
+    viewstate.length,
+    "| EVENTVALIDATION len:",
+    eventValidation.length,
+  );
+
+  if (!viewstate) {
+    console.log("⚠️ No se encontró __VIEWSTATE en verpdf.aspx");
+    console.log("🔍 HTML inicio:", htmlVerpdf.substring(0, 500));
+    return null;
+  }
+
+  // ── Paso 3: POST a verpdf.aspx simulando click en btnDescargar ──────────
+  // Según network capture: btnDescargar.x=215, btnDescargar.y=40
+  const postData = qs.stringify({
+    __EVENTTARGET: "",
+    __EVENTARGUMENT: "",
+    __VIEWSTATE: viewstate,
+    __VIEWSTATEGENERATOR: viewstateGenerator,
+    __PREVIOUSPAGE: prevPage,
+    __EVENTVALIDATION: eventValidation,
+    "btnDescargar.x": "215",
+    "btnDescargar.y": "40",
+  });
+
+  console.log(
+    "📤 POST a verpdf.aspx (btnDescargar), payload size:",
+    postData.length,
+  );
+
+  const pdfBuffer = await new Promise((resolve, reject) => {
+    const options = {
+      hostname: "apps.procuraduria.gov.co",
+      path: "/webcert/verpdf.aspx",
+      method: "POST",
+      headers: {
+        Cookie: cookieStr,
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Length": Buffer.byteLength(postData),
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
+        Accept: "application/pdf,*/*",
+        "Accept-Language": "es-CO,es;q=0.9",
+        Referer: "https://apps.procuraduria.gov.co/webcert/verpdf.aspx",
+        Origin: "https://apps.procuraduria.gov.co",
+      },
+      rejectUnauthorized: false,
+    };
+
+    const req = https.request(options, (res) => {
+      console.log(
+        `📥 POST verpdf.aspx → ${res.statusCode} content-type: ${res.headers["content-type"]}`,
+      );
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+      res.on("error", reject);
+    });
+    req.on("error", reject);
+    req.write(postData);
+    req.end();
+  });
+
+  return pdfBuffer;
 }
 
 // ─── Controlador principal ───────────────────────────────────────────────────
@@ -544,10 +580,9 @@ exports.consultarProcuraduria = async (req, res) => {
       await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 45000 });
       await sleep(1500);
       workingFrame = page.mainFrame();
-      console.log("✅ URL formulario:", page.url());
     }
 
-    // ── 3. Esperar que el formulario esté listo ───────────────────────────
+    // ── 3. Esperar formulario listo ───────────────────────────────────────
     try {
       await workingFrame.waitForSelector("select[name='ddlTipoID']", {
         timeout: 10000,
@@ -604,7 +639,6 @@ exports.consultarProcuraduria = async (req, res) => {
               l,
             ),
         );
-      console.log("🔎 Candidatos en innerText:", lineas);
       if (lineas.length > 0) textoCaptcha = lineas[0];
     }
 
@@ -616,8 +650,7 @@ exports.consultarProcuraduria = async (req, res) => {
       await browser.close();
       return res.status(422).json({
         error: "Captcha de nombre requerido",
-        detalle:
-          "El formulario pide las 2 primeras letras del nombre. Incluya 'nombre' en el body.",
+        detalle: "Incluya 'nombre' en el body.",
         captchaPregunta: textoCaptcha,
       });
     }
@@ -656,32 +689,17 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
-    // ── 7. Submit y captura simultánea del PDF ────────────────────────────
-    // IMPORTANTE: registrar el listener del PDF ANTES del click para no perder
-    // la respuesta de verpdf.aspx que llega automáticamente tras el pageRedirect.
-    console.log("🚀 Enviando formulario (UpdatePanel / btnExportar)...");
+    // ── 7. Submit ─────────────────────────────────────────────────────────
+    console.log("🚀 Enviando formulario...");
 
     let ajaxBody = "";
     let ajaxResolve;
-    const ajaxResolvedPromise = new Promise((res) => {
-      ajaxResolve = res;
+    const ajaxResolvedPromise = new Promise((r) => {
+      ajaxResolve = r;
     });
 
-    // Promise que se resuelve cuando recibimos la respuesta de verpdf.aspx
-    let pdfResolve, pdfReject;
-    const pdfInterceptPromise = new Promise((res, rej) => {
-      pdfResolve = res;
-      pdfReject = rej;
-    });
-    const pdfTid = setTimeout(
-      () => pdfReject(new Error("Timeout verpdf")),
-      40000,
-    );
-
-    const responseHandler = async (response) => {
+    page.on("response", (response) => {
       const url = response.url();
-
-      // Respuesta del submit del formulario
       if (
         url.includes("Certificado.aspx") &&
         response.request().method() === "POST"
@@ -698,22 +716,8 @@ exports.consultarProcuraduria = async (req, res) => {
           })
           .catch(() => ajaxResolve(""));
       }
+    });
 
-      // Respuesta del PDF (puede llegar automáticamente por el pageRedirect)
-      if (url.includes(PDF_PATH)) {
-        clearTimeout(pdfTid);
-        page.off("response", responseHandler);
-        const ct = response.headers()["content-type"] || "";
-        const buf = await response.buffer().catch(() => null);
-        console.log(
-          `📥 PDF interceptado (${response.status()}) ct:${ct} bytes:${buf?.length}`,
-        );
-        pdfResolve({ url, buffer: buf, contentType: ct });
-      }
-    };
-    page.on("response", responseHandler);
-
-    // Click en btnExportar
     const btnClickado = await workingFrame.evaluate(() => {
       const btn =
         document.querySelector("input[name='btnExportar']") ||
@@ -726,70 +730,84 @@ exports.consultarProcuraduria = async (req, res) => {
     });
     console.log("🖱️ Botón clickado:", btnClickado);
 
-    // Esperar ciclo completo del UpdatePanel
     await esperarResultadoUpdatePanel(page, workingFrame, ajaxResolvedPromise);
 
-    const urlFinal = page.url();
-
-    // ── 8. Obtener el PDF ─────────────────────────────────────────────────
-    // Puede que ya lo interceptamos, o puede que necesitemos GET explícito
-    console.log("📄 Procesando PDF...");
-    let pdfResult = { pdfBase64: null, pdfUrl: "" };
-
-    // Verificar si el pageRedirect ya disparó la respuesta
-    const pdfIntercepted = await Promise.race([
-      pdfInterceptPromise,
-      sleep(2000).then(() => null), // si no llegó en 2s extra, usar fallback
-    ]).catch(() => null);
-
-    if (pdfIntercepted?.buffer) {
-      const header = pdfIntercepted.buffer.slice(0, 4).toString("ascii");
-      if (header === "%PDF") {
-        console.log(
-          "✅ PDF interceptado automáticamente:",
-          pdfIntercepted.buffer.length,
-          "bytes",
-        );
-        pdfResult = {
-          pdfBase64: pdfIntercepted.buffer.toString("base64"),
-          pdfUrl: pdfIntercepted.url,
-        };
-      } else {
-        console.log("⚠️ Respuesta de verpdf no es PDF (header:", header, ")");
-        console.log(
-          "🔍 Inicio:",
-          pdfIntercepted.buffer.slice(0, 200).toString("utf8"),
-        );
-      }
-    }
-
-    // Si no se interceptó automáticamente, usar GET explícito con cookies de sesión
-    if (!pdfResult.pdfBase64) {
-      console.log(
-        "🔄 PDF no interceptado — GET explícito con cookies de sesión...",
-      );
-      pdfResult = await capturarPDF(page, ajaxBody);
-    }
-
-    page.off("response", responseHandler);
-
-    // ── 9. Leer texto del resultado para interpretación ───────────────────
+    // ── 8. Leer texto de resultado ────────────────────────────────────────
     const frameResultado = obtenerFrameActivo(page);
     const textoPagina = await frameResultado
       .evaluate(() => document.body.innerText.toUpperCase())
       .catch(() => "");
 
+    const urlFinal = page.url();
     console.log("📍 URL final:", urlFinal);
     console.log("📝 Texto (400):", textoPagina.substring(0, 400));
 
-    // ── 10. Interpretar resultado ─────────────────────────────────────────
+    // Verificar que fue exitoso
+    const esExitoso =
+      textoPagina.includes("DESCARGUE SU CERTIFICADO") ||
+      textoPagina.includes("NO REGISTRA") ||
+      textoPagina.includes("SANCIONADO") ||
+      textoPagina.includes("INHABILIT") ||
+      textoPagina.includes("NO PRESENTA") ||
+      textoPagina.includes("SIN ANTECEDENTES");
+
+    if (!esExitoso) {
+      const captchaNuevo = await extraerCaptcha(frameResultado).catch(() => ({
+        texto: "(error)",
+      }));
+      await browser.close();
+      return res.status(422).json({
+        error: "Formulario rechazado",
+        detalle: "Captcha incorrecto o sesión vencida.",
+        captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
+        captchaNuevo: captchaNuevo.texto || "(no detectado)",
+        urlFinal,
+      });
+    }
+
+    // ── 9. Obtener cookies de sesión y descargar PDF con POST ─────────────
+    console.log("📄 Iniciando descarga del PDF...");
+    const cookies = await page.cookies("https://apps.procuraduria.gov.co");
+    const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    console.log("🍪 Cookies:", cookies.map((c) => c.name).join(", "));
+
+    // Extraer __PREVIOUSPAGE del ajaxBody si viene (a veces está en la respuesta Delta)
+    const prevPageMatch = ajaxBody.match(/__PREVIOUSPAGE[^|]*\|([^|]+)/);
+    const previousPage = prevPageMatch ? prevPageMatch[1] : "";
+
+    await browser.close(); // cerrar browser antes del POST (ya no lo necesitamos)
+    browser = null;
+
+    const pdfBuffer = await obtenerPDFConPost(cookieStr, previousPage).catch(
+      (e) => {
+        console.log("❌ Error obteniendo PDF:", e.message);
+        return null;
+      },
+    );
+
+    // ── 10. Validar y construir respuesta ─────────────────────────────────
+    let pdfBase64 = null;
+    let pdfUrl = "";
+
+    if (pdfBuffer && pdfBuffer.length > 100) {
+      const header = pdfBuffer.slice(0, 4).toString("ascii");
+      if (header === "%PDF") {
+        pdfBase64 = pdfBuffer.toString("base64");
+        pdfUrl = VERPDF_URL;
+        console.log("✅ PDF válido:", pdfBuffer.length, "bytes");
+      } else {
+        console.log("⚠️ Respuesta no es PDF (header:", header, ")");
+        console.log("🔍 Contenido:", pdfBuffer.slice(0, 300).toString("utf8"));
+      }
+    }
+
     const sinSanciones =
       textoPagina.includes("NO REGISTRA") ||
       textoPagina.includes("SIN ANTECEDENTES") ||
       textoPagina.includes("NO SE ENCONTRARON") ||
       textoPagina.includes("NO TIENE SANCIONES") ||
       textoPagina.includes("NO PRESENTA") ||
-      textoPagina.includes("DESCARGUE SU CERTIFICADO"); // página de éxito sin sanciones
+      textoPagina.includes("DESCARGUE SU CERTIFICADO");
 
     const conSanciones =
       textoPagina.includes("SANCIONADO") ||
@@ -798,24 +816,6 @@ exports.consultarProcuraduria = async (req, res) => {
       textoPagina.includes("DESTITUIDO") ||
       textoPagina.includes("MULTA");
 
-    // Si no tenemos resultado en texto pero sí PDF, fue exitoso
-    const exitoso = sinSanciones || conSanciones || !!pdfResult.pdfBase64;
-
-    if (!exitoso) {
-      const captchaNuevo = await extraerCaptcha(frameResultado).catch(() => ({
-        texto: "(error)",
-      }));
-      await browser.close();
-      return res.status(422).json({
-        error: "Formulario rechazado",
-        detalle: "No se obtuvo resultado. Captcha incorrecto o sesión vencida.",
-        captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
-        captchaNuevo: captchaNuevo.texto || "(no detectado)",
-        urlFinal,
-      });
-    }
-
-    await browser.close();
     return res.json({
       fuente: "Procuraduría General de la Nación",
       tieneSanciones: conSanciones,
@@ -825,9 +825,8 @@ exports.consultarProcuraduria = async (req, res) => {
       mensaje: conSanciones
         ? "La persona REGISTRA sanciones en la Procuraduría."
         : "La persona NO registra sanciones en la Procuraduría.",
-      certificadoUrl: pdfResult.pdfUrl || "",
-      // Guardar en cliente: Buffer.from(pdfBase64,"base64") → archivo .pdf
-      pdfBase64: pdfResult.pdfBase64,
+      certificadoUrl: pdfUrl,
+      pdfBase64,
       detalle: textoPagina.substring(0, 800),
     });
   } catch (error) {
