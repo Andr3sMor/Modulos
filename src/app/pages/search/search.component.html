@@ -1,6 +1,5 @@
 <div class="page-wrapper">
   <div class="main-card">
-    <!-- Header -->
     <div class="card-header">
       <h2 class="card-title">Consulta de Información</h2>
       <p class="card-subtitle">
@@ -9,11 +8,9 @@
       </p>
     </div>
 
-    <!-- Formulario de búsqueda -->
     <div class="search-section">
       <h3 class="section-title">Datos de Búsqueda</h3>
 
-      <!-- Fila 1: Identificación + Nombre -->
       <div class="fields-row">
         <div class="field-group">
           <label class="field-label">Número de Identificación</label>
@@ -37,7 +34,6 @@
         </div>
       </div>
 
-      <!-- Fila 2: Tipo documento + Servicios + Botón -->
       <div class="action-row">
         <div class="field-group field-small">
           <label class="field-label">Tipo de Documento</label>
@@ -74,15 +70,12 @@
       </div>
     </div>
 
-    <!-- Error -->
     <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
 
-    <!-- Resultados -->
     <div *ngIf="resultados.length > 0" class="results-section">
       <h3 class="section-title">Resultados de la Consulta</h3>
 
       <div *ngFor="let r of resultados; let i = index" class="result-card">
-        <!-- Header del resultado -->
         <div class="result-header">
           <div class="result-source">
             <span class="source-badge">{{ r.fuente }}</span>
@@ -153,9 +146,7 @@
           </div>
         </div>
 
-        <!-- Cuerpo -->
         <div class="result-body">
-          <!-- Campos básicos -->
           <div class="result-grid">
             <div
               class="result-item"
@@ -184,33 +175,31 @@
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
+
             <div
               class="result-item"
-              *ngIf="r.tipo === 'procuraduria' && r.certificadoUrl"
+              *ngIf="r.tipo === 'procuraduria' && r.pdfBase64"
             >
               <span class="item-label">Certificado</span>
               <span class="item-value">
-                <a [href]="r.certificadoUrl" target="_blank"
-                  >Ver certificado →</a
-                >
+                <button (click)="descargarCertificado(r)" class="btn-pdf">
+                  📄 Ver certificado →
+                </button>
               </span>
             </div>
+
             <div class="result-item" *ngIf="r.data?.fecha">
               <span class="item-label">Fecha consulta</span>
               <span class="item-value">{{ r.data?.fecha }}</span>
             </div>
           </div>
 
-          <!-- ── Offshore: informe por categoría ── -->
           <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
-            <!-- Sin resultados -->
             <div *ngIf="!r.tieneRegistros" class="sin-resultados">
               No se encontraron registros en bases de datos offshore
             </div>
 
-            <!-- Con resultados -->
             <ng-container *ngIf="r.tieneRegistros">
-              <!-- Resumen general -->
               <div class="informe-resumen">
                 <span class="informe-icono">📋</span>
                 Se encontraron
@@ -221,13 +210,11 @@
                 ICIJ Offshore Leaks.
               </div>
 
-              <!-- Una sección por cada categoría que tenga resultados con score 100 -->
               <ng-container *ngFor="let cat of r.categorias">
                 <ng-container
                   *ngIf="filtrarScore100(cat.resultados).length > 0"
                 >
                   <div class="informe-categoria">
-                    <!-- Título de la categoría -->
                     <div class="categoria-header">
                       <span class="categoria-icono">📁</span>
                       <span class="categoria-nombre">{{ cat.nombre }}</span>
@@ -236,7 +223,6 @@
                       </span>
                     </div>
 
-                    <!-- Descripción -->
                     <p class="categoria-descripcion">
                       En la base de datos <strong>{{ cat.nombre }}</strong> se
                       encontraron
@@ -246,7 +232,6 @@
                       registro(s) con coincidencia exacta:
                     </p>
 
-                    <!-- Lista de registros -->
                     <div class="registros-lista">
                       <div
                         *ngFor="
@@ -277,12 +262,10 @@
               </ng-container>
             </ng-container>
           </div>
-          <!-- fin offshore -->
         </div>
       </div>
     </div>
 
-    <!-- Captcha manual cuando el backend lo requiere -->
     <app-captcha-resolver
       [abrirCon]="captchaData"
       (resuelto)="onCaptchaResuelto($event)"

@@ -19,7 +19,6 @@ export class SearchComponent {
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
 
-  // Captcha manual
   captchaData: { sessionId: string } | null = null;
 
   tipoDocumento = "Cédula de Ciudadanía";
@@ -158,6 +157,7 @@ export class SearchComponent {
             });
           break;
 
+        // ── PROCURADURÍA: guardar pdfBase64 para descarga local ────────────
         case "procuraduria":
           if (!this.cedula) {
             resolve();
@@ -174,7 +174,7 @@ export class SearchComponent {
                     tieneSanciones: res.tieneSanciones,
                     sinSanciones: res.sinSanciones,
                     mensaje: res.mensaje,
-                    certificadoUrl: res.certificadoUrl,
+                    pdfBase64: res.pdfBase64 || null, // ← nuevo
                     data: { fecha: new Date().toLocaleString() },
                   });
                   this.cdr.detectChanges();
@@ -226,6 +226,18 @@ export class SearchComponent {
           resolve();
       }
     });
+  }
+
+  // ── Abre el certificado PDF en una nueva pestaña ─────────────────────────
+  descargarCertificado(r: any): void {
+    if (!r.pdfBase64) return;
+    const bytes = atob(r.pdfBase64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
   onCaptchaResuelto(resultado: any) {
