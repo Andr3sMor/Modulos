@@ -75,7 +75,7 @@ function norm(t) {
   return t
     .toUpperCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // quitar tildes
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[¿?¡!()]/g, "")
     .replace(/(.)\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
     .replace(/\s+/g, " ")
@@ -241,21 +241,18 @@ async function extraerCaptcha(frame) {
     const inp = document.querySelector("input[name='txtRespuestaPregunta']");
     if (!inp) return { texto: "", via: "input no encontrado" };
 
-    // A: label[for]
     const lbl = document.querySelector("label[for='txtRespuestaPregunta']");
     if (lbl) {
       const t = lbl.innerText.trim();
       if (esCaptchaValido(t)) return { texto: t, via: "label[for]" };
     }
 
-    // B: hermano previo
     const prev = inp.previousElementSibling;
     if (prev && !IGNORAR.has(prev.tagName)) {
       const t = prev.innerText?.trim() || "";
       if (esCaptchaValido(t)) return { texto: t, via: "previousSibling" };
     }
 
-    // C: subir por el DOM
     let parent = inp.parentElement;
     for (let n = 0; n < 10; n++) {
       if (!parent) break;
@@ -273,7 +270,6 @@ async function extraerCaptcha(frame) {
       parent = parent.parentElement;
     }
 
-    // D: TreeWalker
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
@@ -314,11 +310,65 @@ function obtenerFrameActivo(page) {
   return page.mainFrame();
 }
 
-// ─── Esperar a que el UpdatePanel termine de cargar ──────────────────────────
-// Espera a que desaparezca el spinner Y aparezca el resultado real o btnDescargar.
-// NO termina por la presencia del formulario (que siempre está en el DOM del iframe).
+// ─── Esperar resultado del UpdatePanel ───────────────────────────────────────
+// Estrategia:
+//   1. Esperar a que la respuesta AJAX llegue (interceptando network)
+//   2. Luego esperar a que el spinner desaparezca del DOM
+//   3. Leer el estado final
 
-async function esperarResultadoFinal(frame, timeoutMs = 40000) {
+async function esperarResultadoUpdatePanel(
+  page,
+  frame,
+  ajaxResolvedPromise,
+  timeoutMs = 40000,
+) {
+  const inicio = Date.now();
+
+  // Paso 1: esperar a que la respuesta AJAX de Certificado.aspx llegue
+  console.log("⏳ Esperando respuesta AJAX del servidor...");
+  try {
+    await Promise.race([ajaxResolvedPromise, sleep(timeoutMs)]);
+    console.log(`✅ Respuesta AJAX recibida (${Date.now() - inicio}ms)`);
+  } catch (_) {
+    console.log("⚠️ Timeout esperando AJAX");
+  }
+
+  // Paso 2: ahora esperar a que el spinner desaparezca del DOM
+  // El spinner puede tardar unos ms en aparecer tras el click, y luego desaparecer
+  console.log("⏳ Esperando fin del spinner en el DOM...");
+  try {
+    // Primero confirmar que el spinner está o estuvo presente (máx 5s)
+    await frame
+      .waitForFunction(
+        () =>
+          document.body.innerText
+            .toUpperCase()
+            .includes("CONSULTANDO POR FAVOR ESPERE"),
+        { timeout: 5000 },
+      )
+      .catch(() =>
+        console.log("ℹ️ Spinner no detectado en DOM (puede que ya pasó)"),
+      );
+
+    // Luego esperar a que desaparezca (máx 30s)
+    await frame.waitForFunction(
+      () =>
+        !document.body.innerText
+          .toUpperCase()
+          .includes("CONSULTANDO POR FAVOR ESPERE"),
+      { timeout: 30000 },
+    );
+    console.log(
+      `✅ Spinner desapareció del DOM (${Date.now() - inicio}ms total)`,
+    );
+  } catch (_) {
+    console.log("⚠️ Timeout esperando que el spinner desaparezca");
+  }
+
+  // Paso 3: pequeño margen para que el DOM termine de renderizar
+  await sleep(1000);
+
+  // Paso 4: leer estado final
   const PALABRAS_RESULTADO = [
     "NO REGISTRA",
     "SANCIONADO",
@@ -331,44 +381,34 @@ async function esperarResultadoFinal(frame, timeoutMs = 40000) {
     "MULTA",
   ];
 
-  const inicio = Date.now();
-
-  // Fase 1: esperar a que el spinner desaparezca (máx 35s)
-  console.log("⏳ Esperando que desaparezca el spinner...");
-  try {
-    await frame.waitForFunction(
-      () => {
-        const body = document.body.innerText.toUpperCase();
-        // El spinner muestra este texto mientras carga
-        return !body.includes("CONSULTANDO POR FAVOR ESPERE");
-      },
-      { timeout: 35000 },
-    );
-    console.log(`✅ Spinner desapareció (${Date.now() - inicio}ms)`);
-  } catch (_) {
-    console.log("⚠️ Timeout esperando que desaparezca el spinner");
-  }
-
-  await sleep(800); // pequeño margen para que el DOM termine de actualizarse
-
-  // Fase 2: verificar si hay resultado o btnDescargar
-  const estado = await frame.evaluate((palabras) => {
-    const body = document.body.innerText.toUpperCase();
-    return {
-      tieneResultado: palabras.some((p) => body.includes(p)),
-      tieneBtnDescarga: !!(
-        document.querySelector("input[name='btnDescargar']") ||
-        document.querySelector("input[value*='escargar']") ||
-        document.querySelector("a[id*='Descargar']")
-      ),
-      spinnerVisible: body.includes("CONSULTANDO POR FAVOR ESPERE"),
-      fragmento: body.substring(0, 500),
-    };
-  }, PALABRAS_RESULTADO);
+  const estado = await frame
+    .evaluate((palabras) => {
+      const body = document.body.innerText.toUpperCase();
+      return {
+        tieneResultado: palabras.some((p) => body.includes(p)),
+        tieneBtnDescarga: !!(
+          document.querySelector("input[name='btnDescargar']") ||
+          document.querySelector("input[value*='escargar']") ||
+          document.querySelector("a[id*='Descargar']")
+        ),
+        spinnerVisible: body.includes("CONSULTANDO POR FAVOR ESPERE"),
+        fragmento: body.substring(0, 600),
+      };
+    }, PALABRAS_RESULTADO)
+    .catch(() => ({
+      tieneResultado: false,
+      tieneBtnDescarga: false,
+      spinnerVisible: false,
+      fragmento: "",
+    }));
 
   console.log(
-    `🔍 Estado final — resultado:${estado.tieneResultado} btnDescarga:${estado.tieneBtnDescarga} spinner:${estado.spinnerVisible}`,
+    `🔍 Estado — resultado:${estado.tieneResultado}` +
+      ` btnDescarga:${estado.tieneBtnDescarga}` +
+      ` spinner:${estado.spinnerVisible}` +
+      ` (${Date.now() - inicio}ms total)`,
   );
+
   return estado;
 }
 
@@ -412,7 +452,6 @@ exports.consultarProcuraduria = async (req, res) => {
     console.log("🖼️ Iframes:", iframeSrcs);
 
     let workingFrame = page.mainFrame();
-
     const iframeFormSrc = iframeSrcs.find((src) =>
       src.includes("apps.procuraduria.gov.co"),
     );
@@ -445,7 +484,6 @@ exports.consultarProcuraduria = async (req, res) => {
       }
     }
 
-    // Fallback: ir directo al formulario técnico
     if (
       workingFrame === page.mainFrame() &&
       !page.url().includes("Certificado.aspx")
@@ -475,10 +513,9 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("📋 Inputs:", inputsLog.substring(0, 600));
 
-    // ── 4. Seleccionar tipo de documento → postback ASP.NET ───────────────
+    // ── 4. Seleccionar tipo de documento ─────────────────────────────────
     console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
     await workingFrame.select("select[name='ddlTipoID']", ddlTipoID);
-
     try {
       await workingFrame.waitForFunction(
         () => !!document.querySelector("input[name='txtRespuestaPregunta']"),
@@ -501,7 +538,6 @@ exports.consultarProcuraduria = async (req, res) => {
       console.log("🔍 HTML debug:", captchaInfo.htmlDebug.substring(0, 800));
 
     let textoCaptcha = captchaInfo.texto;
-
     if (!textoCaptcha) {
       const innerText = await workingFrame.evaluate(
         () => document.body.innerText,
@@ -570,29 +606,36 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
-    // ── 7. Submit vía btnExportar (AJAX UpdatePanel) ──────────────────────
+    // ── 7. Submit y esperar resultado ─────────────────────────────────────
     console.log("🚀 Enviando formulario (UpdatePanel / btnExportar)...");
 
-    // Interceptar respuesta AJAX del Certificado.aspx para diagnóstico
+    // Preparar promesa que se resuelve cuando llega la respuesta AJAX del POST
+    let ajaxResolve;
+    const ajaxResolvedPromise = new Promise((resolve) => {
+      ajaxResolve = resolve;
+    });
+
     page.on("response", (response) => {
       const url = response.url();
       if (
         url.includes("Certificado.aspx") &&
         response.request().method() === "POST"
       ) {
+        const status = response.status();
         response
           .text()
-          .then((t) =>
+          .then((t) => {
             console.log(
-              `📥 AJAX Certificado (${response.status()}):`,
-              t.substring(0, 120),
-            ),
-          )
-          .catch(() => {});
+              `📥 AJAX Certificado (${status}):`,
+              t.substring(0, 150),
+            );
+            ajaxResolve(t); // señalar que la respuesta llegó
+          })
+          .catch(() => ajaxResolve(""));
       }
     });
 
-    // Click en btnExportar (el botón correcto según network capture)
+    // Click en btnExportar
     const btnClickado = await workingFrame.evaluate(() => {
       const btn =
         document.querySelector("input[name='btnExportar']") ||
@@ -605,20 +648,28 @@ exports.consultarProcuraduria = async (req, res) => {
     });
     console.log("🖱️ Botón clickado:", btnClickado);
 
-    // ── 8. Esperar resultado real (ignorar spinner y formulario del DOM) ───
-    // La clave es esperar a que "CONSULTANDO POR FAVOR ESPERE" desaparezca
-    // y LUEGO verificar el estado. No terminar prematuramente por el formulario.
-    const estado = await esperarResultadoFinal(workingFrame, 40000);
+    // Esperar el ciclo completo del UpdatePanel
+    const estado = await esperarResultadoUpdatePanel(
+      page,
+      workingFrame,
+      ajaxResolvedPromise,
+      40000,
+    );
 
     const urlFinal = page.url();
     console.log("📍 URL final:", urlFinal);
     console.log("📝 Fragmento resultado:", estado.fragmento.substring(0, 600));
 
-    // ── 9. Verificar si hay resultado o botón de descarga ─────────────────
-    if (!estado.tieneResultado && !estado.tieneBtnDescarga) {
-      // Releer el frame por si cambió
+    // ── 8. Si aún hay spinner o no hay resultado, re-intentar lectura ─────
+    let estadoFinal = estado;
+    if (
+      estado.spinnerVisible ||
+      (!estado.tieneResultado && !estado.tieneBtnDescarga)
+    ) {
+      console.log("🔄 Re-leyendo estado desde frame actualizado...");
+      await sleep(3000);
       const frameActual = obtenerFrameActivo(page);
-      const estadoFinal = await frameActual
+      estadoFinal = await frameActual
         .evaluate(
           (palabras) => {
             const body = document.body.innerText.toUpperCase();
@@ -629,7 +680,8 @@ exports.consultarProcuraduria = async (req, res) => {
                 document.querySelector("input[value*='escargar']") ||
                 document.querySelector("a[id*='Descargar']")
               ),
-              fragmento: body.substring(0, 400),
+              spinnerVisible: body.includes("CONSULTANDO POR FAVOR ESPERE"),
+              fragmento: body.substring(0, 600),
             };
           },
           [
@@ -644,41 +696,37 @@ exports.consultarProcuraduria = async (req, res) => {
             "MULTA",
           ],
         )
-        .catch(() => ({
-          tieneResultado: false,
-          tieneBtnDescarga: false,
-          fragmento: "",
-        }));
+        .catch(() => estado);
+      console.log(
+        `🔍 Estado re-leído — resultado:${estadoFinal.tieneResultado}` +
+          ` btnDescarga:${estadoFinal.tieneBtnDescarga}` +
+          ` spinner:${estadoFinal.spinnerVisible}`,
+      );
+    }
 
-      if (!estadoFinal.tieneResultado && !estadoFinal.tieneBtnDescarga) {
-        const captchaNuevo = await extraerCaptcha(frameActual).catch(() => ({
-          texto: "(error leyendo)",
-        }));
-        await browser.close();
-        return res.status(422).json({
-          error: "Formulario rechazado",
-          detalle:
-            "El servidor devolvió el formulario. Captcha incorrecto o sesión vencida.",
-          captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
-          captchaNuevo: captchaNuevo.texto || "(no detectado)",
-          urlFinal,
-          fragmentoRespuesta: estadoFinal.fragmento.substring(0, 400),
-        });
-      }
-
-      // Actualizar estado con lo que encontramos en el re-check
-      estado.tieneResultado = estadoFinal.tieneResultado;
-      estado.tieneBtnDescarga = estadoFinal.tieneBtnDescarga;
+    // ── 9. Verificar si hay resultado ─────────────────────────────────────
+    if (!estadoFinal.tieneResultado && !estadoFinal.tieneBtnDescarga) {
+      const captchaNuevo = await extraerCaptcha(obtenerFrameActivo(page)).catch(
+        () => ({ texto: "(error leyendo)" }),
+      );
+      await browser.close();
+      return res.status(422).json({
+        error: "Formulario rechazado",
+        detalle:
+          "El servidor devolvió el formulario. Captcha incorrecto o sesión vencida.",
+        captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
+        captchaNuevo: captchaNuevo.texto || "(no detectado)",
+        urlFinal,
+        fragmentoRespuesta: estadoFinal.fragmento.substring(0, 400),
+      });
     }
 
     // ── 10. Descargar PDF desde verpdf.aspx ──────────────────────────────
     let pdfBase64 = null;
     let pdfUrl = "";
-
-    // Re-buscar el frame correcto antes de intentar la descarga
     const frameDescarga = obtenerFrameActivo(page);
 
-    if (estado.tieneBtnDescarga) {
+    if (estadoFinal.tieneBtnDescarga) {
       console.log("📄 Capturando PDF desde verpdf.aspx...");
       try {
         const pdfPromise = new Promise((resolve, reject) => {
@@ -718,12 +766,11 @@ exports.consultarProcuraduria = async (req, res) => {
       }
     }
 
-    // ── 11. Leer texto final para interpretación ──────────────────────────
+    // ── 11. Interpretar resultado ─────────────────────────────────────────
     const textoPagina = await frameDescarga
       .evaluate(() => document.body.innerText.toUpperCase())
-      .catch(() => estado.fragmento);
+      .catch(() => estadoFinal.fragmento);
 
-    // ── 12. Interpretar resultado ─────────────────────────────────────────
     const sinSanciones =
       textoPagina.includes("NO REGISTRA") ||
       textoPagina.includes("SIN ANTECEDENTES") ||
@@ -751,7 +798,7 @@ exports.consultarProcuraduria = async (req, res) => {
           ? "La persona NO registra sanciones en la Procuraduría."
           : "Consulta procesada. Revise el PDF adjunto para el detalle completo.",
       certificadoUrl: pdfUrl || (urlFinal !== FORM_URL ? urlFinal : ""),
-      // PDF en base64 — guardarlo como archivo .pdf en el cliente:
+      // PDF en base64 — guardar en cliente:
       // const buf = Buffer.from(pdfBase64, "base64"); fs.writeFileSync("cert.pdf", buf);
       pdfBase64,
       detalle: textoPagina.substring(0, 800),
