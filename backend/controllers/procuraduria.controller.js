@@ -5,15 +5,16 @@
  *   URL pública:  https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx
  *   URL técnica:  https://apps.procuraduria.gov.co/webcert/Certificado.aspx
  *
- * El formulario es ASP.NET WebForms. Al seleccionar el tipo de documento dispara
- * un __doPostBack que recarga el estado. El captcha es un campo de texto con una
- * pregunta que aparece en un label cercano al input "txtRespuestaPregunta".
- * IMPORTANTE: el <h1> decorativo de la página también tiene "?" y se debe ignorar.
+ * El formulario es ASP.NET WebForms con UpdatePanel (AJAX parcial).
+ * Al seleccionar el tipo de documento dispara un __doPostBack que recarga el estado.
+ * El captcha es un campo de texto con una pregunta en un label cercano al input
+ * "txtRespuestaPregunta". El <h1> decorativo también tiene "?" y se debe ignorar.
  *
- * TIPOS DE CAPTCHA OBSERVADOS:
- *  1. Matemático:   "¿ CUANTO ES 5 + 3 ?"
- *  2. Geográfico:   "¿ CAPITAL DE COLOMBIA ?"
- *  3. Nombre:       "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE ...?"
+ * TIPOS DE CAPTCHA SOPORTADOS:
+ *  1. Matemático:        "¿ CUANTO ES 5 + 3 ?"
+ *  2. Geográfico:        "¿ CAPITAL DE COLOMBIA ?"
+ *  3. Nombre:            "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE ...?"
+ *  4. Últimos dígitos:   "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO A CONSULTAR?"
  */
 
 const puppeteer = require("puppeteer-core");
@@ -22,44 +23,10 @@ const chromium = require("@sparticuz/chromium");
 const PORTAL_URL =
   "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
 const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Navega a la URL pública y retorna el frame que contiene el formulario real.
- * Si la página embebe el formulario en un <iframe> apuntando a apps.procuraduria.gov.co,
- * devuelve ese frame. Si no hay iframe (o el formulario está en la página principal),
- * devuelve el frame principal.
- */
-async function obtenerFrameFormulario(page) {
-  // Esperar hasta 12s a que aparezca un iframe hacia apps.procuraduria.gov.co
-  try {
-    await page.waitForFunction(
-      () =>
-        [...document.querySelectorAll("iframe")].some(
-          (f) => f.src && f.src.includes("apps.procuraduria.gov.co"),
-        ),
-      { timeout: 12000 },
-    );
-    // Buscar el frame en page.frames()
-    for (const frame of page.frames()) {
-      if (frame.url().includes("apps.procuraduria.gov.co")) {
-        console.log("✅ iframe del formulario encontrado:", frame.url());
-        return frame;
-      }
-    }
-    console.log(
-      "⚠️ iframe en DOM pero no en page.frames() — navegando directo al formulario",
-    );
-  } catch (_) {
-    console.log(
-      "ℹ️ No se detectó iframe en la URL pública — navegando directo al formulario",
-    );
-  }
-
-  // Fallback: ir directamente a la URL técnica del formulario
-  await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 45000 });
-  return page.mainFrame();
-}
+// ─── Mapa de tipos de documento ───────────────────────────────────────────────
 
 const TIPO_MAP = {
   CC: "1",
@@ -102,18 +69,23 @@ async function lanzarBrowser() {
   });
 }
 
-// ─── Resolver captcha ─────────────────────────────────────────────────────────
+// ─── Diccionario geográfico / general ─────────────────────────────────────────
 
 const RESPUESTAS_GEO = {
+  // Colombia general
   "CAPITAL DE COLOMBIA": "BOGOTA",
   "CAPITAL COLOMBIA": "BOGOTA",
+  "CUAL ES LA CAPITAL DE COLOMBIA": "BOGOTA",
+  // Departamentos
+  "CAPITAL DE CUNDINAMARCA": "BOGOTA",
+  "CAPITAL CUNDINAMARCA": "BOGOTA",
+  "CAPITAL DE ANTIOQUIA": "MEDELLIN",
+  "CAPITAL ANTIOQUIA": "MEDELLIN",
+  "CAPITAL DE ANTIOQUIA SIN TILDE": "MEDELLIN",
+  "CUAL ES LA CAPITAL DE ANTIOQUIA": "MEDELLIN",
   "CAPITAL DEL VALLE DEL CAUCA": "CALI",
   "CAPITAL VALLE DEL CAUCA": "CALI",
   "CAPITAL VALLE": "CALI",
-  "CAPITAL DE ANTIOQUIA": "MEDELLIN",
-  "CAPITAL ANTIOQUIA": "MEDELLIN",
-  "CAPITAL DE CUNDINAMARCA": "BOGOTA",
-  "CAPITAL CUNDINAMARCA": "BOGOTA",
   "CAPITAL DE ATLANTICO": "BARRANQUILLA",
   "CAPITAL ATLANTICO": "BARRANQUILLA",
   "CAPITAL DE BOLIVAR": "CARTAGENA",
@@ -122,6 +94,37 @@ const RESPUESTAS_GEO = {
   "CAPITAL SANTANDER": "BUCARAMANGA",
   "CAPITAL DE NARINO": "PASTO",
   "CAPITAL NARINO": "PASTO",
+  "CAPITAL DE TOLIMA": "IBAGUE",
+  "CAPITAL TOLIMA": "IBAGUE",
+  "CAPITAL DE HUILA": "NEIVA",
+  "CAPITAL HUILA": "NEIVA",
+  "CAPITAL DEL HUILA": "NEIVA",
+  "CAPITAL DE BOYACA": "TUNJA",
+  "CAPITAL BOYACA": "TUNJA",
+  "CAPITAL DE CALDAS": "MANIZALES",
+  "CAPITAL CALDAS": "MANIZALES",
+  "CAPITAL DE RISARALDA": "PEREIRA",
+  "CAPITAL RISARALDA": "PEREIRA",
+  "CAPITAL DE QUINDIO": "ARMENIA",
+  "CAPITAL QUINDIO": "ARMENIA",
+  "CAPITAL DE CORDOBA": "MONTERIA",
+  "CAPITAL CORDOBA": "MONTERIA",
+  "CAPITAL DE SUCRE": "SINCELEJO",
+  "CAPITAL SUCRE": "SINCELEJO",
+  "CAPITAL DE CESAR": "VALLEDUPAR",
+  "CAPITAL CESAR": "VALLEDUPAR",
+  "CAPITAL DE MAGDALENA": "SANTA MARTA",
+  "CAPITAL MAGDALENA": "SANTA MARTA",
+  "CAPITAL DE LA GUAJIRA": "RIOHACHA",
+  "CAPITAL GUAJIRA": "RIOHACHA",
+  "CAPITAL DE NORTE DE SANTANDER": "CUCUTA",
+  "CAPITAL NORTE DE SANTANDER": "CUCUTA",
+  "CAPITAL DEL META": "VILLAVICENCIO",
+  "CAPITAL META": "VILLAVICENCIO",
+  "CAPITAL DE CASANARE": "YOPAL",
+  "CAPITAL CASANARE": "YOPAL",
+  "CAPITAL DE NARIÑO": "PASTO",
+  // Colores / datos generales
   "COLOR DEL CIELO": "AZUL",
   "COLOR CIELO": "AZUL",
   "COLOR DEL SOL": "AMARILLO",
@@ -130,32 +133,76 @@ const RESPUESTAS_GEO = {
   "DIAS SEMANA": "7",
   "MESES DEL ANO": "12",
   "MESES ANO": "12",
+  "MESES DEL AÑO": "12",
 };
+
+// ─── Normalización de texto ────────────────────────────────────────────────────
 
 function norm(t) {
   return t
     .toUpperCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[¿?¡!]/g, "")
+    .replace(/[¿?¡!()]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function resolverCaptcha(textoCrudo, nombre) {
+// ─── Resolver captcha ─────────────────────────────────────────────────────────
+// Recibe el texto crudo del captcha, el primer nombre y la cédula completa.
+
+function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
   if (!textoCrudo) return null;
   const texto = norm(textoCrudo);
+  console.log("🔍 Captcha normalizado:", texto);
 
-  // 1. Matemático
+  // 1. Matemático:  "CUANTO ES 5 + 3"
   const mat = texto.match(/(\d+)\s*([\+\-\*xX×])\s*(\d+)/);
   if (mat) {
     const [, a, op, b] = mat;
-    if (op === "+") return String(+a + +b);
-    if (op === "-") return String(+a - +b);
-    return String(+a * +b);
+    let r;
+    if (op === "+") r = +a + +b;
+    else if (op === "-") r = +a - +b;
+    else r = +a * +b;
+    console.log(`✅ Captcha matemático: ${a} ${op} ${b} = ${r}`);
+    return String(r);
   }
 
-  // 2. Primeras letras del nombre
+  // 2. Últimos N dígitos del documento
+  //    "ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO A CONSULTAR"
+  //    "ESCRIBA LOS 2 ULTIMOS DIGITOS..."
+  //    "ULTIMOS 3 DIGITOS"
+  const digitosRe =
+    /(?:ULTIMOS?|ÚLTIMOS?)\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*D[IÍ]GITOS?/i;
+  const digitosMatch = texto.match(digitosRe);
+  if (
+    digitosMatch ||
+    texto.includes("ULTIMOS DIGITOS") ||
+    texto.includes("ULTIMO DIGITO")
+  ) {
+    let n = 2; // por defecto 2
+    if (digitosMatch) {
+      const raw = digitosMatch[1].toUpperCase();
+      const MAP_N = {
+        UN: 1,
+        UNO: 1,
+        DOS: 2,
+        TRES: 3,
+        CUATRO: 4,
+        CINCO: 5,
+      };
+      n = MAP_N[raw] !== undefined ? MAP_N[raw] : parseInt(raw) || 2;
+    }
+    if (cedula && cedula.length >= n) {
+      const r = cedula.slice(-n);
+      console.log(`✅ Captcha dígitos: últimos ${n} de "${cedula}" → "${r}"`);
+      return r;
+    }
+    console.log("⚠️ Captcha dígitos sin cédula disponible");
+    return "__CEDULA_REQUERIDA__";
+  }
+
+  // 3. Primeras letras del primer nombre
   if (
     texto.includes("PRIMERAS LETRAS") ||
     texto.includes("PRIMER NOMBRE") ||
@@ -167,12 +214,16 @@ function resolverCaptcha(textoCrudo, nombre) {
       console.log(`✅ Captcha nombre: "${pn}" → "${r}"`);
       return r;
     }
+    console.log("⚠️ Captcha nombre sin parámetro 'nombre'");
     return "__NOMBRE_REQUERIDO__";
   }
 
-  // 3. Geográfico / diccionario
+  // 4. Geográfico / diccionario — buscar cualquier clave contenida en el texto
   for (const [clave, resp] of Object.entries(RESPUESTAS_GEO)) {
-    if (texto.includes(clave)) return resp;
+    if (texto.includes(clave)) {
+      console.log(`✅ Geo: "${clave}"→"${resp}"`);
+      return resp;
+    }
   }
 
   console.log("⚠️ Captcha no reconocido:", textoCrudo);
@@ -180,11 +231,9 @@ function resolverCaptcha(textoCrudo, nombre) {
 }
 
 // ─── Extraer texto del captcha del DOM ───────────────────────────────────────
-// El captcha matemático/texto está en un elemento junto al input txtRespuestaPregunta.
-// Se deben ignorar los H1-H6 que son el texto decorativo FAQ de la página.
 
-async function extraerCaptcha(page) {
-  return page.evaluate(() => {
+async function extraerCaptcha(frame) {
+  return frame.evaluate(() => {
     const IGNORAR = new Set([
       "H1",
       "H2",
@@ -197,12 +246,13 @@ async function extraerCaptcha(page) {
       "NAV",
       "ASIDE",
     ]);
+
     const esCaptchaValido = (t) =>
       t &&
       t.includes("?") &&
       t.length > 4 &&
-      t.length < 350 &&
-      /[Cc]uanto|[Cc]apital|[Cc]olor|[Dd]ias|[Mm]eses|[Ll]etras|[Nn]ombre|\d+\s*[\+\-\*xX]/i.test(
+      t.length < 400 &&
+      /[Cc]uanto|[Cc]apital|[Cc]olor|[Dd]ias|[Mm]eses|[Ll]etras|[Nn]ombre|[Dd][ií]gito|\d+\s*[\+\-\*xX]/i.test(
         t,
       );
 
@@ -223,7 +273,7 @@ async function extraerCaptcha(page) {
       if (esCaptchaValido(t)) return { texto: t, via: "previousSibling" };
     }
 
-    // C: subir por el DOM buscando hijos hoja con captcha válido
+    // C: subir por el DOM
     let parent = inp.parentElement;
     for (let n = 0; n < 10; n++) {
       if (!parent) break;
@@ -241,7 +291,7 @@ async function extraerCaptcha(page) {
       parent = parent.parentElement;
     }
 
-    // D: TreeWalker sobre nodos de texto (captura texto suelto sin etiqueta)
+    // D: TreeWalker sobre nodos de texto
     const walker = document.createTreeWalker(
       document.body,
       NodeFilter.SHOW_TEXT,
@@ -263,7 +313,7 @@ async function extraerCaptcha(page) {
       if (esCaptchaValido(t)) return { texto: t, via: "TreeWalker textNode" };
     }
 
-    // E: fallback — volcar HTML del contenedor del input para diagnóstico
+    // E: fallback diagnóstico
     let cont = inp.parentElement;
     for (let i = 0; i < 5 && cont; i++) cont = cont.parentElement;
     return {
@@ -274,6 +324,61 @@ async function extraerCaptcha(page) {
   });
 }
 
+// ─── Verificar campos hidden de ASP.NET ──────────────────────────────────────
+
+async function verificarHiddenFields(frame) {
+  const fields = await frame.evaluate(() =>
+    ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"].map((name) => {
+      const el = document.querySelector(`input[name="${name}"]`);
+      return { name, exists: !!el, len: el?.value?.length || 0 };
+    }),
+  );
+  console.log("🔒 Hidden fields ASP.NET:", fields);
+  return fields;
+}
+
+// ─── Esperar resultado del UpdatePanel ────────────────────────────────────────
+
+const PALABRAS_RESULTADO = [
+  "NO REGISTRA",
+  "SANCIONADO",
+  "INHABILIT",
+  "NO PRESENTA",
+  "SIN ANTECEDENTES",
+  "NO SE ENCONTRARON",
+  "NO TIENE SANCIONES",
+  "SUSPENDIDO",
+  "DESTITUIDO",
+  "MULTA",
+];
+
+async function esperarResultadoUpdatePanel(frame, timeoutMs = 30000) {
+  try {
+    await frame.waitForFunction(
+      (palabras) => {
+        const body = document.body.innerText.toUpperCase();
+        // Resultado positivo
+        if (palabras.some((p) => body.includes(p))) return true;
+        // Volvió al formulario con nuevo captcha (postback completó, aunque con error)
+        const tieneFormNuevo =
+          !!document.querySelector("input[name='ImageButton1']") &&
+          body.includes("?") &&
+          (body.includes("DIGITO") ||
+            body.includes("CAPITAL") ||
+            body.includes("CUANTO") ||
+            body.includes("NOMBRE") ||
+            body.includes("LETRAS"));
+        return tieneFormNuevo;
+      },
+      { timeout: timeoutMs },
+      PALABRAS_RESULTADO,
+    );
+    console.log("✅ UpdatePanel respondió");
+  } catch (_) {
+    console.log("⚠️ Timeout esperando UpdatePanel");
+  }
+}
+
 // ─── Controlador principal ───────────────────────────────────────────────────
 
 exports.consultarProcuraduria = async (req, res) => {
@@ -281,7 +386,7 @@ exports.consultarProcuraduria = async (req, res) => {
     cedula,
     tipoDocumento = "CC",
     tipoCertificado = "1",
-    nombre = "", // primer nombre, necesario si el captcha pide las 2 primeras letras
+    nombre = "", // primer nombre (necesario si captcha lo pide)
   } = req.body;
 
   if (!cedula)
@@ -301,80 +406,91 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
 
-    // ── 1. Entrar por la URL pública (como un usuario real) ──────────────
+    // ── 1. Navegar al portal público ──────────────────────────────────────
     console.log("📄 Navegando al portal público...");
     await page.goto(PORTAL_URL, { waitUntil: "networkidle2", timeout: 45000 });
     console.log("✅ URL portal:", page.url());
-    await sleep(3000);
+    await sleep(2000);
 
-    // Verificar si el formulario está embebido en un iframe
-    const iframes = await page.evaluate(() =>
+    // ── 2. Detectar iframe y obtener frame de trabajo ─────────────────────
+    const iframeSrcs = await page.evaluate(() =>
       [...document.querySelectorAll("iframe")].map((f) => f.src),
     );
-    console.log("🖼️ Iframes encontrados:", iframes);
+    console.log("🖼️ Iframes:", iframeSrcs);
 
-    // Si hay un iframe apuntando al formulario técnico, cambiar a él
-    const iframeFormUrl = iframes.find(
-      (src) => src.includes("procuraduria") && src.includes("Certificado"),
+    let workingFrame = page.mainFrame();
+
+    // Buscar iframe que apunte al formulario técnico
+    const iframeFormSrc = iframeSrcs.find(
+      (src) =>
+        src.includes("apps.procuraduria.gov.co") &&
+        (src.includes("Certificado") || src.includes("inicio")),
     );
-    let workingFrame = page; // por defecto trabajar sobre la página principal
 
-    if (iframeFormUrl) {
-      console.log("🖼️ Formulario en iframe:", iframeFormUrl);
-      // Obtener el frame de Puppeteer correspondiente
-      await page.waitForSelector("iframe", { timeout: 10000 });
-      const frameHandle =
-        (await page.$("iframe[src*='Certificado']")) ||
-        (await page.$(`iframe[src='${iframeFormUrl}']`));
-      if (frameHandle) {
-        const frame = await frameHandle.contentFrame();
-        if (frame) {
-          workingFrame = frame;
-          console.log("✅ Usando iframe como contexto de trabajo");
-        }
-      }
-    } else {
-      // El portal puede redirigir directamente o no tener iframe visible
-      // Si la URL actual ya es el formulario técnico, continuar
-      const urlActual = page.url();
-      if (urlActual.includes("Certificado.aspx")) {
-        console.log("✅ Portal redirigió directamente al formulario");
-      } else {
-        // Buscar un link/botón que lleve al formulario y hacer click
-        const linkFormulario = await page.$(
-          `a[href*='Certificado'], a[href*='webcert']`,
+    if (iframeFormSrc) {
+      console.log("🖼️ Formulario en iframe:", iframeFormSrc);
+      try {
+        // Esperar a que Puppeteer registre el frame
+        await page.waitForFunction(
+          (url) =>
+            [...document.querySelectorAll("iframe")].some((f) =>
+              f.src.includes(url),
+            ),
+          { timeout: 10000 },
+          "apps.procuraduria.gov.co",
         );
-        if (linkFormulario) {
-          console.log("🔗 Encontrado link al formulario, haciendo click...");
-          await Promise.all([
-            page
-              .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
-              .catch(() => {}),
-            linkFormulario.click(),
-          ]);
-          await sleep(2000);
-          console.log("✅ URL tras click:", page.url());
-        } else {
-          // Último recurso: ir directamente al formulario técnico
-          console.log(
-            "⚠️ No se encontró iframe ni link, navegando directo al formulario técnico...",
-          );
-          await page.goto(FORM_URL, {
-            waitUntil: "networkidle2",
-            timeout: 45000,
-          });
-          await sleep(2000);
+
+        // Buscar en page.frames() — puede tener URL diferente a iframeSrc (redirect)
+        for (const f of page.frames()) {
+          if (f.url().includes("apps.procuraduria.gov.co")) {
+            workingFrame = f;
+            console.log("✅ Frame activo:", f.url());
+            break;
+          }
         }
+
+        // Si no lo encontramos en frames(), usar contentFrame del elemento
+        if (workingFrame === page.mainFrame()) {
+          const handle =
+            (await page.$("iframe[src*='Certificado']")) ||
+            (await page.$("iframe[src*='apps.procuraduria']"));
+          if (handle) {
+            const cf = await handle.contentFrame();
+            if (cf) {
+              workingFrame = cf;
+              console.log("✅ Frame activo (contentFrame):", cf.url());
+            }
+          }
+        }
+      } catch (e) {
+        console.log("⚠️ Error obteniendo frame:", e.message);
       }
     }
 
-    console.log(
-      "✅ URL de trabajo:",
-      workingFrame === page ? page.url() : "(iframe)",
-    );
-    await sleep(1500);
+    // Si seguimos en mainFrame y no es el formulario, ir directo
+    if (
+      workingFrame === page.mainFrame() &&
+      !page.url().includes("Certificado.aspx")
+    ) {
+      console.log("⚠️ Sin iframe útil — navegando directo al formulario...");
+      await page.goto(FORM_URL, { waitUntil: "networkidle2", timeout: 45000 });
+      await sleep(1500);
+      workingFrame = page.mainFrame();
+      console.log("✅ URL formulario:", page.url());
+    }
 
-    // ── 2. Log de inputs (diagnóstico) ───────────────────────────────────
+    // ── 3. Verificar que el formulario esté listo ─────────────────────────
+    try {
+      await workingFrame.waitForSelector("select[name='ddlTipoID']", {
+        timeout: 10000,
+      });
+    } catch (_) {
+      throw new Error(
+        "No se encontró el selector 'ddlTipoID' en el frame. El formulario no cargó.",
+      );
+    }
+
+    // Diagnóstico de inputs
     const inputsLog = await workingFrame.evaluate(() =>
       [...document.querySelectorAll("input,select")]
         .map((el) => `${el.tagName}[name=${el.name} type=${el.type}]`)
@@ -382,23 +498,28 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("📋 Inputs:", inputsLog.substring(0, 800));
 
-    // ── 3. Seleccionar tipo de documento → dispara postback ASP.NET ──────
-    console.log("🔽 Tipo documento:", ddlTipoID);
+    // Verificar campos hidden ASP.NET (diagnóstico, no bloquea)
+    await verificarHiddenFields(workingFrame);
+
+    // ── 4. Seleccionar tipo de documento → dispara postback ASP.NET ───────
+    console.log("🔽 Seleccionando tipo documento:", ddlTipoID);
     await workingFrame.select("select[name='ddlTipoID']", ddlTipoID);
 
-    // Esperar que el postback regenere la página con el captcha actualizado
+    // Esperar a que el postback regenere el captcha
     try {
       await workingFrame.waitForFunction(
         () => !!document.querySelector("input[name='txtRespuestaPregunta']"),
         { timeout: 8000 },
       );
-    } catch (_) {}
-    await sleep(2000); // margen para que el label del captcha se renderice
+    } catch (_) {
+      console.log("⚠️ txtRespuestaPregunta no apareció tras postback");
+    }
+    await sleep(1500); // margen para que el label del captcha se renderice
 
-    // ── 4. Leer captcha ──────────────────────────────────────────────────
+    // ── 5. Leer y resolver captcha ────────────────────────────────────────
     const captchaInfo = await extraerCaptcha(workingFrame);
     console.log(
-      "🔢 Captcha:",
+      "🔢 Captcha DOM:",
       captchaInfo.texto || "(vacío)",
       "| vía:",
       captchaInfo.via,
@@ -407,7 +528,7 @@ exports.consultarProcuraduria = async (req, res) => {
       console.log("🔍 HTML debug:", captchaInfo.htmlDebug.substring(0, 1000));
     }
 
-    // Si el captcha sigue vacío, buscar en el innerText completo
+    // Fallback: buscar en innerText completo
     let textoCaptcha = captchaInfo.texto;
     if (!textoCaptcha) {
       const innerText = await workingFrame.evaluate(
@@ -420,8 +541,8 @@ exports.consultarProcuraduria = async (req, res) => {
           (l) =>
             l.includes("?") &&
             l.length > 4 &&
-            l.length < 350 &&
-            /[Cc]uanto|[Cc]apital|[Cc]olor|[Dd]ias|[Mm]eses|[Ll]etras|[Nn]ombre|\d+\s*[\+\-\*xX]/i.test(
+            l.length < 400 &&
+            /[Cc]uanto|[Cc]apital|[Cc]olor|[Dd]ias|[Mm]eses|[Ll]etras|[Nn]ombre|[Dd][ií]gito|\d+\s*[\+\-\*xX]/i.test(
               l,
             ),
         );
@@ -429,40 +550,54 @@ exports.consultarProcuraduria = async (req, res) => {
       if (lineas.length > 0) textoCaptcha = lineas[0];
     }
 
-    let respuestaCaptcha = resolverCaptcha(textoCaptcha, nombre);
+    console.log("🔢 Captcha:", textoCaptcha || "(no detectado)");
+    let respuestaCaptcha = resolverCaptcha(textoCaptcha, nombre, cedula);
     console.log("🔢 Respuesta:", respuestaCaptcha);
 
-    // Captcha de nombre sin parámetro → abortar
+    // Captcha requiere nombre → abortar con instrucción al llamante
     if (respuestaCaptcha === "__NOMBRE_REQUERIDO__") {
       await browser.close();
       return res.status(422).json({
         error: "Captcha de nombre requerido",
         detalle:
-          "El formulario pide las 2 primeras letras del nombre. Incluya el campo 'nombre' en el body.",
+          "El formulario pide las 2 primeras letras del primer nombre. Incluya 'nombre' en el body.",
+        captchaPregunta: textoCaptcha,
+      });
+    }
+
+    // Captcha requiere cédula (no debería ocurrir, ya viene en el body)
+    if (respuestaCaptcha === "__CEDULA_REQUERIDA__") {
+      await browser.close();
+      return res.status(422).json({
+        error: "Captcha de dígitos requerido pero cédula vacía",
+        detalle:
+          "El formulario pide los últimos dígitos del documento. Incluya 'cedula' en el body.",
         captchaPregunta: textoCaptcha,
       });
     }
 
     // Fallback si no se pudo resolver
     if (!respuestaCaptcha) {
-      console.log("⚠️ Captcha irreconocible, usando fallback '8'");
+      console.log("⚠️ Captcha irreconocible — usando fallback '8'");
       respuestaCaptcha = "8";
     }
 
-    // ── 5. Número de documento ───────────────────────────────────────────
-    console.log("✏️ Cédula:", cedula);
+    // ── 6. Número de documento ────────────────────────────────────────────
+    console.log("✏️ Ingresando cédula:", cedula);
     await workingFrame.click("input[name='txtNumID']", { clickCount: 3 });
-    await workingFrame.type("input[name='txtNumID']", cedula);
+    await workingFrame.type("input[name='txtNumID']", String(cedula));
 
-    // ── 6. Tipo de certificado ───────────────────────────────────────────
+    // ── 7. Tipo de certificado ────────────────────────────────────────────
     try {
       await workingFrame.click(
         `input[name='rblTipoCert'][value='${tipoCertificado}']`,
       );
-      await sleep(400);
-    } catch (_) {}
+      await sleep(300);
+    } catch (_) {
+      console.log("ℹ️ rblTipoCert no encontrado o ya seleccionado");
+    }
 
-    // ── 7. Ingresar captcha ──────────────────────────────────────────────
+    // ── 8. Ingresar captcha ───────────────────────────────────────────────
     await workingFrame.click("input[name='txtRespuestaPregunta']", {
       clickCount: 3,
     });
@@ -472,49 +607,57 @@ exports.consultarProcuraduria = async (req, res) => {
     );
     console.log("✅ Captcha ingresado:", respuestaCaptcha);
 
-    // ── 8. Submit ────────────────────────────────────────────────────────
-    console.log("🚀 Enviando...");
-    await Promise.all([
+    // ── 9. Submit ─────────────────────────────────────────────────────────
+    console.log("🚀 Enviando formulario...");
+    await workingFrame.click("input[name='ImageButton1']");
+
+    // Esperar respuesta del UpdatePanel (o navegación completa)
+    await Promise.race([
+      esperarResultadoUpdatePanel(workingFrame, 30000),
       page
-        .waitForNavigation({ waitUntil: "networkidle2", timeout: 35000 })
+        .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
         .catch(() => {}),
-      workingFrame.click("input[name='ImageButton1']"),
     ]);
-    await sleep(2000);
+    await sleep(1500);
 
     const urlFinal = page.url();
-    const textoPagina = await workingFrame.evaluate(() =>
-      document.body.innerText.toUpperCase(),
-    );
-    console.log("📍 URL final:", urlFinal);
-    console.log("📝 Resultado (700):", textoPagina.substring(0, 700));
+    const textoPagina = await workingFrame
+      .evaluate(() => document.body.innerText.toUpperCase())
+      .catch(async () => {
+        // El frame puede haber cambiado si hubo navegación
+        return page.evaluate(() => document.body.innerText.toUpperCase());
+      });
 
-    // ── 9. ¿Volvió al formulario? ────────────────────────────────────────
-    const PALABRAS_RESULTADO = [
-      "NO REGISTRA",
-      "SANCIONADO",
-      "INHABILIT",
-      "NO PRESENTA",
-      "SIN ANTECEDENTES",
-    ];
+    console.log("📍 URL final:", urlFinal);
+    console.log("📝 Resultado (800):", textoPagina.substring(0, 800));
+
+    // ── 10. ¿Volvió al formulario sin resultado? ──────────────────────────
     const tieneResultado = PALABRAS_RESULTADO.some((p) =>
       textoPagina.includes(p),
     );
 
-    if (!tieneResultado && page.url().includes("Certificado.aspx")) {
-      const captchaNuevo = await extraerCaptcha(workingFrame);
+    if (!tieneResultado) {
+      // Leer nuevo captcha para diagnóstico
+      const captchaNuevo = await extraerCaptcha(workingFrame).catch(() => ({
+        texto: "(error leyendo captcha)",
+        via: "catch",
+      }));
       await browser.close();
       return res.status(422).json({
         error: "Formulario rechazado",
         detalle:
-          "El servidor volvió al formulario inicial. Captcha incorrecto o sesión vencida.",
-        captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
+          "El servidor devolvió el formulario. Posibles causas: captcha incorrecto, sesión vencida o documento no encontrado.",
+        captchaUsado: {
+          pregunta: textoCaptcha,
+          respuesta: respuestaCaptcha,
+        },
         captchaNuevo: captchaNuevo.texto || "(no detectado)",
         urlFinal,
+        fragmentoRespuesta: textoPagina.substring(0, 400),
       });
     }
 
-    // ── 10. Interpretar resultado ────────────────────────────────────────
+    // ── 11. Interpretar resultado ─────────────────────────────────────────
     const sinSanciones =
       textoPagina.includes("NO REGISTRA") ||
       textoPagina.includes("SIN ANTECEDENTES") ||
@@ -547,11 +690,9 @@ exports.consultarProcuraduria = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
     if (browser) await browser.close().catch(() => {});
-    return res
-      .status(502)
-      .json({
-        error: "Error consultando Procuraduría",
-        detalle: error.message,
-      });
+    return res.status(502).json({
+      error: "Error consultando Procuraduría",
+      detalle: error.message,
+    });
   }
 };
