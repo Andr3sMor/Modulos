@@ -8,8 +8,22 @@
  *
  * Flujo ASP.NET:
  *  1. Submit con btnExportar → UpdatePanel responde con pageRedirect a verpdf.aspx
- *  2. El iframe navega a verpdf.aspx → devuelve HTML con btnDescargar
- *  3. Click en btnDescargar → POST a verpdf.aspx → devuelve el PDF binario
+ *  2. GET a verpdf.aspx → HTML con btnDescargar y nuevo __VIEWSTATE
+ *  3. POST a verpdf.aspx con btnDescargar → PDF binario
+ *
+ * USO DEL PDF EN EL FRONTEND:
+ *   // Abrir en nueva pestaña:
+ *   const bytes = atob(pdfBase64);
+ *   const arr = new Uint8Array(bytes.length);
+ *   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+ *   const blob = new Blob([arr], { type: "application/pdf" });
+ *   window.open(URL.createObjectURL(blob), "_blank");
+ *
+ *   // Descargar:
+ *   const a = document.createElement("a");
+ *   a.href = URL.createObjectURL(blob);
+ *   a.download = "antecedentes.pdf";
+ *   a.click();
  *
  * TIPOS DE CAPTCHA SOPORTADOS:
  *  1. Matemático:        "¿ CUANTO ES 5 + 3 ?"
@@ -26,7 +40,6 @@ const qs = require("querystring");
 const PORTAL_URL =
   "https://www.procuraduria.gov.co/Pages/Generacion-de-antecedentes.aspx";
 const FORM_URL = "https://apps.procuraduria.gov.co/webcert/Certificado.aspx";
-const VERPDF_URL = "https://apps.procuraduria.gov.co/webcert/verpdf.aspx";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -81,7 +94,7 @@ function norm(t) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[¿?¡!()]/g, "")
-    .replace(/(.)\1+/g, "$1")
+    .replace(/(.)\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -156,6 +169,7 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
   const texto = norm(textoCrudo);
   console.log("🔍 Captcha normalizado:", texto);
 
+  // 1. Matemático
   const mat = texto.match(/(\d+)\s*([\+\-\*xX×])\s*(\d+)/);
   if (mat) {
     const [, a, op, b] = mat;
@@ -167,6 +181,7 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return String(r);
   }
 
+  // 2. Últimos N dígitos del documento
   const digitosRe = /ULTIMOS?\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*DIGITOS?/i;
   const digitosMatch = texto.match(digitosRe);
   if (
@@ -188,6 +203,7 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return "__CEDULA_REQUERIDA__";
   }
 
+  // 3. Primeras letras del nombre
   if (
     texto.includes("PRIMERAS LETRAS") ||
     texto.includes("PRIMER NOMBRE") ||
@@ -202,6 +218,7 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return "__NOMBRE_REQUERIDO__";
   }
 
+  // 4. Geográfico / diccionario
   for (const [clave, resp] of Object.entries(RESPUESTAS_GEO)) {
     if (texto.includes(clave)) {
       console.log(`✅ Geo: "${clave}" → "${resp}"`);
@@ -348,18 +365,13 @@ async function esperarResultadoUpdatePanel(page, frame, ajaxResolvedPromise) {
   await sleep(800);
 }
 
-// ─── POST a verpdf.aspx para obtener el PDF binario ──────────────────────────
-// El flujo real es:
-//  1. pageRedirect navega el iframe a verpdf.aspx → GET → devuelve HTML con btnDescargar
-//  2. Click en btnDescargar → POST a verpdf.aspx con __VIEWSTATE de esa página → PDF binario
-//
-// Aquí replicamos ambos pasos con http nativo usando las cookies de sesión de Puppeteer.
+// ─── GET + POST a verpdf.aspx para obtener el PDF binario ────────────────────
+// Paso 1: GET a verpdf.aspx → HTML con __VIEWSTATE fresco
+// Paso 2: POST con btnDescargar y ese __VIEWSTATE → PDF binario
 
-async function obtenerPDFConPost(cookieStr, previousPage) {
-  // ── Paso 1: GET a verpdf.aspx para obtener el HTML con __VIEWSTATE ──────
-  console.log(
-    "📄 GET a verpdf.aspx para obtener VIEWSTATE de la página de descarga...",
-  );
+async function obtenerPDFConPost(cookieStr) {
+  // ── Paso 1: GET ──────────────────────────────────────────────────────────
+  console.log("📄 GET a verpdf.aspx para obtener VIEWSTATE...");
 
   const htmlVerpdf = await new Promise((resolve, reject) => {
     const options = {
@@ -377,18 +389,16 @@ async function obtenerPDFConPost(cookieStr, previousPage) {
       rejectUnauthorized: false,
     };
 
-    // Seguir redirects manualmente
+    // Seguir redirects manualmente (máx 5)
     const doRequest = (opts, depth = 0) => {
       if (depth > 5) return reject(new Error("Demasiados redirects"));
       const req = https.request(opts, (res) => {
-        // Redirect 302
         if (
           (res.statusCode === 301 || res.statusCode === 302) &&
           res.headers.location
         ) {
           const loc = res.headers.location;
           console.log(`↪️ Redirect (${res.statusCode}) → ${loc}`);
-          // Actualizar cookies si vienen en Set-Cookie
           const newCookies = res.headers["set-cookie"];
           if (newCookies) {
             const extra = newCookies.map((c) => c.split(";")[0]).join("; ");
@@ -411,15 +421,15 @@ async function obtenerPDFConPost(cookieStr, previousPage) {
     doRequest(options);
   });
 
-  console.log("📄 HTML verpdf.aspx obtenido, longitud:", htmlVerpdf.length);
+  console.log("📄 HTML verpdf.aspx, longitud:", htmlVerpdf.length);
 
-  // Verificar si ya es un PDF (poco probable pero posible)
+  // Si ya viene PDF directo (raro pero posible)
   if (htmlVerpdf.startsWith("%PDF")) {
     console.log("✅ verpdf.aspx devolvió PDF directamente en GET");
     return Buffer.from(htmlVerpdf, "binary");
   }
 
-  // ── Paso 2: extraer campos hidden del HTML ───────────────────────────────
+  // ── Paso 2: extraer campos hidden ───────────────────────────────────────
   const extractHidden = (name) => {
     const re = new RegExp(`name="${name}"[^>]*value="([^"]*)"`, "i");
     const m =
@@ -431,7 +441,7 @@ async function obtenerPDFConPost(cookieStr, previousPage) {
   const viewstate = extractHidden("__VIEWSTATE");
   const viewstateGenerator = extractHidden("__VIEWSTATEGENERATOR");
   const eventValidation = extractHidden("__EVENTVALIDATION");
-  const prevPage = extractHidden("__PREVIOUSPAGE") || previousPage || "";
+  const prevPage = extractHidden("__PREVIOUSPAGE");
 
   console.log(
     "🔒 VIEWSTATE len:",
@@ -446,8 +456,8 @@ async function obtenerPDFConPost(cookieStr, previousPage) {
     return null;
   }
 
-  // ── Paso 3: POST a verpdf.aspx simulando click en btnDescargar ──────────
-  // Según network capture: btnDescargar.x=215, btnDescargar.y=40
+  // ── Paso 3: POST simulando click en btnDescargar ─────────────────────────
+  // Valores exactos del network capture: btnDescargar.x=215, btnDescargar.y=40
   const postData = qs.stringify({
     __EVENTTARGET: "",
     __EVENTARGUMENT: "",
@@ -650,7 +660,8 @@ exports.consultarProcuraduria = async (req, res) => {
       await browser.close();
       return res.status(422).json({
         error: "Captcha de nombre requerido",
-        detalle: "Incluya 'nombre' en el body.",
+        detalle:
+          "El formulario pide las 2 primeras letras del nombre. Incluya 'nombre' en el body.",
         captchaPregunta: textoCaptcha,
       });
     }
@@ -692,13 +703,12 @@ exports.consultarProcuraduria = async (req, res) => {
     // ── 7. Submit ─────────────────────────────────────────────────────────
     console.log("🚀 Enviando formulario...");
 
-    let ajaxBody = "";
     let ajaxResolve;
     const ajaxResolvedPromise = new Promise((r) => {
       ajaxResolve = r;
     });
 
-    page.on("response", (response) => {
+    const responseHandler = (response) => {
       const url = response.url();
       if (
         url.includes("Certificado.aspx") &&
@@ -707,7 +717,6 @@ exports.consultarProcuraduria = async (req, res) => {
         response
           .text()
           .then((t) => {
-            ajaxBody = t;
             console.log(
               `📥 AJAX Certificado (${response.status()}):`,
               t.substring(0, 150),
@@ -716,7 +725,8 @@ exports.consultarProcuraduria = async (req, res) => {
           })
           .catch(() => ajaxResolve(""));
       }
-    });
+    };
+    page.on("response", responseHandler);
 
     const btnClickado = await workingFrame.evaluate(() => {
       const btn =
@@ -731,18 +741,17 @@ exports.consultarProcuraduria = async (req, res) => {
     console.log("🖱️ Botón clickado:", btnClickado);
 
     await esperarResultadoUpdatePanel(page, workingFrame, ajaxResolvedPromise);
+    page.off("response", responseHandler);
 
-    // ── 8. Leer texto de resultado ────────────────────────────────────────
+    // ── 8. Verificar resultado en el DOM ──────────────────────────────────
     const frameResultado = obtenerFrameActivo(page);
     const textoPagina = await frameResultado
       .evaluate(() => document.body.innerText.toUpperCase())
       .catch(() => "");
 
-    const urlFinal = page.url();
-    console.log("📍 URL final:", urlFinal);
+    console.log("📍 URL final:", page.url());
     console.log("📝 Texto (400):", textoPagina.substring(0, 400));
 
-    // Verificar que fue exitoso
     const esExitoso =
       textoPagina.includes("DESCARGUE SU CERTIFICADO") ||
       textoPagina.includes("NO REGISTRA") ||
@@ -761,39 +770,31 @@ exports.consultarProcuraduria = async (req, res) => {
         detalle: "Captcha incorrecto o sesión vencida.",
         captchaUsado: { pregunta: textoCaptcha, respuesta: respuestaCaptcha },
         captchaNuevo: captchaNuevo.texto || "(no detectado)",
-        urlFinal,
       });
     }
 
-    // ── 9. Obtener cookies de sesión y descargar PDF con POST ─────────────
+    // ── 9. Descargar PDF (GET → extrae VIEWSTATE → POST con btnDescargar) ─
     console.log("📄 Iniciando descarga del PDF...");
     const cookies = await page.cookies("https://apps.procuraduria.gov.co");
     const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     console.log("🍪 Cookies:", cookies.map((c) => c.name).join(", "));
 
-    // Extraer __PREVIOUSPAGE del ajaxBody si viene (a veces está en la respuesta Delta)
-    const prevPageMatch = ajaxBody.match(/__PREVIOUSPAGE[^|]*\|([^|]+)/);
-    const previousPage = prevPageMatch ? prevPageMatch[1] : "";
-
-    await browser.close(); // cerrar browser antes del POST (ya no lo necesitamos)
+    // Cerrar browser antes del POST (ya no lo necesitamos)
+    await browser.close();
     browser = null;
 
-    const pdfBuffer = await obtenerPDFConPost(cookieStr, previousPage).catch(
-      (e) => {
-        console.log("❌ Error obteniendo PDF:", e.message);
-        return null;
-      },
-    );
+    const pdfBuffer = await obtenerPDFConPost(cookieStr).catch((e) => {
+      console.log("❌ Error obteniendo PDF:", e.message);
+      return null;
+    });
 
-    // ── 10. Validar y construir respuesta ─────────────────────────────────
+    // ── 10. Validar PDF y construir respuesta ─────────────────────────────
     let pdfBase64 = null;
-    let pdfUrl = "";
 
     if (pdfBuffer && pdfBuffer.length > 100) {
       const header = pdfBuffer.slice(0, 4).toString("ascii");
       if (header === "%PDF") {
         pdfBase64 = pdfBuffer.toString("base64");
-        pdfUrl = VERPDF_URL;
         console.log("✅ PDF válido:", pdfBuffer.length, "bytes");
       } else {
         console.log("⚠️ Respuesta no es PDF (header:", header, ")");
@@ -801,6 +802,7 @@ exports.consultarProcuraduria = async (req, res) => {
       }
     }
 
+    // ── 11. Interpretar resultado ─────────────────────────────────────────
     const sinSanciones =
       textoPagina.includes("NO REGISTRA") ||
       textoPagina.includes("SIN ANTECEDENTES") ||
@@ -825,7 +827,16 @@ exports.consultarProcuraduria = async (req, res) => {
       mensaje: conSanciones
         ? "La persona REGISTRA sanciones en la Procuraduría."
         : "La persona NO registra sanciones en la Procuraduría.",
-      certificadoUrl: pdfUrl,
+      // pdfBase64: PDF del certificado en base64.
+      // En el frontend, convertir a Blob para mostrar o descargar:
+      //   const bytes = atob(pdfBase64);
+      //   const arr = new Uint8Array(bytes.length);
+      //   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      //   const blob = new Blob([arr], { type: "application/pdf" });
+      //   window.open(URL.createObjectURL(blob), "_blank");   // abrir
+      //   // o: const a = document.createElement("a");
+      //   //    a.href = URL.createObjectURL(blob);
+      //   //    a.download = "antecedentes.pdf"; a.click();   // descargar
       pdfBase64,
       detalle: textoPagina.substring(0, 800),
     });
