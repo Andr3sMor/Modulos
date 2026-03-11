@@ -1,29 +1,26 @@
 /**
- * policia.controller.js  (versión mejorada)
+ * policia.controller.js
  *
  * Flujo:
- * 1. POST /api/consulta-antecedentes → inicia Puppeteer, llena form, intenta captcha solo
- *    - Si resuelve solo → devuelve resultado directo
- *    - Si necesita challenge → guarda sesión, devuelve { sessionId, captchaImageBase64 }
+ *  1. Puppeteer abre policia.gov.co (headless:false pero ventana fuera de pantalla)
+ *  2. Llena el formulario automáticamente
+ *  3. Intenta resolver reCAPTCHA solo con el checkbox
+ *     ✅ Pasó solo  → envía form directamente, el usuario no ve nada
+ *     ❌ Necesita challenge → abre ventana VISIBLE y compacta al usuario
+ *        → Banner: "Haz clic en No soy un robot, la ventana se cerrará sola"
+ *        → Puppeteer detecta el token en el DOM (polling + callback)
+ *        → Cierra la ventana automáticamente
+ *        → Inyecta token en página principal, envía form, devuelve resultado
  *
- * 2. POST /api/resolver-captcha { sessionId, token } → inyecta token, envía form, devuelve resultado
- *
- * FIXES aplicados:
- *  - Manejo correcto del 302 que devuelve antecedentes.xhtml (JSF redirect)
- *  - Espera explícita del ViewState antes de hacer submit
- *  - Inyección de token reCAPTCHA más robusta (textarea + eventos + callback)
- *  - Selector de submit mejorado con fallback a evaluación directa del form JSF
- *  - Detección de resultado ampliada para más patrones de respuesta
- *  - Logs más descriptivos para facilitar debugging
+ * NOTA PRODUCCIÓN: En servidores sin display (Render, Railway) necesitas Xvfb.
+ * En local (Windows/Mac/Linux con escritorio) funciona directo.
  */
 
-const puppeteer = require("puppeteer-core");
-const chromium = require("@sparticuz/chromium");
+const puppeteer = require("puppeteer");
 
 const POLICIA_BASE = "https://antecedentes.policia.gov.co:7005";
 const POLICIA_URL = `${POLICIA_BASE}/WebJudicial/index.xhtml`;
 const POLICIA_FORM = `${POLICIA_BASE}/WebJudicial/antecedentes.xhtml`;
-const RECAPTCHA_SITE_KEY = "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH";
 
 const TIPO_MAP = {
   "Cédula de Ciudadanía": "cc",
@@ -38,54 +35,32 @@ const TIPO_MAP = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// Sesiones activas en memoria: sessionId → { browser, page, cedula, tipoDocumento, createdAt }
-const sesiones = new Map();
+// ─────────────────────────────────────────────────────────────────────────────
+// BROWSER
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Limpiar sesiones viejas (más de 10 min) cada 5 minutos
-setInterval(
-  () => {
-    const ahora = Date.now();
-    for (const [id, ses] of sesiones.entries()) {
-      if (ahora - ses.createdAt > 10 * 60 * 1000) {
-        ses.browser.close().catch(() => {});
-        sesiones.delete(id);
-        console.log(`🗑️  Sesión expirada eliminada: ${id}`);
-      }
-    }
-  },
-  5 * 60 * 1000,
-);
+async function lanzarBrowser() {
+  return puppeteer.launch({
+    // headless: false siempre — necesario para poder mostrar ventana en challenge.
+    // La pestaña principal se mueve fuera de pantalla; el usuario no la ve.
+    headless: false,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--ignore-certificate-errors",
+      "--window-size=500,620",
+      "--window-position=-2000,0", // Inicia fuera de pantalla
+    ],
+    ignoreHTTPSErrors: true,
+    defaultViewport: null,
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UTILIDADES
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function lanzarBrowser() {
-  if (!process.env.RENDER) {
-    const puppeteerFull = require("puppeteer");
-    return puppeteerFull.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--ignore-certificate-errors",
-      ],
-    });
-  }
-  return puppeteer.launch({
-    args: [
-      ...chromium.args,
-      "--ignore-certificate-errors",
-      "--disable-web-security",
-    ],
-    defaultViewport: chromium.defaultViewport,
-    executablePath: await chromium.executablePath(),
-    headless: chromium.headless,
-  });
-}
-
-/** Busca el primer elemento que coincida con alguno de los selectores */
 async function buscar(page, selectores) {
   for (const sel of selectores) {
     try {
@@ -96,7 +71,6 @@ async function buscar(page, selectores) {
   return null;
 }
 
-/** Interpreta el texto de la página para determinar si hay o no antecedentes */
 function extraerResultado(texto) {
   const upper = texto.toUpperCase();
   const noRegistra =
@@ -113,12 +87,10 @@ function extraerResultado(texto) {
   return { noRegistra, registra };
 }
 
-/** Construye la respuesta JSON final */
 function buildRespuesta(cedula, tipoDocumento, texto) {
   const upper = texto.toUpperCase();
   const { noRegistra, registra } = extraerResultado(upper);
 
-  // Detectar si el captcha fue rechazado
   const captchaRechazado =
     !noRegistra &&
     !registra &&
@@ -127,7 +99,7 @@ function buildRespuesta(cedula, tipoDocumento, texto) {
       upper.includes("VERIFICACIÓN"));
 
   if (captchaRechazado) {
-    throw new Error("reCAPTCHA rechazado o inválido. Intenta de nuevo.");
+    throw new Error("reCAPTCHA rechazado. Intenta de nuevo.");
   }
 
   return {
@@ -146,69 +118,41 @@ function buildRespuesta(cedula, tipoDocumento, texto) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 1: Navegar hasta el formulario con los datos listos
+// PASO 1: Navegar y llenar el formulario en una page dada
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Abre el browser, acepta términos, navega a antecedentes.xhtml
- * y llena tipo de documento + cédula.
- * Retorna la page lista para resolver el captcha.
- */
-async function prepararFormulario(browser, cedula, tipoValor) {
-  const page = await browser.newPage();
-
+async function prepararFormulario(page, cedula, tipoValor) {
   await page.setUserAgent(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
   );
   await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
   await page.setBypassCSP(true);
 
-  // ── 1. Página de términos ──────────────────────────────────────────────────
   console.log("📄 Cargando términos...");
   await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 30000 });
 
-  await page.click("input[name='aceptaOption'][value='true']");
+  await page.click("input[name='aceptaOption'][value='true']").catch(() => {});
   await sleep(400);
 
   console.log("🖱️  Aceptando términos...");
   await Promise.all([
-    // El servidor responde 302 → waitForNavigation lo sigue automáticamente
     page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
     page.click("#continuarBtn"),
   ]);
 
-  console.log("URL tras términos:", page.url());
-
-  // Si por alguna razón no llegamos a antecedentes.xhtml, navegar directo
   if (!page.url().includes("antecedentes")) {
-    console.log("⚠️  Navegando directo a antecedentes.xhtml...");
     await page.goto(POLICIA_FORM, {
       waitUntil: "networkidle2",
       timeout: 20000,
     });
   }
 
-  // ── 2. Esperar que el ViewState de JSF esté presente ──────────────────────
-  //    Sin ViewState válido el servidor rechaza el POST.
+  // Esperar ViewState de JSF
   await page
     .waitForSelector("input[name='javax.faces.ViewState']", { timeout: 10000 })
-    .catch(() => console.warn("⚠️  ViewState no encontrado, continuando..."));
+    .catch(() => console.warn("⚠️  ViewState no encontrado"));
 
-  // Debug: listar todos los campos del formulario
-  const els = await page.evaluate(() =>
-    Array.from(
-      document.querySelectorAll("input, select, textarea, button"),
-    ).map((el) => ({
-      tag: el.tagName,
-      id: el.id,
-      name: el.name,
-      type: el.type,
-      value: (el.value || "").substring(0, 40),
-    })),
-  );
-  console.log("🔍 Campos del formulario:", JSON.stringify(els, null, 2));
-
-  // ── 3. Seleccionar tipo de documento ──────────────────────────────────────
+  // Tipo de documento
   const selectTipo = await buscar(page, [
     "select[id='formAntecedentes:cedulaTipo']",
     "select[id='cedulaTipo']",
@@ -221,47 +165,36 @@ async function prepararFormulario(browser, cedula, tipoValor) {
       (el) => (el.id ? `#${el.id}` : `[name='${el.name}']`),
       selectTipo,
     );
-    const opciones = await page.evaluate((s) => {
-      const el = document.querySelector(s);
-      return el
-        ? Array.from(el.options).map((o) => ({ v: o.value, t: o.text }))
-        : [];
-    }, selId);
-    console.log("Opciones tipo doc:", JSON.stringify(opciones));
-
     await page.select(selId, tipoValor).catch(async () => {
-      // Fallback: buscar opción que contenga "ciudadan"
+      const opciones = await page.evaluate((s) => {
+        const el = document.querySelector(s);
+        return el
+          ? Array.from(el.options).map((o) => ({ v: o.value, t: o.text }))
+          : [];
+      }, selId);
       const op = opciones.find((o) => o.t?.toLowerCase().includes("ciudadan"));
       if (op) await page.select(selId, op.v).catch(() => {});
     });
   }
 
-  // ── 4. Ingresar número de cédula ──────────────────────────────────────────
+  // Cédula
   const inputCedula = await buscar(page, [
     "input[id='formAntecedentes:cedulaInput']",
     "input[id='cedulaInput']",
     "input[name*='cedulaInput']",
     "input[id*='cedula' i]:not([type='hidden'])",
-    "input[name*='cedula' i]:not([type='hidden'])",
   ]);
-
   if (!inputCedula) throw new Error("No se encontró el campo de cédula.");
-
   await inputCedula.click({ clickCount: 3 });
   await inputCedula.type(cedula, { delay: 50 });
   console.log(`📝 Cédula ingresada: ${cedula}`);
-
-  return page;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 2: Intentar resolver reCAPTCHA solo con el checkbox
+// PASO 2: Intentar checkbox solo
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Retorna: "resuelto" | "challenge" | "sin_captcha"
- */
-async function intentarCaptchaAutomatico(page) {
+async function intentarCheckboxSolo(page) {
   console.log("⏳ Esperando iframe reCAPTCHA...");
 
   const tieneCaptcha = await page
@@ -270,23 +203,19 @@ async function intentarCaptchaAutomatico(page) {
     .catch(() => false);
 
   if (!tieneCaptcha) {
-    console.log("⚠️  No hay reCAPTCHA iframe, continuando sin captcha.");
+    console.log("⚠️  Sin reCAPTCHA, continuando.");
     return "sin_captcha";
   }
 
-  // El anchor frame es el que contiene el checkbox
   const anchorFrame = page
     .frames()
     .find((f) => f.url().includes("recaptcha") && f.url().includes("anchor"));
 
-  if (!anchorFrame) {
-    console.warn("⚠️  Anchor frame no encontrado.");
-    return "sin_captcha";
-  }
+  if (!anchorFrame) return "sin_captcha";
 
   await anchorFrame.waitForSelector("#recaptcha-anchor", { timeout: 8000 });
   await anchorFrame.click("#recaptcha-anchor");
-  console.log("🖱️  Click en checkbox reCAPTCHA...");
+  console.log("🖱️  Click en checkbox...");
   await sleep(4000);
 
   const checked = await anchorFrame
@@ -295,89 +224,203 @@ async function intentarCaptchaAutomatico(page) {
     )
     .catch(() => null);
 
-  console.log("reCAPTCHA aria-checked:", checked);
-
-  if (checked === "true") return "resuelto";
-  return "challenge";
+  console.log("aria-checked:", checked);
+  return checked === "true" ? "resuelto" : "challenge";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 3: Capturar imagen del challenge (cuando Google pide seleccionar fotos)
+// PASO 3: Abrir ventana visible y esperar token del usuario
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function capturarChallenge(page) {
-  // Esperar que aparezca el bframe (grilla de imágenes)
-  await page
-    .waitForSelector("iframe[src*='recaptcha/api2/bframe']", { timeout: 10000 })
+async function abrirVentanaYEsperarToken(browser, cedula, tipoValor) {
+  console.log("🪟  Abriendo ventana visible para el challenge...");
+
+  const pageVisible = await browser.newPage();
+
+  // Mover esta ventana AL CENTRO de la pantalla (visible para el usuario)
+  const session = await pageVisible.target().createCDPSession();
+  await session
+    .send("Browser.setWindowBounds", {
+      windowId: await session
+        .send("Browser.getWindowForTarget")
+        .then((r) => r.windowId),
+      bounds: { left: 200, top: 100, width: 500, height: 620 },
+    })
     .catch(() => {});
-  await sleep(1200);
 
-  const bframeEl = await page.$("iframe[src*='recaptcha/api2/bframe']");
-  if (bframeEl) {
-    const box = await bframeEl.boundingBox();
-    if (box) {
-      return page.screenshot({
-        clip: { x: box.x, y: box.y, width: box.width, height: box.height },
-        encoding: "base64",
-      });
-    }
+  await pageVisible.setViewport({ width: 480, height: 580 });
+
+  // Parchear el callback de grecaptcha ANTES de que la página cargue
+  await pageVisible.evaluateOnNewDocument(() => {
+    window.__captchaToken__ = null;
+    const patchClients = () => {
+      try {
+        const cfg = window.___grecaptcha_cfg;
+        if (!cfg?.clients) return;
+        for (const k of Object.keys(cfg.clients)) {
+          const walk = (obj, depth = 0) => {
+            if (!obj || typeof obj !== "object" || depth > 6) return;
+            for (const key of Object.keys(obj)) {
+              if (
+                key === "callback" &&
+                typeof obj[key] === "function" &&
+                !obj.__patched__
+              ) {
+                const orig = obj[key];
+                obj[key] = (token) => {
+                  window.__captchaToken__ = token;
+                  return orig(token);
+                };
+                obj.__patched__ = true;
+              } else {
+                walk(obj[key], depth + 1);
+              }
+            }
+          };
+          walk(cfg.clients[k]);
+        }
+      } catch (_) {}
+    };
+    // Intentar cada 300ms durante 30s
+    const iv = setInterval(patchClients, 300);
+    setTimeout(() => clearInterval(iv), 30000);
+  });
+
+  // Navegar y llenar el formulario en la ventana visible
+  await prepararFormulario(pageVisible, cedula, tipoValor);
+
+  // Inyectar banner de instrucción
+  await pageVisible.evaluate(() => {
+    // Ocultar header/footer para que quepa mejor el captcha
+    document
+      .querySelectorAll("header, footer, nav, .header, .footer")
+      .forEach((el) => (el.style.display = "none"));
+
+    const banner = document.createElement("div");
+    banner.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; z-index: 99999;
+      background: #1a56db; color: #fff; font-size: 13px; font-weight: 600;
+      padding: 10px 14px; text-align: center; font-family: sans-serif;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35); letter-spacing: 0.2px;
+    `;
+    banner.textContent =
+      "🤖 Completa el captcha. La ventana se cerrará automáticamente.";
+    document.body.prepend(banner);
+    document.body.style.paddingTop = "44px";
+  });
+
+  // Esperar token: polling del textarea O del window.__captchaToken__
+  console.log("👁️  Esperando resolución del challenge (máx 3 min)...");
+  const TIMEOUT_MS = 3 * 60 * 1000;
+  const inicio = Date.now();
+
+  let token = null;
+  while (!token && Date.now() - inicio < TIMEOUT_MS) {
+    await sleep(500);
+    token = await pageVisible
+      .evaluate(() => {
+        // Primero revisar el callback parchado
+        if (window.__captchaToken__) return window.__captchaToken__;
+        // Luego el textarea estándar
+        const ta =
+          document.querySelector("textarea[name='g-recaptcha-response']") ||
+          document.querySelector("#g-recaptcha-response");
+        return ta?.value?.length > 20 ? ta.value : null;
+      })
+      .catch(() => null);
   }
-  // Fallback: screenshot completo del viewport
-  return page.screenshot({ encoding: "base64", fullPage: false });
+
+  // Cerrar ventana visible
+  console.log("🔒 Cerrando ventana del challenge...");
+  await pageVisible.close().catch(() => {});
+
+  if (!token)
+    throw new Error("Timeout: el usuario no resolvió el captcha en 3 minutos.");
+
+  console.log("✅ Token obtenido.");
+  return token;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 4: Enviar el formulario y leer el resultado
+// PASO 4: Inyectar token y enviar formulario
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function enviarYLeerResultado(page) {
+async function inyectarTokenYEnviar(page, token) {
+  if (token) {
+    console.log("💉 Inyectando token en página principal...");
+    await page.evaluate((tkn) => {
+      const selectores = [
+        "textarea[name='g-recaptcha-response']",
+        "#g-recaptcha-response",
+      ];
+      for (const sel of selectores) {
+        const el = document.querySelector(sel);
+        if (el) {
+          el.style.display = "block";
+          el.value = tkn;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      // Disparar callback interno de grecaptcha
+      try {
+        const cfg = window.___grecaptcha_cfg;
+        if (cfg?.clients) {
+          const walk = (obj, depth = 0) => {
+            if (!obj || typeof obj !== "object" || depth > 6) return;
+            for (const key of Object.keys(obj)) {
+              if (key === "callback" && typeof obj[key] === "function") {
+                try {
+                  obj[key](tkn);
+                } catch (_) {}
+              } else {
+                walk(obj[key], depth + 1);
+              }
+            }
+          };
+          for (const k of Object.keys(cfg.clients)) walk(cfg.clients[k]);
+        }
+      } catch (_) {}
+    }, token);
+    await sleep(800);
+  }
+
   console.log("🚀 Enviando formulario...");
 
-  // Intentar encontrar el botón de submit con múltiples selectores
   const btnSubmit = await buscar(page, [
     "input[id$='consultarBtn']",
     "button[id$='consultarBtn']",
     "input[id*='consultar' i]",
     "button[id*='consultar' i]",
     "input[value*='Consultar']",
-    "button[value*='Consultar']",
     "input[type='submit']",
     "button[type='submit']",
   ]);
 
-  if (btnSubmit) {
-    console.log("🔘 Botón submit encontrado, haciendo click...");
-    await Promise.all([
-      page
-        .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-        .catch(() => {}),
-      btnSubmit.click(),
-    ]);
-  } else {
-    // Fallback: submit directo del form JSF por JS
-    console.log("⚠️  Botón no encontrado, haciendo submit directo del form...");
-    await page.evaluate(() => {
-      const form =
-        document.querySelector("form[id*='formAntecedentes']") ||
-        document.querySelector("form");
-      if (form) form.submit();
-    });
-    await page
+  await Promise.all([
+    page
       .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-      .catch(() => {});
-  }
+      .catch(() => {}),
+    btnSubmit
+      ? btnSubmit.click()
+      : page.evaluate(() => {
+          const form =
+            document.querySelector("form[id*='formAntecedentes']") ||
+            document.querySelector("form");
+          if (form) form.submit();
+        }),
+  ]);
 
-  // Esperar un poco extra para que JSF procese el 302 y cargue el resultado
   await sleep(2500);
 
   const contenido = await page.evaluate(() => document.body.innerText || "");
-  const texto = contenido.replace(/\s+/g, " ").trim().toUpperCase();
-  console.log("📄 Respuesta (primeros 600 chars):", texto.substring(0, 600));
+  const texto = contenido.replace(/\s+/g, " ").trim();
+  console.log("📄 Respuesta:", texto.substring(0, 600));
   return texto;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HANDLER 1: Iniciar consulta
+// HANDLER PRINCIPAL
 // POST /api/consulta-antecedentes
 // Body: { cedula: string, tipoDocumento?: string }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -395,131 +438,31 @@ exports.consultarAntecedentes = async (req, res) => {
   let browser;
   try {
     browser = await lanzarBrowser();
-    const page = await prepararFormulario(browser, cedula, tipoValor);
-    const estadoCaptcha = await intentarCaptchaAutomatico(page);
+    const pages = await browser.pages();
+    const page = pages[0]; // Pestaña inicial (fuera de pantalla)
+
+    await prepararFormulario(page, cedula, tipoValor);
+    const estadoCaptcha = await intentarCheckboxSolo(page);
+
+    let texto;
 
     if (estadoCaptcha === "resuelto" || estadoCaptcha === "sin_captcha") {
-      // ✅ Captcha OK → enviar y devolver resultado
-      const texto = await enviarYLeerResultado(page);
-      await browser.close().catch(() => {});
-      return res.json(buildRespuesta(cedula, tipoDocumento, texto));
+      // ✅ El usuario no necesita hacer nada
+      console.log("✅ Resuelto automáticamente, el usuario no ve nada.");
+      texto = await inyectarTokenYEnviar(page, null);
+    } else {
+      // ⚠️ Necesita challenge → ventana visible
+      const token = await abrirVentanaYEsperarToken(browser, cedula, tipoValor);
+      texto = await inyectarTokenYEnviar(page, token);
     }
 
-    // ⚠️ Google exige challenge visual → capturar y guardar sesión
-    console.log("🖼️  Challenge detectado, capturando imagen...");
-    const imageBase64 = await capturarChallenge(page);
-
-    const sessionId = `ses_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    sesiones.set(sessionId, {
-      browser,
-      page,
-      cedula,
-      tipoDocumento,
-      createdAt: Date.now(),
-    });
-    console.log(`💾 Sesión guardada: ${sessionId}`);
-
-    return res.status(202).json({
-      requiereCaptcha: true,
-      sessionId,
-      captchaImageBase64: `data:image/png;base64,${imageBase64}`,
-      siteKey: RECAPTCHA_SITE_KEY,
-      mensaje:
-        "Se requiere resolver el captcha manualmente. Envía el token a /api/resolver-captcha.",
-    });
-  } catch (error) {
-    if (browser) await browser.close().catch(() => {});
-    console.error("❌ ERROR consultarAntecedentes:", error.message);
-    return res.status(502).json({
-      error: "Error en consulta Policía Nacional",
-      detalle: error.message,
-    });
-  }
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDLER 2: Recibir token resuelto e inyectarlo
-// POST /api/resolver-captcha
-// Body: { sessionId: string, token: string }
-// ─────────────────────────────────────────────────────────────────────────────
-
-exports.resolverCaptcha = async (req, res) => {
-  const { sessionId, token } = req.body;
-  if (!sessionId || !token)
-    return res.status(400).json({ error: "sessionId y token son requeridos." });
-
-  const sesion = sesiones.get(sessionId);
-  if (!sesion)
-    return res.status(404).json({ error: "Sesión no encontrada o expirada." });
-
-  const { browser, page, cedula, tipoDocumento } = sesion;
-  sesiones.delete(sessionId); // Consumir la sesión inmediatamente
-
-  try {
-    console.log(`🔑 Inyectando token en sesión ${sessionId}...`);
-
-    /**
-     * FIX CLAVE: La inyección del token necesita:
-     *   1. Escribir en el textarea oculto de reCAPTCHA
-     *   2. Disparar los eventos 'input' y 'change' para que JSF / React lo detecte
-     *   3. Intentar llamar el callback interno de grecaptcha si existe
-     */
-    await page.evaluate((tkn) => {
-      // 1. Textarea estándar de reCAPTCHA
-      const selectores = [
-        "textarea[name='g-recaptcha-response']",
-        "#g-recaptcha-response",
-        "textarea[id*='captcha']",
-        "textarea[name*='captcha']",
-      ];
-
-      for (const sel of selectores) {
-        const el = document.querySelector(sel);
-        if (el) {
-          el.style.display = "block"; // Hacerlo visible para que JSF lo tome
-          el.value = tkn;
-          // Disparar eventos para que frameworks detecten el cambio
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-      }
-
-      // 2. Intentar disparar el callback de grecaptcha directamente
-      try {
-        const cfg = window.___grecaptcha_cfg;
-        if (cfg && cfg.clients) {
-          // Iterar todos los clientes registrados
-          for (const clientKey of Object.keys(cfg.clients)) {
-            const client = cfg.clients[clientKey];
-            // Buscar recursivamente una función "callback"
-            const findAndCall = (obj, depth = 0) => {
-              if (depth > 4 || !obj || typeof obj !== "object") return;
-              for (const key of Object.keys(obj)) {
-                if (key === "callback" && typeof obj[key] === "function") {
-                  try {
-                    obj[key](tkn);
-                  } catch (_) {}
-                } else {
-                  findAndCall(obj[key], depth + 1);
-                }
-              }
-            };
-            findAndCall(client);
-          }
-        }
-      } catch (_) {}
-    }, token);
-
-    await sleep(1000);
-
-    const texto = await enviarYLeerResultado(page);
     await browser.close().catch(() => {});
     return res.json(buildRespuesta(cedula, tipoDocumento, texto));
   } catch (error) {
-    await browser.close().catch(() => {});
-    console.error("❌ ERROR resolverCaptcha:", error.message);
+    if (browser) await browser.close().catch(() => {});
+    console.error("❌ ERROR:", error.message);
     return res.status(502).json({
-      error: "Error al procesar el captcha",
+      error: "Error en consulta Policía Nacional",
       detalle: error.message,
     });
   }
