@@ -18,6 +18,7 @@
     "axios": "^1.13.6",
     "axios-cookiejar-support": "^6.0.5",
     "cors": "^2.8.6",
+    "duck-duck-scrape": "^2.2.7",
     "express": "^5.2.1",
     "https-proxy-agent": "^7.0.6",
     "playwright": "^1.58.2",
