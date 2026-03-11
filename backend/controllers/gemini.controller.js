@@ -50,7 +50,7 @@ ${resultadosWeb}
 Genera el informe con estas secciones:
 
 1. IDENTIDAD
-Datos encontrados: ciudad, profesion, cargo o rol publico.
+Datos encontrados: ciudad, profesion, Documento de identidad, cargo o rol publico.
 
 2. PRESENCIA PUBLICA
 Redes sociales, paginas web, menciones en medios de comunicacion.
@@ -70,11 +70,11 @@ Justificacion breve basada en los hallazgos.
 ---
 Si hay multiples personas con ese nombre, separarlas (Persona 1, Persona 2...).
 Si no hay informacion en alguna seccion, escribir "Sin informacion disponible".
-No inventar datos. Solo usar lo que aparece en los resultados. Lenguaje formal y objetivo.
+No inventar datos. Solo usar lo que aparece en los resultados. Lenguaje formal y objetivo, por ultimo .
 `;
 
     const geminiRes = await axios.post(
-      `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`,
       { contents: [{ parts: [{ text: prompt }] }] },
       { headers: { "Content-Type": "application/json" }, timeout: 30000 },
     );
