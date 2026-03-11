@@ -7,6 +7,7 @@ const regController = require("./controllers/registraduria.controller");
 const policiaController = require("./controllers/policia.controller");
 const offshoreController = require("./controllers/offshore.controller");
 const procuraduriaController = require("./controllers/procuraduria.controller");
+const geminiController = require("./controllers/gemini.controller");
 
 const corsOptions = {
   origin: [
@@ -30,5 +31,6 @@ app.post(
   "/api/consulta-procuraduria",
   procuraduriaController.consultarProcuraduria,
 );
+app.post("/api/buscar-persona-ia", geminiController.buscarPersonaConIA);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
