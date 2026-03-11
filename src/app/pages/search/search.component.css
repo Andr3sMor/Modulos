@@ -65,6 +65,15 @@
   border-radius: 2px;
 }
 
+/* ── Sección Gemini (acento morado) ── */
+.gemini-section {
+  background: #faf5ff;
+  border-top: 1px solid #e9d5ff;
+}
+.gemini-section .section-title::before {
+  background: linear-gradient(180deg, #7c3aed, #a855f7);
+}
+
 /* ── Fila de campos ── */
 .fields-row {
   display: grid;
@@ -157,6 +166,10 @@ select.field-input { cursor: pointer; }
   animation: spin 0.7s linear infinite;
   display: inline-block;
 }
+.spinner-purple {
+  border-color: rgba(124,58,237,0.25);
+  border-top-color: #7c3aed;
+}
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ── Alert error ── */
@@ -218,6 +231,50 @@ select.field-input { cursor: pointer; }
 .result-item { display: flex; flex-direction: column; gap: 2px; }
 .item-label { font-size: 0.75rem; color: #9ca3af; font-weight: 500; }
 .item-value { font-size: 0.88rem; color: #111827; font-weight: 600; }
+
+/* ── Tarjeta Gemini ── */
+.gemini-card {
+  border: 1px solid #e9d5ff;
+  box-shadow: 0 2px 12px rgba(124, 58, 237, 0.08);
+}
+.gemini-card .result-header {
+  background: linear-gradient(135deg, #f5f3ff, #ede9fe);
+  border-bottom: 1px solid #e9d5ff;
+}
+.gemini-badge {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+.gemini-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #7c3aed;
+  font-weight: 500;
+}
+.gemini-loading {
+  padding: 20px 0;
+  text-align: center;
+}
+.gemini-loading-text {
+  font-size: 0.88rem;
+  color: #6b7280;
+  line-height: 1.6;
+}
+.gemini-error {
+  padding: 12px;
+  background: #fef2f2;
+  border-radius: 8px;
+  color: #dc2626;
+  font-size: 0.88rem;
+}
+.gemini-content {
+  white-space: pre-wrap;
+  font-size: 0.9rem;
+  line-height: 1.8;
+  color: #1f2937;
+}
 
 /* ── Lista offshore ── */
 .offshore-list { margin-top: 14px; }

@@ -59,10 +59,10 @@
           <button
             class="btn-search"
             (click)="ejecutarConsulta()"
-            [disabled]="cargando"
+            [disabled]="cargando || cargandoIA"
           >
-            <span *ngIf="!cargando">🔍 Consultar</span>
-            <span *ngIf="cargando" class="loading-text">
+            <span *ngIf="!cargando && !cargandoIA">🔍 Consultar</span>
+            <span *ngIf="cargando || cargandoIA" class="loading-text">
               <span class="spinner"></span> Buscando...
             </span>
           </button>
@@ -72,8 +72,56 @@
 
     <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
 
+    <!-- ═══════════════════════════════════════════════════════════
+         BLOQUE GEMINI AI — se muestra PRIMERO, antes de los demás
+         ═══════════════════════════════════════════════════════════ -->
+    <div
+      *ngIf="cargandoIA || analisisIA || errorIA"
+      class="results-section gemini-section"
+    >
+      <h3 class="section-title">Análisis Gemini AI</h3>
+
+      <div class="result-card gemini-card">
+        <div class="result-header">
+          <span class="source-badge gemini-badge"
+            >Gemini AI · Búsqueda en Internet</span
+          >
+          <span *ngIf="cargandoIA" class="gemini-status">
+            <span class="spinner spinner-purple"></span> Buscando sobre "{{
+              nombre
+            }}"...
+          </span>
+          <span
+            *ngIf="analisisIA && !cargandoIA"
+            class="status-badge badge-success"
+            >✅ Análisis listo</span
+          >
+        </div>
+
+        <div class="result-body">
+          <div *ngIf="cargandoIA" class="gemini-loading">
+            <div class="gemini-loading-text">
+              Gemini está consultando fuentes públicas de internet sobre
+              <strong>"{{ nombre }}"</strong>. Esto puede tomar unos segundos...
+            </div>
+          </div>
+
+          <div *ngIf="errorIA && !cargandoIA" class="gemini-error">
+            ⚠️ {{ errorIA }}
+          </div>
+
+          <div *ngIf="analisisIA && !cargandoIA" class="gemini-content">
+            {{ analisisIA }}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════════
+         RESULTADOS BASES DE DATOS OFICIALES — se muestran después
+         ═══════════════════════════════════════════════════════════ -->
     <div *ngIf="resultados.length > 0" class="results-section">
-      <h3 class="section-title">Resultados de la Consulta</h3>
+      <h3 class="section-title">Resultados de Bases de Datos Oficiales</h3>
 
       <div *ngFor="let r of resultados; let i = index" class="result-card">
         <div class="result-header">

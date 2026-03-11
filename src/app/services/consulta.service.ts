@@ -70,4 +70,12 @@ export class ConsultaService {
   consultarOffshore(nombre: string) {
     return this.http.post(`${this.apiUrl}/api/consulta-offshore`, { nombre });
   }
+
+  // ── Gemini AI: buscar persona por nombre en internet ────────
+  buscarPersonaConIA(nombre: string) {
+    return this.http.post<{ analisis: string; fuentes: string | null }>(
+      `${this.apiUrl}/api/buscar-persona-ia`,
+      { nombre },
+    );
+  }
 }

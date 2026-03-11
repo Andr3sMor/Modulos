@@ -21,6 +21,11 @@ export class SearchComponent {
 
   captchaData: { sessionId: string } | null = null;
 
+  // ── Gemini AI ────────────────────────────────────────────────
+  analisisIA = "";
+  cargandoIA = false;
+  errorIA = "";
+
   tipoDocumento = "Cédula de Ciudadanía";
   tiposDocumento = [
     "Cédula de Ciudadanía",
@@ -56,8 +61,34 @@ export class SearchComponent {
 
     this.error = "";
     this.resultados = [];
-    this.cargando = true;
+    this.analisisIA = "";
+    this.errorIA = "";
 
+    // ── 1. Lanzar Gemini primero si hay nombre ────────────────
+    if (this.nombre.trim()) {
+      this.cargandoIA = true;
+      this.cdr.detectChanges();
+
+      this.consultaService.buscarPersonaConIA(this.nombre).subscribe({
+        next: (res: any) => {
+          this.zone.run(() => {
+            this.analisisIA = res.analisis;
+            this.cargandoIA = false;
+            this.cdr.detectChanges();
+          });
+        },
+        error: () => {
+          this.zone.run(() => {
+            this.errorIA = "No se pudo obtener el análisis de IA.";
+            this.cargandoIA = false;
+            this.cdr.detectChanges();
+          });
+        },
+      });
+    }
+
+    // ── 2. Lanzar bases de datos oficiales en paralelo ────────
+    this.cargando = true;
     const tareas = activos.map((s) => this.llamarServicio(s.id));
     Promise.allSettled(tareas).then(() => {
       this.zone.run(() => {
@@ -157,7 +188,6 @@ export class SearchComponent {
             });
           break;
 
-        // ── PROCURADURÍA: guardar pdfBase64 para descarga local ────────────
         case "procuraduria":
           if (!this.cedula) {
             resolve();
@@ -174,7 +204,7 @@ export class SearchComponent {
                     tieneSanciones: res.tieneSanciones,
                     sinSanciones: res.sinSanciones,
                     mensaje: res.mensaje,
-                    pdfBase64: res.pdfBase64 || null, // ← nuevo
+                    pdfBase64: res.pdfBase64 || null,
                     data: { fecha: new Date().toLocaleString() },
                   });
                   this.cdr.detectChanges();
@@ -228,7 +258,6 @@ export class SearchComponent {
     });
   }
 
-  // ── Abre el certificado PDF en una nueva pestaña ─────────────────────────
   descargarCertificado(r: any): void {
     if (!r.pdfBase64) return;
     const bytes = atob(r.pdfBase64);
