@@ -14,6 +14,7 @@ import { CaptchaResolverComponent } from "./captcha-resolver.component";
 export class SearchComponent {
   cedula = "";
   nombre = "";
+  apellido = "";
   cargando = false;
   error = "";
   resultados: any[] = [];
@@ -40,6 +41,7 @@ export class SearchComponent {
     { id: "antecedentes", nombre: "Policía", activo: false },
     { id: "procuraduria", nombre: "Procuraduría", activo: false },
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
+    { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
   ];
 
   constructor(
@@ -250,6 +252,39 @@ export class SearchComponent {
                 resolve();
               }),
           });
+          break;
+
+        case "ramaJudicial":
+          if (!this.cedula && !this.apellido) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarRamaJudicial({
+              cedula: this.cedula || undefined,
+              nombres: this.nombre || undefined,
+              apellidos: this.apellido || undefined,
+            })
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "ramaJudicial",
+                    fuente: res.fuente || "Rama Judicial de Colombia",
+                    totalAlertas: res.totalAlertas,
+                    totalCiudades: res.totalCiudades,
+                    ciudades: res.ciudades || [],
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Rama Judicial", err);
+                  resolve();
+                }),
+            });
           break;
 
         default:

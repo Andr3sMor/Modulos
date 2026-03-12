@@ -23,12 +23,22 @@
           />
         </div>
         <div class="field-group">
-          <label class="field-label">Nombre Completo</label>
+          <label class="field-label">Nombre(s)</label>
           <input
             type="text"
             class="field-input"
             [(ngModel)]="nombre"
-            placeholder="Ej: Juan García"
+            placeholder="Ej: Carlos Andrés"
+            (keyup.enter)="ejecutarConsulta()"
+          />
+        </div>
+        <div class="field-group">
+          <label class="field-label">Apellido(s)</label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="apellido"
+            placeholder="Ej: García López"
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
@@ -191,6 +201,22 @@
                   : "✅ Sin registros"
               }}
             </span>
+
+            <!-- Rama Judicial badge -->
+            <span
+              *ngIf="r.tipo === 'ramaJudicial'"
+              [class]="
+                r.totalAlertas > 0
+                  ? 'status-badge badge-danger'
+                  : 'status-badge badge-success'
+              "
+            >
+              {{
+                r.totalAlertas > 0
+                  ? "⚠️ " + r.totalAlertas + " ciudad(es) con procesos"
+                  : "✅ Sin procesos activos"
+              }}
+            </span>
           </div>
         </div>
 
@@ -308,6 +334,73 @@
                   </div>
                 </ng-container>
               </ng-container>
+            </ng-container>
+          </div>
+
+          <!-- ══════════════════════════════════════════
+               RAMA JUDICIAL — detalle por ciudad
+               ══════════════════════════════════════════ -->
+          <div *ngIf="r.tipo === 'ramaJudicial'" class="rama-judicial-informe">
+            <div *ngIf="r.totalAlertas === 0" class="sin-resultados">
+              ✅ No se encontraron procesos activos confirmados en ninguna de
+              las
+              {{ r.totalCiudades }} ciudades consultadas.
+            </div>
+
+            <ng-container *ngIf="r.totalAlertas > 0">
+              <div class="informe-resumen">
+                <span class="informe-icono">⚖️</span>
+                Se confirmaron procesos activos en
+                <strong>{{ r.totalAlertas }} ciudad(es)</strong> de
+                {{ r.totalCiudades }} consultadas.
+              </div>
+
+              <!-- Solo ciudades con alerta -->
+              <div
+                *ngFor="let ciudad of r.ciudades"
+                class="rama-ciudad-item"
+                [class.rama-alerta]="ciudad.alert"
+              >
+                <div class="rama-ciudad-header">
+                  <span class="rama-ciudad-nombre">
+                    {{ ciudad.alert ? "⚠️" : "✅" }} {{ ciudad.ciudad }}
+                  </span>
+                  <span
+                    class="status-badge"
+                    [class.badge-danger]="ciudad.alert"
+                    [class.badge-success]="!ciudad.alert"
+                  >
+                    {{
+                      ciudad.alert
+                        ? ciudad.paso2_identidad?.matchedRows +
+                          " proceso(s) confirmado(s)"
+                        : "Sin procesos"
+                    }}
+                  </span>
+                </div>
+
+                <div *ngIf="ciudad.alert" class="rama-ciudad-detalle">
+                  <div class="rama-verificacion">
+                    <span class="rama-paso">Paso 1 — Estructural:</span>
+                    {{ ciudad.paso1_estructural?.reason }}
+                  </div>
+                  <div class="rama-verificacion">
+                    <span class="rama-paso">Paso 2 — Identidad:</span>
+                    {{ ciudad.paso2_identidad?.detail }}
+                  </div>
+                  <div class="rama-mensaje">{{ ciudad.mensaje }}</div>
+
+                  <!-- Screenshot de evidencia -->
+                  <div *ngIf="ciudad.screenshot" class="rama-screenshot">
+                    <p class="rama-screenshot-label">📸 Evidencia:</p>
+                    <img
+                      [src]="'data:image/png;base64,' + ciudad.screenshot"
+                      alt="Evidencia {{ ciudad.ciudad }}"
+                      class="rama-screenshot-img"
+                    />
+                  </div>
+                </div>
+              </div>
             </ng-container>
           </div>
         </div>

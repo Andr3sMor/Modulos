@@ -78,4 +78,16 @@ export class ConsultaService {
       { nombre },
     );
   }
+
+  // ── Rama Judicial JEPMS ───────────────────────────────────────
+  consultarRamaJudicial(payload: {
+    cedula?: string;
+    nombres?: string;
+    apellidos?: string;
+  }) {
+    return this.http.post<any>(
+      `${this.apiUrl}/api/consulta-rama-judicial`,
+      payload,
+    );
+  }
 }
