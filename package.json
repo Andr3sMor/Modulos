@@ -6,6 +6,7 @@
     "start": "ng serve",
     "build": "ng build",
     "start:backend": "node backend/server.js"
+    "postinstall": "npx puppeteer browsers install chrome"
   },
   "dependencies": {
     "@angular/common": "^21.1.0",
