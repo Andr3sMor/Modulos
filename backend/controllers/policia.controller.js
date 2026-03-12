@@ -1,469 +1,804 @@
+"use strict";
+
 /**
- * policia.controller.js
+ * PoliciaService — JavaScript
  *
- * Flujo:
- *  1. Puppeteer abre policia.gov.co (headless:false pero ventana fuera de pantalla)
- *  2. Llena el formulario automáticamente
- *  3. Intenta resolver reCAPTCHA solo con el checkbox
- *     ✅ Pasó solo  → envía form directamente, el usuario no ve nada
- *     ❌ Necesita challenge → abre ventana VISIBLE y compacta al usuario
- *        → Banner: "Haz clic en No soy un robot, la ventana se cerrará sola"
- *        → Puppeteer detecta el token en el DOM (polling + callback)
- *        → Cierra la ventana automáticamente
- *        → Inyecta token en página principal, envía form, devuelve resultado
+ * Scraper de antecedentes judiciales — Policía Nacional de Colombia.
+ * Usa Puppeteer + Stealth + extensión rektcaptcha + Xvfb en servidores Linux.
  *
- * NOTA PRODUCCIÓN: En servidores sin display (Render, Railway) necesitas Xvfb.
- * En local (Windows/Mac/Linux con escritorio) funciona directo.
+ * REQUISITOS:
+ *   npm install puppeteer puppeteer-extra puppeteer-extra-plugin-stealth
+ *   apt-get install -y xvfb          (solo en servidores Linux)
+ *
+ * USO:
+ *   const svc = new PoliciaService(mysqlService, imagesUpload, configService);
+ *   await svc.onModuleInit();
+ *   const results = await svc.search(clients);
+ *   await svc.onModuleDestroy();
  */
 
-const puppeteer = require("puppeteer");
+const path = require("path");
+const child_process = require("child_process");
+const puppeteer = require("puppeteer-extra");
+const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 
-const POLICIA_BASE = "https://antecedentes.policia.gov.co:7005";
-const POLICIA_URL = `${POLICIA_BASE}/WebJudicial/index.xhtml`;
-const POLICIA_FORM = `${POLICIA_BASE}/WebJudicial/antecedentes.xhtml`;
+class PoliciaService {
+  /**
+   * @param {object} mysqlService   — instancia con método query(sql, params)
+   * @param {object} imagesUpload   — instancia con método imageServerLoad(buffer, prefix)
+   * @param {object} configService  — instancia con método get(key) (puede ser null)
+   */
+  constructor(mysqlService, imagesUpload, configService) {
+    this.mysqlService = mysqlService;
+    this.imagesUpload = imagesUpload;
+    this.configService = configService;
 
-const TIPO_MAP = {
-  "Cédula de Ciudadanía": "cc",
-  "Cédula de Extranjería": "cx",
-  Pasaporte: "pa",
-  "Documento País Origen": "dp",
-  cc: "cc",
-  cx: "cx",
-  pa: "pa",
-  dp: "dp",
-};
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// ─────────────────────────────────────────────────────────────────────────────
-// BROWSER
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function lanzarBrowser() {
-  return puppeteer.launch({
-    // headless: false siempre — necesario para poder mostrar ventana en challenge.
-    // La pestaña principal se mueve fuera de pantalla; el usuario no la ve.
-    headless: false,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--ignore-certificate-errors",
-      "--window-size=500,620",
-      "--window-position=-2000,0", // Inicia fuera de pantalla
-    ],
-    ignoreHTTPSErrors: true,
-    defaultViewport: null,
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UTILIDADES
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function buscar(page, selectores) {
-  for (const sel of selectores) {
-    try {
-      const el = await page.$(sel);
-      if (el) return el;
-    } catch (_) {}
-  }
-  return null;
-}
-
-function extraerResultado(texto) {
-  const upper = texto.toUpperCase();
-  const noRegistra =
-    upper.includes("NO REGISTRA") ||
-    upper.includes("SIN ANTECEDENTES") ||
-    upper.includes("NO PRESENTA") ||
-    upper.includes("NO SE ENCONTRARON") ||
-    upper.includes("NO TIENE ANTECEDENTES");
-  const registra =
-    upper.includes("REGISTRA ANTECEDENTES") ||
-    upper.includes("PRESENTA ANTECEDENTES") ||
-    upper.includes("CONDENA") ||
-    upper.includes("TIENE ANTECEDENTES");
-  return { noRegistra, registra };
-}
-
-function buildRespuesta(cedula, tipoDocumento, texto) {
-  const upper = texto.toUpperCase();
-  const { noRegistra, registra } = extraerResultado(upper);
-
-  const captchaRechazado =
-    !noRegistra &&
-    !registra &&
-    (upper.includes("CAPTCHA") ||
-      upper.includes("DEBE SELECCIONAR") ||
-      upper.includes("VERIFICACIÓN"));
-
-  if (captchaRechazado) {
-    throw new Error("reCAPTCHA rechazado. Intenta de nuevo.");
-  }
-
-  return {
-    fuente: "Policía Nacional de Colombia",
-    status: noRegistra || registra ? "success" : "sin_resultado",
-    cedula,
-    tipoDocumento,
-    tieneAntecedentes: registra && !noRegistra,
-    mensaje: noRegistra
-      ? "La persona NO registra antecedentes judiciales."
-      : registra
-        ? "La persona REGISTRA antecedentes judiciales."
-        : "Sin resultado claro. Revisa el detalle.",
-    detalle: texto.substring(0, 800),
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PASO 1: Navegar y llenar el formulario en una page dada
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function prepararFormulario(page, cedula, tipoValor) {
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-  );
-  await page.setExtraHTTPHeaders({ "Accept-Language": "es-CO,es;q=0.9" });
-  await page.setBypassCSP(true);
-
-  console.log("📄 Cargando términos...");
-  await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 30000 });
-
-  await page.click("input[name='aceptaOption'][value='true']").catch(() => {});
-  await sleep(400);
-
-  console.log("🖱️  Aceptando términos...");
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 25000 }),
-    page.click("#continuarBtn"),
-  ]);
-
-  if (!page.url().includes("antecedentes")) {
-    await page.goto(POLICIA_FORM, {
-      waitUntil: "networkidle2",
-      timeout: 20000,
-    });
-  }
-
-  // Esperar ViewState de JSF
-  await page
-    .waitForSelector("input[name='javax.faces.ViewState']", { timeout: 10000 })
-    .catch(() => console.warn("⚠️  ViewState no encontrado"));
-
-  // Tipo de documento
-  const selectTipo = await buscar(page, [
-    "select[id='formAntecedentes:cedulaTipo']",
-    "select[id='cedulaTipo']",
-    "select[name*='cedulaTipo']",
-    "select",
-  ]);
-
-  if (selectTipo) {
-    const selId = await page.evaluate(
-      (el) => (el.id ? `#${el.id}` : `[name='${el.name}']`),
-      selectTipo,
-    );
-    await page.select(selId, tipoValor).catch(async () => {
-      const opciones = await page.evaluate((s) => {
-        const el = document.querySelector(s);
-        return el
-          ? Array.from(el.options).map((o) => ({ v: o.value, t: o.text }))
-          : [];
-      }, selId);
-      const op = opciones.find((o) => o.t?.toLowerCase().includes("ciudadan"));
-      if (op) await page.select(selId, op.v).catch(() => {});
-    });
-  }
-
-  // Cédula
-  const inputCedula = await buscar(page, [
-    "input[id='formAntecedentes:cedulaInput']",
-    "input[id='cedulaInput']",
-    "input[name*='cedulaInput']",
-    "input[id*='cedula' i]:not([type='hidden'])",
-  ]);
-  if (!inputCedula) throw new Error("No se encontró el campo de cédula.");
-  await inputCedula.click({ clickCount: 3 });
-  await inputCedula.type(cedula, { delay: 50 });
-  console.log(`📝 Cédula ingresada: ${cedula}`);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PASO 2: Intentar checkbox solo
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function intentarCheckboxSolo(page) {
-  console.log("⏳ Esperando iframe reCAPTCHA...");
-
-  const tieneCaptcha = await page
-    .waitForSelector("iframe[src*='recaptcha']", { timeout: 10000 })
-    .then(() => true)
-    .catch(() => false);
-
-  if (!tieneCaptcha) {
-    console.log("⚠️  Sin reCAPTCHA, continuando.");
-    return "sin_captcha";
-  }
-
-  const anchorFrame = page
-    .frames()
-    .find((f) => f.url().includes("recaptcha") && f.url().includes("anchor"));
-
-  if (!anchorFrame) return "sin_captcha";
-
-  await anchorFrame.waitForSelector("#recaptcha-anchor", { timeout: 8000 });
-  await anchorFrame.click("#recaptcha-anchor");
-  console.log("🖱️  Click en checkbox...");
-  await sleep(4000);
-
-  const checked = await anchorFrame
-    .evaluate(() =>
-      document.querySelector("#recaptcha-anchor")?.getAttribute("aria-checked"),
-    )
-    .catch(() => null);
-
-  console.log("aria-checked:", checked);
-  return checked === "true" ? "resuelto" : "challenge";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PASO 3: Abrir ventana visible y esperar token del usuario
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function abrirVentanaYEsperarToken(browser, cedula, tipoValor) {
-  console.log("🪟  Abriendo ventana visible para el challenge...");
-
-  const pageVisible = await browser.newPage();
-
-  // Mover esta ventana AL CENTRO de la pantalla (visible para el usuario)
-  const session = await pageVisible.target().createCDPSession();
-  await session
-    .send("Browser.setWindowBounds", {
-      windowId: await session
-        .send("Browser.getWindowForTarget")
-        .then((r) => r.windowId),
-      bounds: { left: 200, top: 100, width: 500, height: 620 },
-    })
-    .catch(() => {});
-
-  await pageVisible.setViewport({ width: 480, height: 580 });
-
-  // Parchear el callback de grecaptcha ANTES de que la página cargue
-  await pageVisible.evaluateOnNewDocument(() => {
-    window.__captchaToken__ = null;
-    const patchClients = () => {
-      try {
-        const cfg = window.___grecaptcha_cfg;
-        if (!cfg?.clients) return;
-        for (const k of Object.keys(cfg.clients)) {
-          const walk = (obj, depth = 0) => {
-            if (!obj || typeof obj !== "object" || depth > 6) return;
-            for (const key of Object.keys(obj)) {
-              if (
-                key === "callback" &&
-                typeof obj[key] === "function" &&
-                !obj.__patched__
-              ) {
-                const orig = obj[key];
-                obj[key] = (token) => {
-                  window.__captchaToken__ = token;
-                  return orig(token);
-                };
-                obj.__patched__ = true;
-              } else {
-                walk(obj[key], depth + 1);
-              }
-            }
-          };
-          walk(cfg.clients[k]);
-        }
-      } catch (_) {}
+    this.logger = {
+      log: (m) => console.log(`[PoliciaService] ${m}`),
+      warn: (m) => console.warn(`[PoliciaService] ⚠️  ${m}`),
+      error: (m, e) => console.error(`[PoliciaService] ❌ ${m}`, e ?? ""),
+      debug: (m) => console.debug(`[PoliciaService] ${m}`),
     };
-    // Intentar cada 300ms durante 30s
-    const iv = setInterval(patchClients, 300);
-    setTimeout(() => clearInterval(iv), 30000);
-  });
 
-  // Navegar y llenar el formulario en la ventana visible
-  await prepararFormulario(pageVisible, cedula, tipoValor);
+    this.url =
+      "https://antecedentes.policia.gov.co:7005/WebJudicial/antecedentes.xhtml";
 
-  // Inyectar banner de instrucción
-  await pageVisible.evaluate(() => {
-    // Ocultar header/footer para que quepa mejor el captcha
-    document
-      .querySelectorAll("header, footer, nav, .header, .footer")
-      .forEach((el) => (el.style.display = "none"));
+    this.extensionPath = path.resolve(
+      __dirname,
+      "../browser-extensions/rektcaptcha", // ajusta esta ruta si es necesario
+    );
 
-    const banner = document.createElement("div");
-    banner.style.cssText = `
-      position: fixed; top: 0; left: 0; right: 0; z-index: 99999;
-      background: #1a56db; color: #fff; font-size: 13px; font-weight: 600;
-      padding: 10px 14px; text-align: center; font-family: sans-serif;
-      box-shadow: 0 2px 8px rgba(0,0,0,.35); letter-spacing: 0.2px;
-    `;
-    banner.textContent =
-      "🤖 Completa el captcha. La ventana se cerrará automáticamente.";
-    document.body.prepend(banner);
-    document.body.style.paddingTop = "44px";
-  });
-
-  // Esperar token: polling del textarea O del window.__captchaToken__
-  console.log("👁️  Esperando resolución del challenge (máx 3 min)...");
-  const TIMEOUT_MS = 3 * 60 * 1000;
-  const inicio = Date.now();
-
-  let token = null;
-  while (!token && Date.now() - inicio < TIMEOUT_MS) {
-    await sleep(500);
-    token = await pageVisible
-      .evaluate(() => {
-        // Primero revisar el callback parchado
-        if (window.__captchaToken__) return window.__captchaToken__;
-        // Luego el textarea estándar
-        const ta =
-          document.querySelector("textarea[name='g-recaptcha-response']") ||
-          document.querySelector("#g-recaptcha-response");
-        return ta?.value?.length > 20 ? ta.value : null;
-      })
-      .catch(() => null);
+    this.xvfbDisplay = ":99";
+    this.xvfbProcess = null;
   }
 
-  // Cerrar ventana visible
-  console.log("🔒 Cerrando ventana del challenge...");
-  await pageVisible.close().catch(() => {});
+  // ─── Lifecycle ─────────────────────────────────────────────────────────────
 
-  if (!token)
-    throw new Error("Timeout: el usuario no resolvió el captcha en 3 minutos.");
-
-  console.log("✅ Token obtenido.");
-  return token;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PASO 4: Inyectar token y enviar formulario
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function inyectarTokenYEnviar(page, token) {
-  if (token) {
-    console.log("💉 Inyectando token en página principal...");
-    await page.evaluate((tkn) => {
-      const selectores = [
-        "textarea[name='g-recaptcha-response']",
-        "#g-recaptcha-response",
-      ];
-      for (const sel of selectores) {
-        const el = document.querySelector(sel);
-        if (el) {
-          el.style.display = "block";
-          el.value = tkn;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-      }
-      // Disparar callback interno de grecaptcha
-      try {
-        const cfg = window.___grecaptcha_cfg;
-        if (cfg?.clients) {
-          const walk = (obj, depth = 0) => {
-            if (!obj || typeof obj !== "object" || depth > 6) return;
-            for (const key of Object.keys(obj)) {
-              if (key === "callback" && typeof obj[key] === "function") {
-                try {
-                  obj[key](tkn);
-                } catch (_) {}
-              } else {
-                walk(obj[key], depth + 1);
-              }
-            }
-          };
-          for (const k of Object.keys(cfg.clients)) walk(cfg.clients[k]);
-        }
-      } catch (_) {}
-    }, token);
-    await sleep(800);
+  async onModuleInit() {
+    const isStealthLoaded = puppeteer.plugins.some((p) => p.name === "stealth");
+    if (!isStealthLoaded) {
+      puppeteer.use(StealthPlugin());
+    }
+    this.startXvfb();
   }
 
-  console.log("🚀 Enviando formulario...");
+  async onModuleDestroy() {
+    this.stopXvfb();
+  }
 
-  const btnSubmit = await buscar(page, [
-    "input[id$='consultarBtn']",
-    "button[id$='consultarBtn']",
-    "input[id*='consultar' i]",
-    "button[id*='consultar' i]",
-    "input[value*='Consultar']",
-    "input[type='submit']",
-    "button[type='submit']",
-  ]);
+  // ─── Xvfb ──────────────────────────────────────────────────────────────────
 
-  await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 })
-      .catch(() => {}),
-    btnSubmit
-      ? btnSubmit.click()
-      : page.evaluate(() => {
-          const form =
-            document.querySelector("form[id*='formAntecedentes']") ||
-            document.querySelector("form");
-          if (form) form.submit();
-        }),
-  ]);
-
-  await sleep(2500);
-
-  const contenido = await page.evaluate(() => document.body.innerText || "");
-  const texto = contenido.replace(/\s+/g, " ").trim();
-  console.log("📄 Respuesta:", texto.substring(0, 600));
-  return texto;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDLER PRINCIPAL
-// POST /api/consulta-antecedentes
-// Body: { cedula: string, tipoDocumento?: string }
-// ─────────────────────────────────────────────────────────────────────────────
-
-exports.consultarAntecedentes = async (req, res) => {
-  const { cedula, tipoDocumento = "cc" } = req.body;
-  if (!cedula)
-    return res.status(400).json({ error: "El campo 'cedula' es requerido." });
-
-  const tipoValor = TIPO_MAP[tipoDocumento] || "cc";
-  console.log(`\n${"─".repeat(60)}`);
-  console.log(`🔍 Consultando: ${cedula} (${tipoValor})`);
-  console.log(`${"─".repeat(60)}`);
-
-  let browser;
-  try {
-    browser = await lanzarBrowser();
-    const pages = await browser.pages();
-    const page = pages[0]; // Pestaña inicial (fuera de pantalla)
-
-    await prepararFormulario(page, cedula, tipoValor);
-    const estadoCaptcha = await intentarCheckboxSolo(page);
-
-    let texto;
-
-    if (estadoCaptcha === "resuelto" || estadoCaptcha === "sin_captcha") {
-      // ✅ El usuario no necesita hacer nada
-      console.log("✅ Resuelto automáticamente, el usuario no ve nada.");
-      texto = await inyectarTokenYEnviar(page, null);
-    } else {
-      // ⚠️ Necesita challenge → ventana visible
-      const token = await abrirVentanaYEsperarToken(browser, cedula, tipoValor);
-      texto = await inyectarTokenYEnviar(page, token);
+  /**
+   * Inicia Xvfb (pantalla virtual) para que las extensiones de Chrome funcionen
+   * correctamente en servidores Linux sin monitor físico.
+   *
+   * Equivale a:
+   *   Xvfb :99 -screen 0 1920x1080x24 &
+   *   export DISPLAY=:99
+   */
+  startXvfb() {
+    if (process.platform !== "linux") {
+      this.logger.warn(
+        "No es Linux — omitiendo Xvfb. Se usará el display del sistema.",
+      );
+      return;
     }
 
-    await browser.close().catch(() => {});
-    return res.json(buildRespuesta(cedula, tipoDocumento, texto));
-  } catch (error) {
-    if (browser) await browser.close().catch(() => {});
-    console.error("❌ ERROR:", error.message);
-    return res.status(502).json({
-      error: "Error en consulta Policía Nacional",
-      detalle: error.message,
+    try {
+      child_process.execSync("which Xvfb", { stdio: "ignore" });
+    } catch {
+      this.logger.error(
+        "Xvfb no encontrado. Instálalo con: apt-get install -y xvfb\n" +
+          "Las extensiones pueden no funcionar en modo headless sin él.",
+      );
+      return;
+    }
+
+    // Limpiar proceso previo en este display
+    try {
+      child_process.execSync(`pkill -f "Xvfb ${this.xvfbDisplay}"`, {
+        stdio: "ignore",
+      });
+      this.logger.log("Proceso Xvfb anterior limpiado.");
+    } catch {
+      // No había proceso previo — está bien
+    }
+
+    this.logger.log(`Iniciando Xvfb en display ${this.xvfbDisplay}...`);
+
+    this.xvfbProcess = child_process.spawn(
+      "Xvfb",
+      [this.xvfbDisplay, "-screen", "0", "1920x1080x24", "-ac"],
+      { detached: false, stdio: "ignore" },
+    );
+
+    this.xvfbProcess.on("error", (err) => {
+      this.logger.error("Error en proceso Xvfb:", err.message);
+    });
+
+    this.xvfbProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) {
+        this.logger.warn(`Xvfb terminó con código ${code}`);
+      }
+    });
+
+    // Apuntar DISPLAY al servidor virtual para este proceso y sus hijos
+    process.env.DISPLAY = this.xvfbDisplay;
+    this.logger.log(`✅ Xvfb iniciado. DISPLAY=${this.xvfbDisplay}`);
+  }
+
+  stopXvfb() {
+    if (this.xvfbProcess) {
+      this.logger.log("Deteniendo Xvfb...");
+      this.xvfbProcess.kill("SIGTERM");
+      this.xvfbProcess = null;
+    }
+  }
+
+  // ─── Public API ────────────────────────────────────────────────────────────
+
+  /**
+   * Transforma los params genéricos al formato que usa este servicio.
+   * @param {Array} params
+   */
+  params(params) {
+    return params
+      .filter((e) => e.is_full_params || e.is_identification)
+      .map((e) => ({
+        identificator: e.identificator,
+        identification: Number(e.id_number.replace(/[.,]/g, "")).toString(),
+        id_type: e.id_type,
+        client_type: e.client_type,
+      }));
+  }
+
+  /**
+   * Punto de entrada principal. Procesa una lista de clientes.
+   * @param {Array<{identificator, identification, id_type, client_type}>} clients
+   * @returns {Promise<Array>}
+   */
+  async search(clients) {
+    if (clients.length === 0) return [];
+
+    const results = [];
+
+    try {
+      for (const client of clients) {
+        const result = await this.processClientWithRetry(client);
+        if (result) results.push(result);
+      }
+      return results;
+    } catch (e) {
+      this.logger.error("Error crítico global en search()", e);
+      return [];
+    }
+  }
+
+  // ─── Browser ───────────────────────────────────────────────────────────────
+
+  /**
+   * Lanza Chrome con headless:false apuntando al display virtual de Xvfb.
+   * Esto es necesario para que las extensiones (rektcaptcha) carguen correctamente.
+   */
+  async launchBrowser() {
+    const browser = await puppeteer.launch({
+      // headless: false es OBLIGATORIO para extensiones.
+      // En servidor, Xvfb actúa como pantalla virtual — no se abre ninguna ventana real.
+      headless: false,
+      devtools: false,
+      ignoreHTTPSErrors: true, // El portal de la policía tiene cert autofirmado
+      args: [
+        `--disable-extensions-except=${this.extensionPath}`,
+        `--load-extension=${this.extensionPath}`,
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--ignore-certificate-errors",
+        "--allow-running-insecure-content",
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage", // Usar /tmp en lugar de /dev/shm (estabilidad en Docker)
+        "--disable-gpu", // Obligatorio en servidores sin GPU
+        "--no-zygote",
+        "--disable-software-rasterizer",
+        "--font-render-hinting=none",
+        "--window-size=1920,1080",
+        `--display=${process.env.DISPLAY ?? this.xvfbDisplay}`,
+      ],
+      ignoreDefaultArgs: ["--disable-extensions", "--enable-automation"],
+      env: {
+        ...process.env,
+        DISPLAY: process.env.DISPLAY ?? this.xvfbDisplay,
+      },
+    });
+
+    // Cargar la página de extensiones para asegurar que el service worker se inicializa
+    const page = await browser.newPage();
+    try {
+      await page.goto("chrome://extensions/", {
+        waitUntil: "domcontentloaded",
+        timeout: 5000,
+      });
+    } catch (_) {
+      /* ignorar timeout */
+    }
+    await this.delay(500);
+    await page.close().catch(() => {});
+
+    return browser;
+  }
+
+  async configureExtension(browser) {
+    try {
+      const targets = await browser.targets();
+      const extensionTarget = targets.find(
+        (t) => t.type() === "service_worker" || t.url().includes("rektcaptcha"),
+      );
+
+      if (extensionTarget) {
+        const worker = await extensionTarget.worker();
+        if (worker) {
+          await worker.evaluate(() => {
+            const chrome = self.chrome;
+            if (chrome?.storage?.local) {
+              chrome.storage.local.set({
+                recaptcha_auto_open: true,
+                recaptcha_auto_solve: true,
+                recaptcha_click_delay_time: 300,
+                recaptcha_solve_delay_time: 1000,
+              });
+            }
+          });
+          this.logger.log("✅ rektCaptcha configurado correctamente.");
+        }
+      } else {
+        this.logger.warn(
+          "Target de rektCaptcha no encontrado. " +
+            "Verifica la ruta de la extensión y que Xvfb esté corriendo.",
+        );
+      }
+    } catch (error) {
+      this.logger.warn(`No se pudo configurar la extensión: ${error.message}`);
+    }
+  }
+
+  // ─── Retry Logic ───────────────────────────────────────────────────────────
+
+  async processClientWithRetry(client) {
+    let attempt = 0;
+    let success = false;
+    let result = null;
+    const { identificator, identification } = client;
+    const start_time = Date.now();
+
+    let browser = null;
+    let page = null;
+
+    try {
+      browser = await this.launchBrowser();
+      await this.configureExtension(browser);
+      page = await browser.newPage();
+
+      page.on("console", (msg) => {
+        if (msg.type() === "error" || msg.text().includes("PrimeFaces")) {
+          this.logger.debug(`[BROWSER] ${msg.text()}`);
+        }
+      });
+
+      await page.setUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      );
+
+      while (attempt < 5 && !success) {
+        attempt++;
+        let screenshotUrl = "";
+
+        try {
+          this.logger.log(
+            `Procesando ${identification} (intento ${attempt}/5)...`,
+          );
+
+          if (attempt > 1) {
+            this.logger.log("Recargando página para reintento...");
+            await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+          }
+
+          const { message, alert, evidenceUrl } =
+            await this.executeScrapingFlow(page, client);
+
+          screenshotUrl = evidenceUrl;
+          const duration = (Date.now() - start_time) / 1000;
+
+          await this.registerResult(
+            identificator,
+            screenshotUrl,
+            message,
+            duration,
+            false,
+            alert,
+          );
+
+          result = {
+            identificator,
+            screenshotUrl,
+            alert,
+            duration,
+            client: `${identification}`,
+            message,
+            status: "Processed",
+          };
+          success = true;
+        } catch (err) {
+          this.logger.error(
+            `Intento ${attempt} falló para ${identification}: ${err.message}`,
+          );
+
+          if (err.message.includes("Error de navegación")) {
+            await this.insertRecordDB(
+              "INSERT INTO logger_web_page_tbl (message, web_page) VALUES (?, ?)",
+              [
+                `No se pudo acceder a ${this.url}. Intento ${attempt}.`,
+                "Antecedentes Policiales",
+              ],
+            );
+          }
+
+          if (attempt >= 5) {
+            const duration = (Date.now() - start_time) / 1000;
+            if (page && !page.isClosed()) {
+              try {
+                const buffer = await page.screenshot({ fullPage: true });
+                screenshotUrl = await this.imagesUpload.imageServerLoad(
+                  Buffer.from(buffer),
+                  "policia_error",
+                );
+              } catch (_) {
+                /* ignorar error de screenshot */
+              }
+            }
+
+            const failureMessage = `Falló tras 5 intentos. Último error: ${err.message}`;
+            await this.registerResult(
+              identificator,
+              screenshotUrl,
+              failureMessage,
+              (Date.now() - start_time) / 1000,
+              true,
+              false,
+            );
+
+            result = {
+              identificator,
+              screenshotUrl,
+              alert: true,
+              duration: (Date.now() - start_time) / 1000,
+              client: `${identification}`,
+              error: failureMessage,
+            };
+          } else {
+            if (
+              err.message.includes("Target closed") ||
+              err.message.includes("Session closed")
+            ) {
+              this.logger.warn("Browser crasheado — reiniciando instancia...");
+              if (browser) await browser.close().catch(() => {});
+              browser = await this.launchBrowser();
+              await this.configureExtension(browser);
+              page = await browser.newPage();
+            }
+            await this.delay(3000);
+          }
+        }
+      }
+    } catch (criticalErr) {
+      this.logger.error(
+        "Error crítico en ciclo de vida del browser:",
+        criticalErr,
+      );
+    } finally {
+      if (browser) await browser.close().catch(() => {});
+    }
+
+    return result;
+  }
+
+  // ─── Scraping Flow ─────────────────────────────────────────────────────────
+
+  async executeScrapingFlow(page, client) {
+    const { identification, id_type } = client;
+
+    this.logger.log("🌐 Navegando a URL inicial...");
+    await page.goto(this.url, { waitUntil: "networkidle2", timeout: 45000 });
+    await this.delay(3000);
+
+    const directAccess = await page.evaluate(() => {
+      const el = document.getElementById("cedulaInput");
+      return el && el.offsetParent !== null;
+    });
+
+    if (directAccess) {
+      this.logger.log("🚀 Acceso directo detectado. Saltando términos.");
+    } else {
+      this.logger.warn("🔒 Ejecutando flujo de aceptación de términos...");
+      await this.ensureTermsAcceptedLoop(page);
+      await this.clickContinueWithRetries(page, 3);
+    }
+
+    await this.verifyAntecedentesPage(page);
+    await this.handleCaptcha(page);
+    await this.performSearch(page, identification);
+
+    const { text } = await this.validateResultsLoaded(page);
+
+    const nowStr = new Date().toLocaleString();
+    let alert;
+    let message;
+
+    if (text.toUpperCase().includes("NO TIENE ASUNTOS PENDIENTES")) {
+      alert = false;
+      message =
+        `El día ${nowStr} se verifica en el sistema de antecedentes policiales ` +
+        `que el registro identificado con ${id_type} ${identification} no tiene antecedentes judiciales.`;
+    } else {
+      alert = true;
+      message =
+        `El día ${nowStr} se verifica en el sistema de antecedentes policiales ` +
+        `que el registro identificado con ${id_type} ${identification} TIENE antecedentes judiciales.`;
+    }
+
+    let evidenceUrl = "";
+    try {
+      const buffer = await page.screenshot({
+        fullPage: false,
+        fromSurface: true,
+      });
+      evidenceUrl = await this.imagesUpload.imageServerLoad(
+        Buffer.from(buffer),
+        "policia",
+      );
+    } catch (imgError) {
+      this.logger.warn("Error subiendo screenshot: " + imgError.message);
+    }
+
+    return { message, alert, evidenceUrl };
+  }
+
+  // ─── Step Helpers ──────────────────────────────────────────────────────────
+
+  async ensureTermsAcceptedLoop(page) {
+    let attempts = 0;
+    const maxAttempts = 10;
+    let success = false;
+
+    while (attempts < maxAttempts && !success) {
+      attempts++;
+      this.logger.log(`🔄 Términos — intento ${attempts}/${maxAttempts}...`);
+
+      try {
+        const navOptions = { waitUntil: "networkidle2", timeout: 45000 };
+
+        if (attempts === 1) {
+          await page.goto(this.url, navOptions);
+        } else {
+          await page.reload(navOptions);
+        }
+
+        await this.delay(3000);
+
+        const radioSelector = "#aceptaOption\\:0";
+        try {
+          await page.waitForSelector(radioSelector, { timeout: 10000 });
+        } catch {
+          this.logger.warn("   > Radio button no apareció. Recargando...");
+          continue;
+        }
+
+        await page.click(radioSelector);
+        let isEnabled = await this.checkContinueButton(page);
+
+        if (!isEnabled) {
+          this.logger.warn(
+            "   > Primer click no activó el botón. Reintentando con JS...",
+          );
+          await this.delay(2000);
+          await page.evaluate((sel) => {
+            const el = document.querySelector(sel);
+            if (el) el.click();
+          }, radioSelector);
+          await this.delay(4000);
+          isEnabled = await this.checkContinueButton(page);
+        }
+
+        if (isEnabled) {
+          this.logger.log("✅ Botón Continuar activado.");
+          success = true;
+        } else {
+          this.logger.warn("⚠️  Botón no activado. Reiniciando ciclo...");
+        }
+      } catch (e) {
+        this.logger.warn(`   > Error en intento ${attempts}: ${e.message}`);
+      }
+
+      if (!success && attempts < maxAttempts) {
+        await this.delay(2000);
+      }
+    }
+
+    if (!success) {
+      throw new Error(
+        "No se pudo activar el botón de continuar tras 10 intentos.",
+      );
+    }
+  }
+
+  async checkContinueButton(page) {
+    return await page.evaluate(() => {
+      const btn = document.querySelector("#continuarBtn");
+      return (
+        btn &&
+        !btn.classList.contains("ui-state-disabled") &&
+        !btn.hasAttribute("disabled")
+      );
     });
   }
-};
+
+  async clickContinueWithRetries(page, maxRetries) {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      attempt++;
+
+      const alreadyThere = await page
+        .evaluate(
+          () =>
+            window.location.href.includes("antecedentes.xhtml") ||
+            !!document.getElementById("cedulaInput"),
+        )
+        .catch(() => false);
+
+      if (alreadyThere) {
+        this.logger.log("✅ Ya estamos en la página de antecedentes.");
+        return;
+      }
+
+      this.logger.log(`🔵 Intento ${attempt}: Click en Continuar...`);
+      const btnSelector = "#continuarBtn";
+      await page
+        .waitForSelector(btnSelector, { timeout: 5000 })
+        .catch(() => {});
+
+      try {
+        await Promise.all([
+          page
+            .waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 })
+            .catch(() => null),
+          page.click(btnSelector),
+        ]);
+
+        if (page.url().includes("antecedentes.xhtml")) {
+          this.logger.log("✅ Navegación exitosa.");
+          return;
+        }
+      } catch (e) {
+        this.logger.warn(`⚠️  Click falló: ${e.message}`);
+      }
+
+      if (attempt > 1) {
+        await page.evaluate((sel) => {
+          const btn = document.querySelector(sel);
+          if (btn) btn.click();
+        }, btnSelector);
+        await this.delay(5000);
+        if (page.url().includes("antecedentes.xhtml")) {
+          this.logger.log("✅ Navegación exitosa tras JS click.");
+          return;
+        }
+      }
+
+      await this.delay(2000);
+    }
+
+    throw new Error(
+      "No se pudo navegar a la página de antecedentes. URL final: " +
+        page.url(),
+    );
+  }
+
+  async verifyAntecedentesPage(page) {
+    this.logger.log("🔍 Verificando página de antecedentes...");
+    let validated = false;
+    let validatorAttempts = 0;
+
+    while (validatorAttempts < 3 && !validated) {
+      validatorAttempts++;
+      try {
+        await page.waitForFunction(
+          () => window.location.href.includes("antecedentes.xhtml"),
+          { timeout: 10000 },
+        );
+        await page.waitForSelector("#cedulaInput", { timeout: 10000 });
+        validated = true;
+        this.logger.log("✅ Página de antecedentes confirmada.");
+      } catch (e) {
+        this.logger.warn(
+          `⚠️  Validación intento ${validatorAttempts} falló: ${e.message}`,
+        );
+        await this.delay(2000);
+      }
+    }
+
+    if (!validated) {
+      throw new Error("No se pudo validar la página de antecedentes.");
+    }
+  }
+
+  async handleCaptcha(page) {
+    this.logger.log("Esperando rektCaptcha...");
+    await page.setViewport({ width: 1280, height: 800 });
+
+    let solved = false;
+    let detachedCount = 0;
+
+    for (let i = 1; i <= 60; i++) {
+      try {
+        if (page.isClosed()) throw new Error("Page cerrada (crash detectado)");
+
+        solved = await page.evaluate(() => {
+          try {
+            const el = document.getElementById("g-recaptcha-response");
+            return !!(el && el.value && el.value.trim().length > 0);
+          } catch (_) {
+            return false;
+          }
+        });
+
+        if (detachedCount > 0) {
+          this.logger.log(
+            `✅ Contexto recuperado tras ${detachedCount} errores.`,
+          );
+          detachedCount = 0;
+        }
+      } catch (e) {
+        const isDetached =
+          e.message.includes("detached") ||
+          e.message.includes("shutting down") ||
+          e.message.includes("Target closed") ||
+          e.message.includes("Execution context was destroyed");
+
+        if (isDetached) {
+          detachedCount++;
+          this.logger.warn(
+            `⚠️  Detached #${detachedCount}. Esperando recuperación...`,
+          );
+          if (detachedCount > 10) {
+            throw new Error(
+              "Browser atascado en estado detached. Forzando reintento.",
+            );
+          }
+          solved = false;
+          await this.delay(2000);
+        } else {
+          throw e;
+        }
+      }
+
+      if (solved) {
+        this.logger.log("✅ Captcha resuelto.");
+        break;
+      }
+
+      if (i % 5 === 0) this.logger.log(`⏳ Resolviendo captcha... (${i * 2}s)`);
+      await this.delay(2000);
+    }
+
+    if (!solved)
+      throw new Error("Tiempo de espera del captcha agotado (120s).");
+  }
+
+  async performSearch(page, identification) {
+    this.logger.log(`Ingresando ID: ${identification}`);
+    await page.waitForSelector("input[type='text']", { timeout: 15000 });
+
+    const inputFound = await page.evaluate((idNum) => {
+      const inputs = Array.from(
+        document.querySelectorAll('input[type="text"]'),
+      );
+      const visibleInput = inputs.find((i) => i.offsetParent !== null);
+      if (visibleInput) {
+        visibleInput.value = idNum;
+        visibleInput.dispatchEvent(new Event("input", { bubbles: true }));
+        visibleInput.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+      return false;
+    }, identification);
+
+    if (!inputFound) {
+      await page.type('input[type="text"]', identification);
+    }
+
+    this.logger.log("Consultando...");
+    await page.evaluate(() => {
+      const buttons = Array.from(
+        document.querySelectorAll('button, a, input[type="submit"]'),
+      );
+      const searchBtn = buttons.find(
+        (b) =>
+          b.textContent?.toLowerCase().includes("consultar") ||
+          b.textContent?.toLowerCase().includes("buscar") ||
+          b.id.includes("j_idt17"),
+      );
+      if (searchBtn) searchBtn.click();
+    });
+
+    await this.delay(5000);
+  }
+
+  async validateResultsLoaded(page) {
+    this.logger.log("Validando resultados...");
+    const result = await page.evaluate(() => {
+      const selectors = [
+        "#antecedentes",
+        "#form\\:j_idt8_content",
+        "#form\\:j_idt8",
+        "#form",
+        "body",
+      ];
+      for (const s of selectors) {
+        const el = document.querySelector(s);
+        if (el && el.textContent && el.textContent.trim().length > 100)
+          return { found: true, text: el.textContent.trim() };
+      }
+      return { found: false, text: "" };
+    });
+
+    if (!result.found)
+      throw new Error("No se encontró texto de resultados tras la búsqueda.");
+    return result;
+  }
+
+  // ─── Database ──────────────────────────────────────────────────────────────
+
+  async registerResult(
+    identificator,
+    screenshotUrl,
+    message,
+    duration,
+    error,
+    validation,
+  ) {
+    await this.insertRecordDB(
+      "INSERT INTO policia_antecendetes_tbl (id, client_id, evidence, message, duration, error, validation) VALUES (UUID(),?,?,?,?,?,?)",
+      [identificator, screenshotUrl, message, duration, error, validation],
+    );
+
+    await this.insertRecordDB(
+      "UPDATE client_tbl SET policia_antecendetes = 1 WHERE id = ?",
+      [identificator],
+    );
+
+    if (validation) {
+      try {
+        await this.mysqlService.query(
+          "INSERT INTO alert_tbl (type, level, client_id) VALUES (?, ?, ?)",
+          ["Consulta antecedentes policiales Colombia", "1", identificator],
+        );
+      } catch (_) {
+        /* ignorar error de alerta */
+      }
+    }
+  }
+
+  async insertRecordDB(query, values) {
+    try {
+      await this.mysqlService.query(query, values);
+    } catch (e) {
+      this.logger.error("Error al insertar en base de datos", e);
+    }
+  }
+
+  delay(time) {
+    return new Promise((resolve) => setTimeout(resolve, time));
+  }
+}
+
+module.exports = { PoliciaService };
