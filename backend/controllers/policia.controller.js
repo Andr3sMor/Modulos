@@ -4,6 +4,7 @@ const path = require("path");
 const child_process = require("child_process");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const chromium = require("@sparticuz/chromium");
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
@@ -131,11 +132,17 @@ function startXvfb() {
 // ─── Browser ──────────────────────────────────────────────────────────────────
 
 async function launchBrowser() {
+  // Usar Chromium empaquetado por @sparticuz/chromium (no requiere instalación aparte)
+  const executablePath = await chromium.executablePath();
+  console.log(`[Policía] Chromium path: ${executablePath}`);
+
   const browser = await puppeteer.launch({
-    headless: false, // OBLIGATORIO para que la extensión rektcaptcha funcione
+    headless: false, // false para que las extensiones funcionen con Xvfb
+    executablePath,
     devtools: false,
     ignoreHTTPSErrors: true,
     args: [
+      ...chromium.args,
       `--disable-extensions-except=${EXTENSION_PATH}`,
       `--load-extension=${EXTENSION_PATH}`,
       "--no-sandbox",
