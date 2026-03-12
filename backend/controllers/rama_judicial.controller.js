@@ -440,6 +440,8 @@ exports.consultarRamaJudicial = async (req, res) => {
         continue;
       }
 
+      console.log(["Merge HTML: ", mergedHtml, "Merge Rows: ", mergedRows]);
+
       // ── PASO 1 ─────────────────────────────────────────────────────────
       const step1 = step1_structuralCheck(mergedHtml, mergedRows);
       cityResult.paso1_estructural = {
@@ -450,6 +452,8 @@ exports.consultarRamaJudicial = async (req, res) => {
       console.log(
         `  [${city.valor}] PASO 1 → ${step1.pass ? "✅ PASA" : "❌ NO pasa"}: ${step1.reason}`,
       );
+
+      console.log(["Merge Rows: ", mergedRows]);
 
       // ── PASO 2 (solo si paso 1 pasó) ───────────────────────────────────
       if (step1.pass) {
