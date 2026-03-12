@@ -1,22 +1,14 @@
 /**
  * rama_judicial.controller.js
  *
- * Adaptado del servicio NestJS ProcesosRamaJudicialService a Express puro.
+ * Consulta el sistema JEPMS de la Rama Judicial de Colombia.
+ * Sin dependencia de Puppeteer ni Chrome — funciona en cualquier entorno
+ * (Render, Railway, local) usando solo fetch nativo de Node.js 18+.
  *
  * DOBLE VERIFICACIÓN:
- *  Paso 1 — Verificación estructural:
- *    El HTML tiene más de 4 filas <tr> y no contiene frases de "sin resultados".
- *
- *  Paso 2 — Verificación de identidad:
- *    Se parsean las filas de la tabla del HTML y se compara celda a celda
- *    contra los datos de la persona enviados en el body (nombres, apellidos, cedula).
- *    Solo se marca como alerta si al menos UNA fila coincide con la persona.
- *
- *    Reglas de coincidencia (todas normalizadas a mayúsculas sin tildes):
- *      - Si se envió 'cedula': alguna celda de la fila contiene exactamente ese número.
- *      - Si se envió 'nombres': alguna celda contiene al menos UNA de las palabras del nombre.
- *      - Si se envió 'apellidos': alguna celda contiene al menos UNA de las palabras del apellido.
- *    Para generar alerta se requiere que LA MISMA FILA satisfaga TODOS los criterios enviados.
+ *  Paso 1 — Estructural: el HTML tiene filas de datos y no hay mensaje de "sin resultados".
+ *  Paso 2 — Identidad:   al menos una fila de la tabla contiene los datos de la persona
+ *                        (cédula exacta, palabras del nombre y/o apellido).
  *
  * POST /api/consulta-rama-judicial
  * Body: {
@@ -25,8 +17,6 @@
  *   apellidos?: string,   // primer y/o segundo apellido
  * }
  */
-
-const puppeteer = require("puppeteer");
 
 // ─── Lista de ciudades ─────────────────────────────────────────────────────────
 const CITIES = [
@@ -170,45 +160,24 @@ const CITIES = [
   },
 ];
 
-// ─── Utilidades ────────────────────────────────────────────────────────────────
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function launchBrowser() {
-  return puppeteer.launch({
-    headless: true,
-    protocolTimeout: 120000,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-features=VizDisplayCompositor",
-    ],
-  });
-}
+// ─── Helpers de texto ──────────────────────────────────────────────────────────
 
 /**
- * Normaliza un texto para comparación:
- * mayúsculas, sin tildes, sin caracteres especiales, espacios simples.
- * @param {string} text
- * @returns {string}
+ * Normaliza texto: mayúsculas, sin tildes, sin caracteres especiales.
  */
 function normalize(text) {
   return (text || "")
     .toString()
     .toUpperCase()
-    .normalize("NFD") // descomponer tildes
-    .replace(/[\u0300-\u036f]/g, "") // eliminar diacríticos
-    .replace(/[^A-Z0-9\s]/g, " ") // solo letras, números y espacios
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
 /**
- * Extrae todas las palabras significativas (longitud >= 3) de un string.
- * @param {string} text
- * @returns {string[]}
+ * Extrae palabras de >= 3 caracteres de un texto normalizado.
  */
 function words(text) {
   return normalize(text)
@@ -216,26 +185,20 @@ function words(text) {
     .filter((w) => w.length >= 3);
 }
 
+// ─── Parseo de HTML ────────────────────────────────────────────────────────────
+
 /**
- * Extrae las celdas <td> de cada fila <tr> del HTML.
- * Retorna un array de filas; cada fila es un array de strings (texto de cada celda).
- * No requiere cheerio: usa regex.
- *
- * @param {string} html
- * @returns {string[][]}
+ * Extrae el texto de cada celda <td> de cada fila <tr> del HTML.
+ * Retorna array de filas; cada fila es array de strings.
+ * Sin dependencias externas — usa solo regex.
  */
 function extractTableRows(html) {
   const rows = [];
-  // Encontrar cada bloque <tr>...</tr>
-  const trRegex = /<tr[\s>][\s\S]*?<\/tr>/gi;
-  const trMatches = html.match(trRegex) || [];
+  const trMatches = html.match(/<tr[\s>][\s\S]*?<\/tr>/gi) || [];
 
   for (const tr of trMatches) {
-    // Extraer texto de cada <td>
-    const tdRegex = /<td[\s>][\s\S]*?<\/td>/gi;
-    const tdMatches = tr.match(tdRegex) || [];
+    const tdMatches = tr.match(/<td[\s>][\s\S]*?<\/td>/gi) || [];
     const cells = tdMatches.map((td) =>
-      // Quitar tags HTML y decodificar entidades básicas
       td
         .replace(/<[^>]+>/g, " ")
         .replace(/&nbsp;/gi, " ")
@@ -245,27 +208,17 @@ function extractTableRows(html) {
         .replace(/\s+/g, " ")
         .trim(),
     );
-    // Solo incluir filas que tengan al menos una celda con contenido
-    if (cells.some((c) => c.length > 0)) {
-      rows.push(cells);
-    }
+    if (cells.some((c) => c.length > 0)) rows.push(cells);
   }
 
   return rows;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// VERIFICACIÓN EN DOS PASOS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Verificación en dos pasos ─────────────────────────────────────────────────
 
 /**
  * PASO 1 — Verificación estructural.
- * Comprueba que la respuesta del servidor tiene filas de datos
- * y no contiene mensajes de "sin resultados".
- *
- * @param {string} html
- * @param {string[][]} rows  — filas ya extraídas
- * @returns {{ pass: boolean, rowCount: number, reason: string }}
+ * Pasa si hay > 4 filas de tabla y ningún mensaje explícito de "sin resultados".
  */
 function step1_structuralCheck(html, rows) {
   const bodyText = html.toLowerCase();
@@ -277,9 +230,6 @@ function step1_structuralCheck(html, rows) {
     "no hay procesos",
   ];
   const hasNoResultPhrase = noResultPhrases.some((p) => bodyText.includes(p));
-
-  // La tabla de resultados del JEPMS usa filas de encabezado + filas de datos.
-  // Con > 4 filas <tr> y sin frases de "sin resultados" asumimos que hay datos.
   const rowCount = rows.length;
   const pass = rowCount > 4 && !hasNoResultPhrase;
 
@@ -289,24 +239,20 @@ function step1_structuralCheck(html, rows) {
     reason: !pass
       ? hasNoResultPhrase
         ? "El servidor indicó explícitamente que no hay resultados."
-        : `Muy pocas filas en la tabla (${rowCount}), probablemente sin datos.`
+        : `Muy pocas filas en la tabla (${rowCount}).`
       : `Se encontraron ${rowCount} filas en la tabla.`,
   };
 }
 
 /**
  * PASO 2 — Verificación de identidad.
- * Compara cada fila de la tabla contra los datos del body.
- * Retorna las filas que coinciden con la persona buscada.
+ * Busca filas que contengan los datos de la persona buscada.
+ * Todos los criterios enviados deben cumplirse en la MISMA fila.
  *
- * Criterios (todos los proporcionados deben cumplirse en la misma fila):
- *  - cedula:    alguna celda contiene EXACTAMENTE ese número de documento.
- *  - nombres:   alguna celda contiene AL MENOS UNA palabra del nombre (>= 3 chars).
- *  - apellidos: alguna celda contiene AL MENOS UNA palabra del apellido (>= 3 chars).
- *
- * @param {string[][]} rows
- * @param {{ cedula?: string, nombres?: string, apellidos?: string }} criteria
- * @returns {{ matchedRows: string[][], matchDetail: string }}
+ * Criterios:
+ *  - cedula:    aparece como número exacto (sin dígitos adyacentes) en alguna celda
+ *  - nombres:   al menos UNA palabra del nombre aparece en el texto de la fila
+ *  - apellidos: al menos UNA palabra del apellido aparece en el texto de la fila
  */
 function step2_identityCheck(rows, criteria) {
   const { cedula, nombres, apellidos } = criteria;
@@ -315,169 +261,102 @@ function step2_identityCheck(rows, criteria) {
   const nombresWords = words(nombres || "");
   const apellidosWords = words(apellidos || "");
 
-  // Si no se envió ningún criterio de identidad no podemos verificar → pasar
-  const hasCriteria =
-    cedulaNorm || nombresWords.length || apellidosWords.length;
-  if (!hasCriteria) {
+  if (!cedulaNorm && !nombresWords.length && !apellidosWords.length) {
     return {
       matchedRows: [],
-      matchDetail:
-        "No se proporcionaron criterios de identidad para verificar.",
+      matchDetail: "No se proporcionaron criterios de identidad.",
     };
   }
 
   const matchedRows = rows.filter((cells) => {
-    // Texto completo de la fila normalizado
     const rowText = normalize(cells.join(" "));
 
-    // ── Criterio 1: cédula ────────────────────────────────────────────────
+    // Criterio cédula: número exacto en alguna celda
     if (cedulaNorm) {
-      // Debe estar exactamente como token separado (no como sub-cadena de otro número)
-      const cedulaFound = cells.some((cell) => {
-        const cellNorm = normalize(cell);
-        // Comprobación exacta: el número aparece como palabra completa
-        const regex = new RegExp(`(?<![0-9])${cedulaNorm}(?![0-9])`);
-        return regex.test(cellNorm);
-      });
-      if (!cedulaFound) return false;
+      const regex = new RegExp(`(?<![0-9])${cedulaNorm}(?![0-9])`);
+      const found = cells.some((cell) => regex.test(normalize(cell)));
+      if (!found) return false;
     }
 
-    // ── Criterio 2: nombres ───────────────────────────────────────────────
+    // Criterio nombres: al menos una palabra del nombre en la fila
     if (nombresWords.length > 0) {
-      const nombresFound = nombresWords.some((word) => rowText.includes(word));
-      if (!nombresFound) return false;
+      if (!nombresWords.some((w) => rowText.includes(w))) return false;
     }
 
-    // ── Criterio 3: apellidos ─────────────────────────────────────────────
+    // Criterio apellidos: al menos una palabra del apellido en la fila
     if (apellidosWords.length > 0) {
-      const apellidosFound = apellidosWords.some((word) =>
-        rowText.includes(word),
-      );
-      if (!apellidosFound) return false;
+      if (!apellidosWords.some((w) => rowText.includes(w))) return false;
     }
 
-    return true; // Todos los criterios se cumplen en esta fila
+    return true;
   });
 
-  const matchDetail =
-    matchedRows.length > 0
-      ? `${matchedRows.length} fila(s) coinciden con los datos de la persona.`
-      : "Ninguna fila coincide exactamente con los datos de la persona.";
-
-  return { matchedRows, matchDetail };
+  return {
+    matchedRows,
+    matchDetail:
+      matchedRows.length > 0
+        ? `${matchedRows.length} fila(s) coinciden con los datos de la persona.`
+        : "Ninguna fila coincide con los datos de la persona.",
+  };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// getData — POST HTTP al JEPMS
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Petición HTTP al JEPMS ────────────────────────────────────────────────────
 
 /**
- * @param {string} dataToSearch  — término enviado al buscador del JEPMS
- * @param {string} url           — URL lista.asp de la ciudad
- * @param {string} typeId        — "2" nombres | "3" identificación
- * @param {string} referer       — URL conectar.asp de la ciudad
+ * POST al endpoint lista.asp de una ciudad.
+ * Usa fetch nativo (Node 18+). Sin Puppeteer, sin Chrome.
+ *
+ * @param {string} term     Cédula o apellidos a buscar
+ * @param {string} url      URL lista.asp
+ * @param {string} typeId   "2" = apellidos | "3" = identificación
+ * @param {string} referer  URL conectar.asp (misma ciudad)
  * @returns {Promise<string|null>}
  */
-async function getData(dataToSearch, url, typeId, referer) {
+async function getData(term, url, typeId, referer) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000); // 15 s por ciudad
+
   try {
     const response = await fetch(url, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         accept:
-          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": "es-419,es;q=0.9",
         "cache-control": "max-age=0",
         "content-type": "application/x-www-form-urlencoded",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-user": "?1",
         "upgrade-insecure-requests": "1",
+        referer,
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       },
-      referrer: referer,
-      referrerPolicy: "strict-origin-when-cross-origin",
-      body: `cbadju=${typeId}&norad=${encodeURIComponent(dataToSearch)}&Buscar=Buscar`,
-      credentials: "include",
+      body: `cbadju=${typeId}&norad=${encodeURIComponent(term)}&Buscar=Buscar`,
     });
 
     if (!response.ok) {
-      console.warn(`  ⚠️  HTTP ${response.status} en ${url}`);
+      console.warn(`  ⚠️  HTTP ${response.status} — ${url}`);
       return null;
     }
 
-    return await response.text();
+    // El servidor JEPMS suele responder en latin-1 / windows-1252
+    const buffer = await response.arrayBuffer();
+    return Buffer.from(buffer).toString("latin1");
   } catch (err) {
-    console.error(`  ❌ getData (${url}): ${err.message}`);
+    if (err.name === "AbortError") {
+      console.warn(`  ⏱️  Timeout en ${url}`);
+    } else {
+      console.error(`  ❌ getData: ${err.message}`);
+    }
     return null;
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Screenshot con Puppeteer
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function takeScreenshot(browser, html, cityLabel) {
-  let page = null;
-  try {
-    if (!browser || !browser.isConnected()) {
-      throw new Error("Navegador desconectado");
-    }
-    page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
-    await page.setDefaultNavigationTimeout(30000);
-    await page.setContent(html, {
-      waitUntil: "domcontentloaded",
-      timeout: 20000,
-    });
-    await sleep(800);
-    const buffer = await page.screenshot({ fullPage: true });
-    return Buffer.from(buffer).toString("base64");
-  } catch (err) {
-    console.error(`  ❌ Screenshot (${cityLabel}): ${err.message}`);
-    return "";
   } finally {
-    if (page && !page.isClosed()) {
-      await page.close().catch(() => {});
-    }
+    clearTimeout(timeout);
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// HANDLER PRINCIPAL
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Handler Express ───────────────────────────────────────────────────────────
 
-/**
- * POST /api/consulta-rama-judicial
- *
- * Body:
- * {
- *   cedula?:    string,   // número de documento (se usa para buscar Y para verificar)
- *   nombres?:   string,   // nombres de la persona (solo para verificar)
- *   apellidos?: string,   // apellidos (se usan para buscar Y para verificar)
- * }
- *
- * Lógica de búsqueda enviada al JEPMS:
- *   - Si viene 'cedula'    → búsqueda por identificación (cbadju=3)
- *   - Si solo viene 'apellidos' → búsqueda por nombres/apellidos (cbadju=2)
- *   - Si vienen ambos → se hacen las DOS búsquedas y se unen resultados
- *
- * Respuesta 200:
- * {
- *   fuente:        string,
- *   termino:       object,
- *   totalCiudades: number,
- *   totalAlertas:  number,
- *   ciudades: Array<{
- *     ciudad:            string,
- *     alert:             boolean,   // TRUE solo si pasa los 2 pasos
- *     paso1_estructural: { pass, rowCount, reason },
- *     paso2_identidad:   { matched: boolean, matchedRows: number, detail },
- *     screenshot:        string,    // PNG en base64
- *     mensaje:           string,
- *     error?:            string,
- *   }>
- * }
- */
 exports.consultarRamaJudicial = async (req, res) => {
   const { cedula = "", nombres = "", apellidos = "" } = req.body;
 
@@ -485,7 +364,6 @@ exports.consultarRamaJudicial = async (req, res) => {
   const nombresTrim = nombres.toString().trim();
   const apellidosTrim = apellidos.toString().trim();
 
-  // Necesitamos al menos un término para buscar en el JEPMS
   if (!cedulaTrim && !apellidosTrim) {
     return res.status(400).json({
       error:
@@ -493,17 +371,13 @@ exports.consultarRamaJudicial = async (req, res) => {
     });
   }
 
-  // Construir las consultas que se van a lanzar al JEPMS:
-  //   - Por cédula (typeId=3) si viene cedula
-  //   - Por apellidos (typeId=2) si viene apellidos
-  // Ambas se ejecutan si están disponibles y se fusionan por ciudad.
+  // Determinar qué búsquedas lanzar al JEPMS por ciudad
   const queries = [];
   if (cedulaTrim)
     queries.push({ term: cedulaTrim, typeId: "3", label: "identificación" });
   if (apellidosTrim)
     queries.push({ term: apellidosTrim, typeId: "2", label: "apellidos" });
 
-  // Criterios de identidad para el paso 2
   const identityCriteria = {
     cedula: cedulaTrim,
     nombres: nombresTrim,
@@ -518,174 +392,133 @@ exports.consultarRamaJudicial = async (req, res) => {
   console.log(`${"─".repeat(60)}`);
 
   const ciudadesResult = [];
-  let browser = null;
 
-  try {
-    browser = await launchBrowser();
+  for (const city of CITIES) {
+    console.log(`\n  [${city.valor}] ─────────────────`);
 
-    for (const city of CITIES) {
-      console.log(`\n  [${city.valor}] ─────────────────`);
+    const cityResult = {
+      ciudad: city.valor,
+      alert: false,
+      paso1_estructural: null,
+      paso2_identidad: null,
+      mensaje: "",
+    };
 
-      const cityResult = {
-        ciudad: city.valor,
-        alert: false,
-        paso1_estructural: null,
-        paso2_identidad: null,
-        screenshot: "",
-        mensaje: "",
-      };
+    try {
+      // ── Lanzar todas las queries para esta ciudad ─────────────────────
+      let mergedHtml = "";
+      let mergedRows = [];
 
-      try {
-        // Auto-recuperar browser si se cayó
-        if (!browser || !browser.isConnected()) {
-          console.warn(`  [${city.valor}] Browser caído — relanzando...`);
-          await browser?.close().catch(() => {});
-          browser = await launchBrowser();
-        }
+      for (const query of queries) {
+        console.log(`  [${city.valor}] POST (${query.label}): "${query.term}"`);
+        const html = await getData(
+          query.term,
+          city.url,
+          query.typeId,
+          city.referer,
+        );
 
-        // ── Lanzar todas las consultas configuradas para esta ciudad ──────
-        // Recopilamos el HTML de cada query y las filas extraídas.
-        let mergedHtml = "";
-        let mergedRows = [];
-
-        for (const query of queries) {
-          console.log(
-            `  [${city.valor}] GET (${query.label}): "${query.term}"`,
+        if (!html) {
+          console.warn(
+            `  [${city.valor}] Sin respuesta para "${query.label}".`,
           );
-
-          const html = await getData(
-            query.term,
-            city.url,
-            query.typeId,
-            city.referer,
-          );
-
-          if (!html) {
-            console.warn(
-              `  [${city.valor}] Sin respuesta para query "${query.label}".`,
-            );
-            continue;
-          }
-
-          const rows = extractTableRows(html);
-          console.log(
-            `  [${city.valor}] (${query.label}) → ${rows.length} filas extraídas.`,
-          );
-
-          // Acumular HTML y filas de ambas búsquedas
-          mergedHtml += html;
-          mergedRows = mergedRows.concat(rows);
-        }
-
-        if (!mergedHtml) {
-          cityResult.mensaje =
-            "Sin respuesta del servidor para ninguna búsqueda.";
-          ciudadesResult.push(cityResult);
           continue;
         }
 
-        // ════════════════════════════════════════════════════
-        // PASO 1 — Verificación estructural
-        // ════════════════════════════════════════════════════
-        const step1 = step1_structuralCheck(mergedHtml, mergedRows);
-        cityResult.paso1_estructural = {
-          pass: step1.pass,
-          rowCount: step1.rowCount,
-          reason: step1.reason,
-        };
+        const rows = extractTableRows(html);
         console.log(
-          `  [${city.valor}] PASO 1 → ${step1.pass ? "✅ PASA" : "❌ NO pasa"}: ${step1.reason}`,
+          `  [${city.valor}] (${query.label}) → ${rows.length} filas.`,
         );
 
-        // ════════════════════════════════════════════════════
-        // PASO 2 — Verificación de identidad (solo si paso 1 pasó)
-        // ════════════════════════════════════════════════════
-        if (step1.pass) {
-          const step2 = step2_identityCheck(mergedRows, identityCriteria);
-          const matched = step2.matchedRows.length > 0;
-
-          cityResult.paso2_identidad = {
-            matched,
-            matchedRows: step2.matchedRows.length,
-            detail: step2.matchDetail,
-          };
-          console.log(
-            `  [${city.valor}] PASO 2 → ${matched ? "⚠️  COINCIDE" : "✅ No coincide"}: ${step2.matchDetail}`,
-          );
-
-          // ALERTA solo si ambos pasos son positivos
-          cityResult.alert = matched;
-        } else {
-          cityResult.paso2_identidad = {
-            matched: false,
-            matchedRows: 0,
-            detail: "No se ejecutó: el paso 1 no encontró datos suficientes.",
-          };
-        }
-
-        // ── Screenshot (siempre, como evidencia) ─────────────────────────
-        // Usamos el HTML de la primera query disponible para el screenshot
-        const htmlForScreenshot = mergedHtml.slice(
-          0,
-          mergedHtml.length / queries.length || mergedHtml.length,
-        );
-        cityResult.screenshot = await takeScreenshot(
-          browser,
-          htmlForScreenshot,
-          city.valor,
-        );
-
-        // ── Mensaje descriptivo ───────────────────────────────────────────
-        const now = new Date().toISOString();
-        if (cityResult.alert) {
-          cityResult.mensaje =
-            `[${now}] ALERTA: la persona (${[cedulaTrim, nombresTrim, apellidosTrim].filter(Boolean).join(" / ")}) ` +
-            `presenta ${cityResult.paso2_identidad.matchedRows} proceso(s) activo(s) confirmado(s) en ${city.valor}.`;
-        } else if (step1.pass) {
-          cityResult.mensaje =
-            `[${now}] Se encontraron registros en ${city.valor} pero ninguno corresponde a la persona buscada ` +
-            `(${[cedulaTrim, nombresTrim, apellidosTrim].filter(Boolean).join(" / ")}).`;
-        } else {
-          cityResult.mensaje =
-            `[${now}] No se encontraron procesos activos en ${city.valor} para ` +
-            `(${[cedulaTrim, nombresTrim, apellidosTrim].filter(Boolean).join(" / ")}).`;
-        }
-
-        console.log(`  [${city.valor}] ✅ Ciudad procesada.`);
-      } catch (err) {
-        console.error(`  ❌ [${city.valor}] ${err.message}`);
-        cityResult.mensaje = `Error al consultar ${city.valor}: ${err.message}`;
-        cityResult.error = err.message;
+        mergedHtml += html;
+        mergedRows = mergedRows.concat(rows);
       }
 
-      ciudadesResult.push(cityResult);
-    } // fin for cities
+      if (!mergedHtml) {
+        cityResult.mensaje = "Sin respuesta del servidor.";
+        ciudadesResult.push(cityResult);
+        continue;
+      }
 
-    const totalAlertas = ciudadesResult.filter((c) => c.alert).length;
-    console.log(
-      `\n✅ Consulta Rama Judicial completada — ${totalAlertas} alerta(s) confirmada(s).`,
-    );
+      // ── PASO 1 ─────────────────────────────────────────────────────────
+      const step1 = step1_structuralCheck(mergedHtml, mergedRows);
+      cityResult.paso1_estructural = {
+        pass: step1.pass,
+        rowCount: step1.rowCount,
+        reason: step1.reason,
+      };
+      console.log(
+        `  [${city.valor}] PASO 1 → ${step1.pass ? "✅ PASA" : "❌ NO pasa"}: ${step1.reason}`,
+      );
 
-    return res.json({
-      fuente: "Rama Judicial de Colombia (JEPMS)",
-      termino: {
-        cedula: cedulaTrim || null,
-        nombres: nombresTrim || null,
-        apellidos: apellidosTrim || null,
-      },
-      totalCiudades: ciudadesResult.length,
-      totalAlertas,
-      ciudades: ciudadesResult,
-    });
-  } catch (err) {
-    console.error("❌ ERROR GLOBAL Rama Judicial:", err.message);
-    return res.status(502).json({
-      error: "Error en consulta Rama Judicial",
-      detalle: err.message,
-    });
-  } finally {
-    if (browser) {
-      await browser.close().catch(() => {});
+      // ── PASO 2 (solo si paso 1 pasó) ───────────────────────────────────
+      if (step1.pass) {
+        const step2 = step2_identityCheck(mergedRows, identityCriteria);
+        const matched = step2.matchedRows.length > 0;
+
+        cityResult.paso2_identidad = {
+          matched,
+          matchedRows: step2.matchedRows.length,
+          // Exponer las filas coincidentes (sin datos sensibles extra, solo el texto de celda)
+          filas: step2.matchedRows.map((cells) => cells.join(" | ")),
+          detail: step2.matchDetail,
+        };
+        console.log(
+          `  [${city.valor}] PASO 2 → ${matched ? "⚠️  COINCIDE" : "✅ No coincide"}: ${step2.matchDetail}`,
+        );
+
+        cityResult.alert = matched;
+      } else {
+        cityResult.paso2_identidad = {
+          matched: false,
+          matchedRows: 0,
+          filas: [],
+          detail: "No ejecutado: paso 1 sin datos suficientes.",
+        };
+      }
+
+      // ── Mensaje descriptivo ────────────────────────────────────────────
+      const now = new Date().toLocaleString("es-CO", {
+        timeZone: "America/Bogota",
+      });
+      const quien = [cedulaTrim, nombresTrim, apellidosTrim]
+        .filter(Boolean)
+        .join(" / ");
+
+      if (cityResult.alert) {
+        cityResult.mensaje =
+          `[${now}] ALERTA: ${quien} presenta ` +
+          `${cityResult.paso2_identidad.matchedRows} proceso(s) activo(s) confirmado(s) en ${city.valor}.`;
+      } else if (step1.pass) {
+        cityResult.mensaje = `[${now}] Hay registros en ${city.valor} pero ninguno corresponde a ${quien}.`;
+      } else {
+        cityResult.mensaje = `[${now}] Sin procesos activos en ${city.valor} para ${quien}.`;
+      }
+
+      console.log(`  [${city.valor}] ✅ Listo.`);
+    } catch (err) {
+      console.error(`  ❌ [${city.valor}] ${err.message}`);
+      cityResult.mensaje = `Error al consultar ${city.valor}: ${err.message}`;
+      cityResult.error = err.message;
     }
+
+    ciudadesResult.push(cityResult);
   }
+
+  const totalAlertas = ciudadesResult.filter((c) => c.alert).length;
+  console.log(
+    `\n✅ Rama Judicial finalizada — ${totalAlertas} alerta(s) en ${ciudadesResult.length} ciudades.\n`,
+  );
+
+  return res.json({
+    fuente: "Rama Judicial de Colombia (JEPMS)",
+    termino: {
+      cedula: cedulaTrim || null,
+      nombres: nombresTrim || null,
+      apellidos: apellidosTrim || null,
+    },
+    totalCiudades: ciudadesResult.length,
+    totalAlertas,
+    ciudades: ciudadesResult,
+  });
 };
