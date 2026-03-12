@@ -22,7 +22,6 @@ export class SearchComponent {
 
   captchaData: { sessionId: string } | null = null;
 
-  // ── Gemini AI ────────────────────────────────────────────────
   analisisIA = "";
   cargandoIA = false;
   errorIA = "";
@@ -40,6 +39,7 @@ export class SearchComponent {
     { id: "contador", nombre: "Contador JCC", activo: false },
     { id: "antecedentes", nombre: "Policía", activo: false },
     { id: "procuraduria", nombre: "Procuraduría", activo: false },
+    { id: "contraloria", nombre: "Contraloría", activo: false },
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
     { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
   ];
@@ -66,7 +66,6 @@ export class SearchComponent {
     this.analisisIA = "";
     this.errorIA = "";
 
-    // ── 1. Lanzar Gemini primero si hay nombre ────────────────
     if (this.nombre.trim()) {
       this.cargandoIA = true;
       this.cdr.detectChanges();
@@ -89,7 +88,6 @@ export class SearchComponent {
       });
     }
 
-    // ── 2. Lanzar bases de datos oficiales en paralelo ────────
     this.cargando = true;
     const tareas = activos.map((s) => this.llamarServicio(s.id));
     Promise.allSettled(tareas).then(() => {
@@ -215,6 +213,33 @@ export class SearchComponent {
               error: (err: any) =>
                 this.zone.run(() => {
                   this.agregarError("Procuraduría", err);
+                  resolve();
+                }),
+            });
+          break;
+
+        case "contraloria":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarContraloria(this.cedula, this.tipoDocumento)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "contraloria",
+                    fuente: res.fuente || "Contraloría General de la República",
+                    pdfBase64: res.data?.pdfBase64 || null,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Contraloría", err);
                   resolve();
                 }),
             });

@@ -83,7 +83,7 @@
     <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         BLOQUE GEMINI AI — se muestra PRIMERO, antes de los demás
+         BLOQUE GEMINI AI
          ═══════════════════════════════════════════════════════════ -->
     <div
       *ngIf="cargandoIA || analisisIA || errorIA"
@@ -104,8 +104,9 @@
           <span
             *ngIf="analisisIA && !cargandoIA"
             class="status-badge badge-success"
-            >✅ Análisis listo</span
           >
+            ✅ Análisis listo
+          </span>
         </div>
 
         <div class="result-body">
@@ -115,11 +116,9 @@
               <strong>"{{ nombre }}"</strong>. Esto puede tomar unos segundos...
             </div>
           </div>
-
           <div *ngIf="errorIA && !cargandoIA" class="gemini-error">
             ⚠️ {{ errorIA }}
           </div>
-
           <div *ngIf="analisisIA && !cargandoIA" class="gemini-content">
             {{ analisisIA }}
           </div>
@@ -128,7 +127,7 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════
-         RESULTADOS BASES DE DATOS OFICIALES — se muestran después
+         RESULTADOS BASES DE DATOS OFICIALES
          ═══════════════════════════════════════════════════════════ -->
     <div *ngIf="resultados.length > 0" class="results-section">
       <h3 class="section-title">Resultados de Bases de Datos Oficiales</h3>
@@ -139,6 +138,7 @@
             <span class="source-badge">{{ r.fuente }}</span>
           </div>
           <div class="result-badges">
+            <!-- Registraduría -->
             <span
               *ngIf="r.tipo === 'registraduria'"
               class="status-badge"
@@ -151,6 +151,8 @@
             >
               {{ r.data?.vigencia }}
             </span>
+
+            <!-- Contador -->
             <span
               *ngIf="r.tipo === 'contador'"
               [class]="
@@ -161,6 +163,8 @@
             >
               {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
             </span>
+
+            <!-- Antecedentes -->
             <span
               *ngIf="r.tipo === 'antecedentes'"
               [class]="
@@ -175,6 +179,8 @@
                   : "✅ Sin antecedentes"
               }}
             </span>
+
+            <!-- Procuraduría -->
             <span
               *ngIf="r.tipo === 'procuraduria'"
               [class]="
@@ -187,6 +193,24 @@
                 r.tieneSanciones ? "⚠️ Registra sanciones" : "✅ Sin sanciones"
               }}
             </span>
+
+            <!-- Contraloría -->
+            <span
+              *ngIf="r.tipo === 'contraloria'"
+              [class]="
+                r.pdfBase64
+                  ? 'status-badge badge-success'
+                  : 'status-badge badge-neutral'
+              "
+            >
+              {{
+                r.pdfBase64
+                  ? "✅ Certificado disponible"
+                  : "ℹ️ Consulta realizada"
+              }}
+            </span>
+
+            <!-- Offshore -->
             <span
               *ngIf="r.tipo === 'offshore'"
               [class]="
@@ -202,7 +226,7 @@
               }}
             </span>
 
-            <!-- Rama Judicial badge -->
+            <!-- Rama Judicial -->
             <span
               *ngIf="r.tipo === 'ramaJudicial'"
               [class]="
@@ -234,10 +258,12 @@
               <span class="item-label">Estado</span>
               <span class="item-value">{{ r.data?.vigencia }}</span>
             </div>
+
             <div class="result-item" *ngIf="r.data?.codigo">
               <span class="item-label">Código</span>
               <span class="item-value">{{ r.data?.codigo }}</span>
             </div>
+
             <div
               class="result-item"
               *ngIf="r.mensaje && r.tipo === 'antecedentes'"
@@ -245,6 +271,7 @@
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
+
             <div class="result-item" *ngIf="r.tipo === 'procuraduria'">
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
@@ -262,12 +289,38 @@
               </span>
             </div>
 
+            <!-- Contraloría — botón de descarga -->
+            <div
+              class="result-item"
+              *ngIf="r.tipo === 'contraloria' && r.pdfBase64"
+            >
+              <span class="item-label">Certificado</span>
+              <span class="item-value">
+                <button (click)="descargarCertificado(r)" class="btn-pdf">
+                  📄 Descargar certificado →
+                </button>
+              </span>
+            </div>
+
+            <!-- Contraloría — sin PDF (captcha bloqueó o respuesta HTML) -->
+            <div
+              class="result-item"
+              *ngIf="r.tipo === 'contraloria' && !r.pdfBase64"
+            >
+              <span class="item-label">Resultado</span>
+              <span class="item-value"
+                >Consulta procesada. El portal no generó un PDF
+                descargable.</span
+              >
+            </div>
+
             <div class="result-item" *ngIf="r.data?.fecha">
               <span class="item-label">Fecha consulta</span>
               <span class="item-value">{{ r.data?.fecha }}</span>
             </div>
           </div>
 
+          <!-- ══ OFFSHORE ══════════════════════════════════════════ -->
           <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
             <div *ngIf="!r.tieneRegistros" class="sin-resultados">
               No se encontraron registros en bases de datos offshore
@@ -324,9 +377,9 @@
                             <span *ngIf="o.match" class="meta-exacto"
                               >Nombre exacto</span
                             >
-                            <a [href]="o.url" target="_blank" class="meta-link">
-                              Ver en ICIJ →
-                            </a>
+                            <a [href]="o.url" target="_blank" class="meta-link"
+                              >Ver en ICIJ →</a
+                            >
                           </div>
                         </div>
                       </div>
@@ -337,9 +390,7 @@
             </ng-container>
           </div>
 
-          <!-- ══════════════════════════════════════════
-               RAMA JUDICIAL — detalle por ciudad
-               ══════════════════════════════════════════ -->
+          <!-- ══ RAMA JUDICIAL ═════════════════════════════════════ -->
           <div *ngIf="r.tipo === 'ramaJudicial'" class="rama-judicial-informe">
             <div *ngIf="r.totalAlertas === 0" class="sin-resultados">
               ✅ No se encontraron procesos activos confirmados en ninguna de
@@ -355,7 +406,6 @@
                 {{ r.totalCiudades }} consultadas.
               </div>
 
-              <!-- Solo ciudades con alerta -->
               <div
                 *ngFor="let ciudad of r.ciudades"
                 class="rama-ciudad-item"
@@ -389,8 +439,6 @@
                     {{ ciudad.paso2_identidad?.detail }}
                   </div>
                   <div class="rama-mensaje">{{ ciudad.mensaje }}</div>
-
-                  <!-- Screenshot de evidencia -->
                   <div *ngIf="ciudad.screenshot" class="rama-screenshot">
                     <p class="rama-screenshot-label">📸 Evidencia:</p>
                     <img
@@ -407,7 +455,7 @@
       </div>
     </div>
 
-    <!-- search.component.html -->
+    <!-- Captcha resolver modal -->
     <app-captcha-resolver
       *ngIf="captchaData"
       [cedula]="cedula"

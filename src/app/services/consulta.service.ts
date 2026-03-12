@@ -13,6 +13,17 @@ export interface AntecedentesResult {
   error?: string;
 }
 
+export interface ContraloriaResult {
+  fuente: string;
+  status: string;
+  data: {
+    cedula: string;
+    pdfBase64?: string;
+    html?: string;
+    fecha: string;
+  };
+}
+
 @Injectable({ providedIn: "root" })
 export class ConsultaService {
   private apiUrl = "https://modulos-backend.onrender.com";
@@ -71,7 +82,6 @@ export class ConsultaService {
     return this.http.post(`${this.apiUrl}/api/consulta-offshore`, { nombre });
   }
 
-  // ── Gemini AI: buscar persona por nombre en internet ────────
   buscarPersonaConIA(nombre: string) {
     return this.http.post<{ analisis: string; fuentes: string | null }>(
       `${this.apiUrl}/api/buscar-persona-ia`,
@@ -79,7 +89,6 @@ export class ConsultaService {
     );
   }
 
-  // ── Rama Judicial JEPMS ───────────────────────────────────────
   consultarRamaJudicial(payload: {
     cedula?: string;
     nombres?: string;
@@ -88,6 +97,13 @@ export class ConsultaService {
     return this.http.post<any>(
       `${this.apiUrl}/api/consulta-rama-judicial`,
       payload,
+    );
+  }
+
+  consultarContraloria(cedula: string, tipoDocumento = "CC") {
+    return this.http.post<ContraloriaResult>(
+      `${this.apiUrl}/api/consulta-contraloria`,
+      { cedula, tipo_documento: tipoDocumento },
     );
   }
 }
