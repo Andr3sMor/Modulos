@@ -6,7 +6,7 @@
  * (Render, Railway, local) usando solo fetch nativo de Node.js 18+.
  *
  * DOBLE VERIFICACIÓN:
- *  Paso 1 — Estructural: el HTML tiene filas de datos y no hay mensaje de "sin resultados".
+ *  Paso 1 — Estructural: el HTML tiene filas de datos reales (radicación + 4 columnas).
  *  Paso 2 — Identidad:   al menos una fila de la tabla contiene los datos de la persona
  *                        (cédula exacta, palabras del nombre y/o apellido).
  *
@@ -161,7 +161,6 @@ const CITIES = [
 ];
 
 // ─── Helpers de texto ──────────────────────────────────────────────────────────
-
 /**
  * Normaliza texto: mayúsculas, sin tildes, sin caracteres especiales.
  */
@@ -186,7 +185,6 @@ function words(text) {
 }
 
 // ─── Parseo de HTML ────────────────────────────────────────────────────────────
-
 /**
  * Extrae el texto de cada celda <td> de cada fila <tr> del HTML.
  * Retorna array de filas; cada fila es array de strings.
@@ -195,7 +193,6 @@ function words(text) {
 function extractTableRows(html) {
   const rows = [];
   const trMatches = html.match(/<tr[\s>][\s\S]*?<\/tr>/gi) || [];
-
   for (const tr of trMatches) {
     const tdMatches = tr.match(/<td[\s>][\s\S]*?<\/td>/gi) || [];
     const cells = tdMatches.map((td) =>
@@ -210,15 +207,20 @@ function extractTableRows(html) {
     );
     if (cells.some((c) => c.length > 0)) rows.push(cells);
   }
-
   return rows;
 }
 
 // ─── Verificación en dos pasos ─────────────────────────────────────────────────
-
 /**
  * PASO 1 — Verificación estructural.
- * Pasa si hay > 4 filas de tabla y ningún mensaje explícito de "sin resultados".
+ * Pasa si hay al menos 1 fila de datos reales y no hay mensaje de "sin resultados".
+ *
+ * Las filas de datos reales tienen exactamente 5 columnas y su primera celda
+ * es un número de radicación (≥10 dígitos):
+ *   NUMERO RADICACION | IDENTIFICACION | NOMBRE SUJETO | REPRESENTANTE | JUZGADO
+ *
+ * Esto permite detectar correctamente tablas con 1 o 2 personas (3-4 filas totales)
+ * que antes eran descartadas por el umbral de > 4 filas.
  */
 function step1_structuralCheck(html, rows) {
   const bodyText = html.toLowerCase();
@@ -230,17 +232,23 @@ function step1_structuralCheck(html, rows) {
     "no hay procesos",
   ];
   const hasNoResultPhrase = noResultPhrases.some((p) => bodyText.includes(p));
-  const rowCount = rows.length;
-  const pass = rowCount > 4 && !hasNoResultPhrase;
 
+  // Filas de datos reales: 5 celdas y la primera parece un número de radicación
+  const dataRows = rows.filter(
+    (cells) =>
+      cells.length === 5 && /^\d{10,}/.test(cells[0].replace(/\s/g, "")),
+  );
+
+  const pass = dataRows.length >= 1 && !hasNoResultPhrase;
   return {
     pass,
-    rowCount,
+    rowCount: rows.length,
+    dataRowCount: dataRows.length,
     reason: !pass
       ? hasNoResultPhrase
         ? "El servidor indicó explícitamente que no hay resultados."
-        : `Muy pocas filas en la tabla (${rowCount}).`
-      : `Se encontraron ${rowCount} filas en la tabla.`,
+        : `Sin filas de datos reales (total filas: ${rows.length}).`
+      : `Se encontraron ${dataRows.length} fila(s) de datos reales.`,
   };
 }
 
@@ -256,7 +264,6 @@ function step1_structuralCheck(html, rows) {
  */
 function step2_identityCheck(rows, criteria) {
   const { cedula, nombres, apellidos } = criteria;
-
   const cedulaNorm = normalize(cedula || "");
   const nombresWords = words(nombres || "");
   const apellidosWords = words(apellidos || "");
@@ -301,7 +308,6 @@ function step2_identityCheck(rows, criteria) {
 }
 
 // ─── Petición HTTP al JEPMS ────────────────────────────────────────────────────
-
 /**
  * POST al endpoint lista.asp de una ciudad.
  * Usa fetch nativo (Node 18+). Sin Puppeteer, sin Chrome.
@@ -315,7 +321,6 @@ function step2_identityCheck(rows, criteria) {
 async function getData(term, url, typeId, referer) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000); // 15 s por ciudad
-
   try {
     const response = await fetch(url, {
       method: "POST",
@@ -334,12 +339,10 @@ async function getData(term, url, typeId, referer) {
       },
       body: `cbadju=${typeId}&norad=${encodeURIComponent(term)}&Buscar=Buscar`,
     });
-
     if (!response.ok) {
       console.warn(`  ⚠️  HTTP ${response.status} — ${url}`);
       return null;
     }
-
     // El servidor JEPMS suele responder en latin-1 / windows-1252
     const buffer = await response.arrayBuffer();
     return Buffer.from(buffer).toString("latin1");
@@ -356,10 +359,8 @@ async function getData(term, url, typeId, referer) {
 }
 
 // ─── Handler Express ───────────────────────────────────────────────────────────
-
 exports.consultarRamaJudicial = async (req, res) => {
   const { cedula = "", nombres = "", apellidos = "" } = req.body;
-
   const cedulaTrim = cedula.toString().trim();
   const nombresTrim = nombres.toString().trim();
   const apellidosTrim = apellidos.toString().trim();
@@ -395,7 +396,6 @@ exports.consultarRamaJudicial = async (req, res) => {
 
   for (const city of CITIES) {
     console.log(`\n  [${city.valor}] ─────────────────`);
-
     const cityResult = {
       ciudad: city.valor,
       alert: false,
@@ -417,60 +417,52 @@ exports.consultarRamaJudicial = async (req, res) => {
           query.typeId,
           city.referer,
         );
-
         if (!html) {
           console.warn(
             `  [${city.valor}] Sin respuesta para "${query.label}".`,
           );
           continue;
         }
-
         const rows = extractTableRows(html);
         console.log(
           `  [${city.valor}] (${query.label}) → ${rows.length} filas.`,
         );
-
-        mergedHtml += html;
+        mergedHtml += " " + html;
         mergedRows = mergedRows.concat(rows);
       }
 
-      if (!mergedHtml) {
+      if (!mergedHtml.trim()) {
         cityResult.mensaje = "Sin respuesta del servidor.";
         ciudadesResult.push(cityResult);
         continue;
       }
-
-      console.log(["Merge HTML: ", mergedHtml, "Merge Rows: ", mergedRows]);
 
       // ── PASO 1 ─────────────────────────────────────────────────────────
       const step1 = step1_structuralCheck(mergedHtml, mergedRows);
       cityResult.paso1_estructural = {
         pass: step1.pass,
         rowCount: step1.rowCount,
+        dataRowCount: step1.dataRowCount,
         reason: step1.reason,
       };
       console.log(
         `  [${city.valor}] PASO 1 → ${step1.pass ? "✅ PASA" : "❌ NO pasa"}: ${step1.reason}`,
       );
 
-      console.log(["Merge Rows: ", mergedRows]);
-
       // ── PASO 2 (solo si paso 1 pasó) ───────────────────────────────────
       if (step1.pass) {
         const step2 = step2_identityCheck(mergedRows, identityCriteria);
         const matched = step2.matchedRows.length > 0;
-
         cityResult.paso2_identidad = {
           matched,
           matchedRows: step2.matchedRows.length,
-          // Exponer las filas coincidentes (sin datos sensibles extra, solo el texto de celda)
+          // Exponer las filas coincidentes (solo el texto de celda)
           filas: step2.matchedRows.map((cells) => cells.join(" | ")),
           detail: step2.matchDetail,
         };
         console.log(
           `  [${city.valor}] PASO 2 → ${matched ? "⚠️  COINCIDE" : "✅ No coincide"}: ${step2.matchDetail}`,
         );
-
         cityResult.alert = matched;
       } else {
         cityResult.paso2_identidad = {
