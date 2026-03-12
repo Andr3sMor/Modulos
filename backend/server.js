@@ -10,6 +10,17 @@ const procuraduriaController = require("./controllers/procuraduria.controller");
 const geminiController = require("./controllers/gemini.controller");
 const ramaJudicialController = require("./controllers/rama_judicial.controller");
 
+console.log("jcc:", typeof jccController.consultarContador);
+console.log("reg:", typeof regController.consultarCedula);
+console.log("policia:", typeof policiaController.consultarAntecedentes);
+console.log("offshore:", typeof offshoreController.consultarOffshore);
+console.log(
+  "procuraduria:",
+  typeof procuraduriaController.consultarProcuraduria,
+);
+console.log("gemini:", typeof geminiController.buscarPersonaConIA);
+console.log("rama:", typeof ramaJudicialController.consultarRamaJudicial);
+
 const corsOptions = {
   origin: [
     "https://andr3smor.github.io",
@@ -37,16 +48,5 @@ app.post(
   "/api/consulta-rama-judicial",
   ramaJudicialController.consultarRamaJudicial,
 );
-
-console.log("jcc:", typeof jccController.consultarContador);
-console.log("reg:", typeof regController.consultarCedula);
-console.log("policia:", typeof policiaController.consultarAntecedentes);
-console.log("offshore:", typeof offshoreController.consultarOffshore);
-console.log(
-  "procuraduria:",
-  typeof procuraduriaController.consultarProcuraduria,
-);
-console.log("gemini:", typeof geminiController.buscarPersonaConIA);
-console.log("rama:", typeof ramaJudicialController.consultarRamaJudicial);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
