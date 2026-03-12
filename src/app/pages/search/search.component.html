@@ -407,10 +407,15 @@
       </div>
     </div>
 
+    <!-- search.component.html -->
     <app-captcha-resolver
-      [abrirCon]="captchaData"
+      *ngIf="captchaData"
+      [cedula]="cedula"
+      [sessionId]="captchaData.sessionId"
+      [idType]="tipoDocumento"
       (resuelto)="onCaptchaResuelto($event)"
       (cancelado)="onCaptchaCancelado()"
-    ></app-captcha-resolver>
+    >
+    </app-captcha-resolver>
   </div>
 </div>

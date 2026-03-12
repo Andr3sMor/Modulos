@@ -1,56 +1,46 @@
 "use strict";
 
-const path = require("path");
-const child_process = require("child_process");
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
-const chromium = require("@sparticuz/chromium");
-
-// ─── Setup ────────────────────────────────────────────────────────────────────
 
 const POLICIA_URL =
   "https://antecedentes.policia.gov.co:7005/WebJudicial/antecedentes.xhtml";
 
-const EXTENSION_PATH = path.resolve(
-  __dirname,
-  "../browser-extensions/rektcaptcha",
-);
-
-const XVFB_DISPLAY = ":99";
-
-// Registrar Stealth una sola vez al cargar el módulo
 const isStealthLoaded = puppeteer.plugins.some((p) => p.name === "stealth");
-if (!isStealthLoaded) {
-  puppeteer.use(StealthPlugin());
-}
-
-// Iniciar Xvfb una sola vez al cargar el módulo (solo en Linux)
-startXvfb();
+if (!isStealthLoaded) puppeteer.use(StealthPlugin());
 
 // ─── Controller ───────────────────────────────────────────────────────────────
 
+/**
+ * Primera llamada (sin captchaToken):
+ *   → responde { requiereCaptcha: true, sessionId }
+ *   → el frontend muestra el widget reCAPTCHA al usuario
+ *
+ * Segunda llamada (con captchaToken):
+ *   → inyecta el token en Puppeteer y ejecuta el scraping
+ */
 exports.consultarAntecedentes = async (req, res) => {
-  const { cedula, id_type = "CC" } = req.body;
+  const { cedula, id_type = "CC", captchaToken } = req.body;
 
   if (!cedula) {
     return res.status(400).json({ error: "El campo cedula es requerido" });
   }
 
+  // Primera llamada — pedir captcha al usuario
+  if (!captchaToken) {
+    console.log(`[Policía] Solicitando captcha para: ${cedula}`);
+    return res.json({
+      requiereCaptcha: true,
+      sessionId: `${cedula}-${Date.now()}`,
+    });
+  }
+
+  // Segunda llamada — ejecutar scraping con el token
   console.log(`--- Iniciando consulta Policía para: ${cedula} ---`);
 
-  const client = {
-    identificator: cedula,
-    identification: String(cedula).replace(/[.,]/g, ""),
-    id_type,
-    client_type: "natural",
-  };
-
   let browser = null;
-
   try {
     browser = await launchBrowser();
-    await configureExtension(browser);
-
     const page = await browser.newPage();
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -59,18 +49,22 @@ exports.consultarAntecedentes = async (req, res) => {
 
     const { message, alert, evidenceUrl } = await executeScrapingFlow(
       page,
-      client,
+      {
+        identificator: cedula,
+        identification: String(cedula).replace(/[.,]/g, ""),
+        id_type,
+      },
+      captchaToken,
     );
 
     console.log(`✅ Consulta Policía exitosa para: ${cedula}`);
-
     return res.json({
       fuente: "Policía Nacional de Colombia",
       status: "success",
       data: {
         cedula,
-        alert,
-        message,
+        tieneAntecedentes: alert,
+        mensaje: message,
         evidenceUrl,
       },
     });
@@ -85,144 +79,34 @@ exports.consultarAntecedentes = async (req, res) => {
   }
 };
 
-// ─── Xvfb ─────────────────────────────────────────────────────────────────────
-
-function startXvfb() {
-  if (process.platform !== "linux") {
-    console.warn("[Policía] No es Linux — omitiendo Xvfb.");
-    return;
-  }
-
-  try {
-    child_process.execSync("which Xvfb", { stdio: "ignore" });
-  } catch {
-    console.error(
-      "[Policía] Xvfb no encontrado. Instala con: apt-get install -y xvfb",
-    );
-    return;
-  }
-
-  // Limpiar proceso previo si existe
-  try {
-    child_process.execSync(`pkill -f "Xvfb ${XVFB_DISPLAY}"`, {
-      stdio: "ignore",
-    });
-  } catch {
-    /* no había proceso previo */
-  }
-
-  const xvfb = child_process.spawn(
-    "Xvfb",
-    [XVFB_DISPLAY, "-screen", "0", "1920x1080x24", "-ac"],
-    { detached: false, stdio: "ignore" },
-  );
-
-  xvfb.on("error", (err) =>
-    console.error("[Policía] Error Xvfb:", err.message),
-  );
-  xvfb.on("exit", (code) => {
-    if (code !== 0 && code !== null)
-      console.warn(`[Policía] Xvfb terminó con código ${code}`);
-  });
-
-  process.env.DISPLAY = XVFB_DISPLAY;
-  console.log(`[Policía] ✅ Xvfb iniciado en DISPLAY=${XVFB_DISPLAY}`);
-}
-
 // ─── Browser ──────────────────────────────────────────────────────────────────
 
 async function launchBrowser() {
-  // Usar Chromium empaquetado por @sparticuz/chromium (no requiere instalación aparte)
-  const executablePath = await chromium.executablePath();
-  console.log(`[Policía] Chromium path: ${executablePath}`);
-
-  const browser = await puppeteer.launch({
-    headless: false, // false para que las extensiones funcionen con Xvfb
-    executablePath,
-    devtools: false,
+  return puppeteer.launch({
+    headless: true, // ✅ headless puro — sin extensiones ni Xvfb
     ignoreHTTPSErrors: true,
     args: [
-      ...chromium.args,
-      `--disable-extensions-except=${EXTENSION_PATH}`,
-      `--load-extension=${EXTENSION_PATH}`,
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-features=IsolateOrigins,site-per-process",
-      "--ignore-certificate-errors",
-      "--allow-running-insecure-content",
-      "--disable-blink-features=AutomationControlled",
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--no-zygote",
-      "--disable-software-rasterizer",
-      "--font-render-hinting=none",
-      "--window-size=1920,1080",
-      `--display=${process.env.DISPLAY ?? XVFB_DISPLAY}`,
+      "--ignore-certificate-errors",
+      "--allow-running-insecure-content",
+      "--disable-blink-features=AutomationControlled",
     ],
-    ignoreDefaultArgs: ["--disable-extensions", "--enable-automation"],
-    env: { ...process.env, DISPLAY: process.env.DISPLAY ?? XVFB_DISPLAY },
   });
-
-  // Warm-up: visitar extensions para inicializar el service worker
-  const page = await browser.newPage();
-  try {
-    await page.goto("chrome://extensions/", {
-      waitUntil: "domcontentloaded",
-      timeout: 5000,
-    });
-  } catch (_) {
-    /* ignorar timeout */
-  }
-  await delay(500);
-  await page.close().catch(() => {});
-
-  return browser;
-}
-
-async function configureExtension(browser) {
-  try {
-    const targets = await browser.targets();
-    const extensionTarget = targets.find(
-      (t) => t.type() === "service_worker" || t.url().includes("rektcaptcha"),
-    );
-
-    if (extensionTarget) {
-      const worker = await extensionTarget.worker();
-      if (worker) {
-        await worker.evaluate(() => {
-          const chrome = self.chrome;
-          if (chrome?.storage?.local) {
-            chrome.storage.local.set({
-              recaptcha_auto_open: true,
-              recaptcha_auto_solve: true,
-              recaptcha_click_delay_time: 300,
-              recaptcha_solve_delay_time: 1000,
-            });
-          }
-        });
-        console.log("[Policía] ✅ rektCaptcha configurado.");
-      }
-    } else {
-      console.warn("[Policía] ⚠️  Target de rektCaptcha no encontrado.");
-    }
-  } catch (error) {
-    console.warn(
-      "[Policía] No se pudo configurar la extensión:",
-      error.message,
-    );
-  }
 }
 
 // ─── Scraping Flow ────────────────────────────────────────────────────────────
 
-async function executeScrapingFlow(page, client) {
+async function executeScrapingFlow(page, client, captchaToken) {
   const { identification, id_type } = client;
 
-  console.log("[Policía] 🌐 Navegando a URL inicial...");
+  console.log("[Policía] 🌐 Navegando...");
   await page.goto(POLICIA_URL, { waitUntil: "networkidle2", timeout: 45000 });
   await delay(3000);
 
-  // Detectar si ya estamos en la página de búsqueda o hay que aceptar términos
   const directAccess = await page.evaluate(() => {
     const el = document.getElementById("cedulaInput");
     return el && el.offsetParent !== null;
@@ -237,27 +121,35 @@ async function executeScrapingFlow(page, client) {
   }
 
   await verifyAntecedentesPage(page);
-  await handleCaptcha(page);
-  await performSearch(page, identification);
 
+  // Inyectar el token que el usuario resolvió en el frontend
+  console.log("[Policía] 💉 Inyectando token captcha...");
+  await page.evaluate((token) => {
+    // Campo principal que lee el servidor
+    const field = document.getElementById("g-recaptcha-response");
+    if (field) {
+      field.value = token;
+      field.style.display = "block";
+      field.dispatchEvent(new Event("change", { bubbles: true }));
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    // Por si hay múltiples campos
+    document.querySelectorAll('[name="g-recaptcha-response"]').forEach((el) => {
+      el.value = token;
+    });
+  }, captchaToken);
+  await delay(1000);
+  console.log("[Policía] ✅ Token inyectado.");
+
+  await performSearch(page, identification);
   const { text } = await validateResultsLoaded(page);
 
   const nowStr = new Date().toLocaleString();
-  let alert, message;
+  const alert = !text.toUpperCase().includes("NO TIENE ASUNTOS PENDIENTES");
+  const message = alert
+    ? `El día ${nowStr} se verifica que ${id_type} ${identification} TIENE antecedentes judiciales.`
+    : `El día ${nowStr} se verifica que ${id_type} ${identification} no tiene antecedentes judiciales.`;
 
-  if (text.toUpperCase().includes("NO TIENE ASUNTOS PENDIENTES")) {
-    alert = false;
-    message =
-      `El día ${nowStr} se verifica en el sistema de antecedentes policiales ` +
-      `que el registro identificado con ${id_type} ${identification} no tiene antecedentes judiciales.`;
-  } else {
-    alert = true;
-    message =
-      `El día ${nowStr} se verifica en el sistema de antecedentes policiales ` +
-      `que el registro identificado con ${id_type} ${identification} TIENE antecedentes judiciales.`;
-  }
-
-  // Screenshot como evidencia (base64, no requiere servicio externo)
   let evidenceUrl = "";
   try {
     const buffer = await page.screenshot({
@@ -265,9 +157,7 @@ async function executeScrapingFlow(page, client) {
       fromSurface: true,
     });
     evidenceUrl = `data:image/png;base64,${buffer.toString("base64")}`;
-  } catch (imgError) {
-    console.warn("[Policía] Error capturando screenshot:", imgError.message);
-  }
+  } catch (_) {}
 
   return { message, alert, evidenceUrl };
 }
@@ -280,15 +170,11 @@ async function ensureTermsAcceptedLoop(page) {
 
   while (attempts < 10 && !success) {
     attempts++;
-    console.log(`[Policía] 🔄 Términos — intento ${attempts}/10...`);
-
     try {
       const navOptions = { waitUntil: "networkidle2", timeout: 45000 };
-      if (attempts === 1) {
-        await page.goto(POLICIA_URL, navOptions);
-      } else {
-        await page.reload(navOptions);
-      }
+      attempts === 1
+        ? await page.goto(POLICIA_URL, navOptions)
+        : await page.reload(navOptions);
 
       await delay(3000);
 
@@ -296,7 +182,6 @@ async function ensureTermsAcceptedLoop(page) {
       try {
         await page.waitForSelector(radioSelector, { timeout: 10000 });
       } catch {
-        console.warn("[Policía] Radio button no apareció. Recargando...");
         continue;
       }
 
@@ -319,18 +204,14 @@ async function ensureTermsAcceptedLoop(page) {
       }
     } catch (e) {
       console.warn(
-        `[Policía] Error en términos intento ${attempts}: ${e.message}`,
+        `[Policía] Error términos intento ${attempts}: ${e.message}`,
       );
     }
 
     if (!success && attempts < 10) await delay(2000);
   }
 
-  if (!success) {
-    throw new Error(
-      "No se pudo activar el botón de continuar tras 10 intentos.",
-    );
-  }
+  if (!success) throw new Error("No se pudo activar el botón Continuar.");
 }
 
 async function checkContinueButton(page) {
@@ -356,33 +237,31 @@ async function clickContinueWithRetries(page, maxRetries) {
 
     if (alreadyThere) return;
 
-    const btnSelector = "#continuarBtn";
-    await page.waitForSelector(btnSelector, { timeout: 5000 }).catch(() => {});
+    await page
+      .waitForSelector("#continuarBtn", { timeout: 5000 })
+      .catch(() => {});
 
     try {
       await Promise.all([
         page
           .waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 })
           .catch(() => null),
-        page.click(btnSelector),
+        page.click("#continuarBtn"),
       ]);
       if (page.url().includes("antecedentes.xhtml")) return;
-    } catch (_) {
-      /* continuar */
-    }
+    } catch (_) {}
 
     if (attempt > 1) {
-      await page.evaluate((sel) => {
-        const btn = document.querySelector(sel);
+      await page.evaluate(() => {
+        const btn = document.querySelector("#continuarBtn");
         if (btn) btn.click();
-      }, btnSelector);
+      });
       await delay(5000);
       if (page.url().includes("antecedentes.xhtml")) return;
     }
 
     await delay(2000);
   }
-
   throw new Error("No se pudo navegar a antecedentes. URL: " + page.url());
 }
 
@@ -397,57 +276,11 @@ async function verifyAntecedentesPage(page) {
       console.log("[Policía] ✅ Página de antecedentes confirmada.");
       return;
     } catch (e) {
-      console.warn(`[Policía] Validación intento ${i} falló: ${e.message}`);
+      console.warn(`[Policía] Validación ${i} falló: ${e.message}`);
       await delay(2000);
     }
   }
   throw new Error("No se pudo validar la página de antecedentes.");
-}
-
-async function handleCaptcha(page) {
-  console.log("[Policía] Esperando rektCaptcha...");
-  await page.setViewport({ width: 1280, height: 800 });
-
-  let solved = false;
-  let detachedCount = 0;
-
-  for (let i = 1; i <= 60; i++) {
-    try {
-      if (page.isClosed()) throw new Error("Page cerrada.");
-
-      solved = await page.evaluate(() => {
-        const el = document.getElementById("g-recaptcha-response");
-        return !!(el && el.value && el.value.trim().length > 0);
-      });
-
-      detachedCount = 0;
-    } catch (e) {
-      const isDetached =
-        e.message.includes("detached") ||
-        e.message.includes("shutting down") ||
-        e.message.includes("Target closed") ||
-        e.message.includes("Execution context was destroyed");
-
-      if (isDetached) {
-        detachedCount++;
-        if (detachedCount > 10)
-          throw new Error("Browser atascado en estado detached.");
-        await delay(2000);
-        continue;
-      }
-      throw e;
-    }
-
-    if (solved) {
-      console.log("[Policía] ✅ Captcha resuelto.");
-      break;
-    }
-
-    if (i % 5 === 0) console.log(`[Policía] ⏳ Captcha... (${i * 2}s)`);
-    await delay(2000);
-  }
-
-  if (!solved) throw new Error("Captcha no resuelto tras 120s.");
 }
 
 async function performSearch(page, identification) {

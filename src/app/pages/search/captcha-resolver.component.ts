@@ -1,49 +1,51 @@
-import { Component, Input, Output, EventEmitter } from "@angular/core";
+import {
+  Component,
+  Input,
+  Output,
+  EventEmitter,
+  OnInit,
+  OnDestroy,
+  NgZone,
+} from "@angular/core";
 import { CommonModule } from "@angular/common";
-import { ConsultaService } from "../../services/consulta.service";
+import { HttpClient } from "@angular/common/http";
+
+declare const grecaptcha: any;
 
 @Component({
   selector: "app-captcha-resolver",
   standalone: true,
   imports: [CommonModule],
   template: `
-    <div *ngIf="visible" class="overlay">
-      <div class="modal">
-        <div class="modal-header">
-          <span>🔒 Verificación requerida — Policía Nacional</span>
-          <button class="btn-x" (click)="cancelar()">✕</button>
-        </div>
-
-        <div class="instrucciones">
-          <p>El sitio de la Policía requiere que resuelvas el captcha.</p>
+    <div class="captcha-overlay">
+      <div class="captcha-modal">
+        <div class="captcha-header">
+          <span class="captcha-icon">🛡️</span>
+          <h3>Verificación requerida</h3>
           <p>
-            Haz clic en <strong>"No soy un robot"</strong> y completa el
-            desafío:
+            El portal de la Policía Nacional requiere verificar que no eres un
+            robot. Por favor completa el captcha para continuar.
           </p>
         </div>
 
-        <!-- reCAPTCHA widget real -->
-        <div class="captcha-wrapper">
-          <div id="recaptcha-manual-container"></div>
+        <div class="captcha-body">
+          <div id="captcha-container"></div>
+
+          <div *ngIf="error" class="captcha-error">⚠️ {{ error }}</div>
+
+          <div *ngIf="resolviendo" class="captcha-loading">
+            <span class="spinner"></span>
+            Consultando antecedentes...
+          </div>
         </div>
 
-        <div *ngIf="error" class="error-msg">⚠️ {{ error }}</div>
-        <div *ngIf="cargando" class="loading-msg">⏳ Verificando...</div>
-
-        <div class="footer-btns">
+        <div class="captcha-footer">
           <button
             class="btn-cancelar"
             (click)="cancelar()"
-            [disabled]="cargando"
+            [disabled]="resolviendo"
           >
             Cancelar
-          </button>
-          <button
-            class="btn-enviar"
-            (click)="enviarToken()"
-            [disabled]="cargando || !tokenResuelto"
-          >
-            {{ cargando ? "Verificando..." : "✅ Enviar verificación" }}
           </button>
         </div>
       </div>
@@ -51,192 +53,226 @@ import { ConsultaService } from "../../services/consulta.service";
   `,
   styles: [
     `
-      .overlay {
+      .captcha-overlay {
         position: fixed;
         inset: 0;
-        background: rgba(0, 0, 0, 0.75);
-        z-index: 9999;
+        background: rgba(0, 0, 0, 0.6);
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 16px;
+        z-index: 9999;
       }
-      .modal {
+
+      .captcha-modal {
         background: white;
-        border-radius: 12px;
-        padding: 24px;
-        width: 100%;
+        border-radius: 16px;
+        padding: 32px;
         max-width: 420px;
+        width: 90%;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
         display: flex;
         flex-direction: column;
-        gap: 16px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        gap: 24px;
       }
-      .modal-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        font-weight: 700;
-        font-size: 0.95rem;
-        color: #1f2937;
+
+      .captcha-header {
+        text-align: center;
       }
-      .instrucciones {
-        font-size: 0.88rem;
-        color: #4b5563;
+
+      .captcha-icon {
+        font-size: 40px;
+      }
+
+      .captcha-header h3 {
+        margin: 12px 0 8px;
+        font-size: 20px;
+        font-weight: 600;
+        color: #1a1a2e;
+      }
+
+      .captcha-header p {
+        color: #666;
+        font-size: 14px;
         line-height: 1.5;
+        margin: 0;
       }
-      .instrucciones p {
-        margin: 4px 0;
+
+      .captcha-body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        min-height: 78px;
       }
-      .captcha-wrapper {
+
+      .captcha-error {
+        color: #dc3545;
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .captcha-loading {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #555;
+        font-size: 14px;
+      }
+
+      .spinner {
+        width: 18px;
+        height: 18px;
+        border: 2px solid #ddd;
+        border-top-color: #4361ee;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        display: inline-block;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .captcha-footer {
         display: flex;
         justify-content: center;
-        min-height: 80px;
       }
-      .error-msg {
-        color: #dc2626;
-        font-size: 0.85rem;
-        text-align: center;
-      }
-      .loading-msg {
-        color: #2563eb;
-        font-size: 0.85rem;
-        text-align: center;
-      }
-      .footer-btns {
-        display: flex;
-        gap: 10px;
-      }
+
       .btn-cancelar {
-        flex: 1;
-        padding: 10px;
-        border: 1px solid #d1d5db;
+        padding: 10px 28px;
+        border: 1px solid #ddd;
         border-radius: 8px;
         background: white;
+        color: #555;
+        font-size: 14px;
         cursor: pointer;
-        font-size: 0.9rem;
+        transition: all 0.2s;
       }
-      .btn-enviar {
-        flex: 2;
-        padding: 10px;
-        border: none;
-        border-radius: 8px;
-        background: #2563eb;
-        color: white;
-        font-weight: 700;
-        cursor: pointer;
-        font-size: 0.9rem;
+
+      .btn-cancelar:hover:not(:disabled) {
+        background: #f5f5f5;
+        border-color: #aaa;
       }
-      .btn-enviar:disabled {
-        background: #93c5fd;
+
+      .btn-cancelar:disabled {
+        opacity: 0.5;
         cursor: not-allowed;
-      }
-      .btn-x {
-        background: none;
-        border: none;
-        font-size: 1.1rem;
-        cursor: pointer;
-        color: #6b7280;
-        padding: 4px 8px;
-        border-radius: 4px;
       }
     `,
   ],
 })
-export class CaptchaResolverComponent {
-  @Input() set abrirCon(data: { sessionId: string } | null) {
-    if (data) {
-      this.sessionId = data.sessionId;
-      this.visible = true;
-      this.tokenResuelto = "";
-      this.error = "";
-      this.cargando = false;
-      setTimeout(() => this.renderizarRecaptcha(), 300);
-    }
-  }
+export class CaptchaResolverComponent implements OnInit, OnDestroy {
+  @Input() cedula!: string;
+  @Input() sessionId!: string;
+  @Input() idType: string = "CC";
 
   @Output() resuelto = new EventEmitter<any>();
   @Output() cancelado = new EventEmitter<void>();
 
-  visible = false;
-  sessionId = "";
-  tokenResuelto = "";
-  cargando = false;
+  resolviendo = false;
   error = "";
-  private widgetId: any = null;
 
-  constructor(private consultaService: ConsultaService) {}
+  private readonly SITEKEY = "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH";
+  private readonly API = "https://modulos-backend.onrender.com";
+  private widgetId: number | null = null;
 
-  private renderizarRecaptcha() {
-    const container = document.getElementById("recaptcha-manual-container");
-    if (!container) return;
-    container.innerHTML = "";
+  constructor(
+    private http: HttpClient,
+    private zone: NgZone,
+  ) {}
 
-    // Cargar script de reCAPTCHA si no está cargado
-    if (!(window as any).grecaptcha) {
-      const script = document.createElement("script");
-      script.src = "https://www.google.com/recaptcha/api.js?render=explicit";
-      script.onload = () => this.renderWidget(container);
-      document.head.appendChild(script);
-    } else {
-      this.renderWidget(container);
+  ngOnInit() {
+    this.cargarCaptcha();
+  }
+
+  ngOnDestroy() {
+    if (this.widgetId !== null) {
+      try {
+        grecaptcha.reset(this.widgetId);
+      } catch (_) {}
     }
   }
 
-  private renderWidget(container: HTMLElement) {
-    try {
-      const gc = (window as any).grecaptcha;
-      if (!gc?.render) {
-        setTimeout(() => this.renderWidget(container), 500);
-        return;
-      }
-      this.widgetId = gc.render(container, {
-        sitekey: "6LcsIwQaAAAAAFCsaI-dkR6hgKsZwwJRsmE0tIJH",
-        callback: (token: string) => {
-          this.tokenResuelto = token;
-          this.error = "";
-        },
-        "expired-callback": () => {
-          this.tokenResuelto = "";
-          this.error = "El captcha expiró. Por favor resuélvelo de nuevo.";
-        },
+  private cargarCaptcha() {
+    const cargar = () => {
+      const container = document.getElementById("captcha-container");
+      if (!container) return;
+
+      this.widgetId = grecaptcha.render(container, {
+        sitekey: this.SITEKEY,
+        callback: (token: string) => this.zone.run(() => this.onToken(token)),
+        "expired-callback": () =>
+          this.zone.run(() => {
+            this.error = "El captcha expiró. Por favor inténtalo de nuevo.";
+            this.resolviendo = false;
+          }),
+        "error-callback": () =>
+          this.zone.run(() => {
+            this.error = "Error al cargar el captcha.";
+          }),
       });
-    } catch (e) {
-      console.error("Error renderizando reCAPTCHA:", e);
-    }
-  }
+    };
 
-  enviarToken() {
-    if (!this.tokenResuelto) {
-      this.error = "Primero resuelve el captcha.";
+    // Si grecaptcha ya está cargado, usarlo directamente
+    if (typeof grecaptcha !== "undefined" && grecaptcha.render) {
+      setTimeout(cargar, 100);
       return;
     }
-    this.cargando = true;
+
+    // Si no, cargar el script de Google
+    if (!document.getElementById("recaptcha-script")) {
+      const script = document.createElement("script");
+      script.id = "recaptcha-script";
+      script.src = "https://www.google.com/recaptcha/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.onload = () => setTimeout(cargar, 300);
+      document.head.appendChild(script);
+    } else {
+      // Script ya existe, esperar a que grecaptcha esté listo
+      const interval = setInterval(() => {
+        if (typeof grecaptcha !== "undefined" && grecaptcha.render) {
+          clearInterval(interval);
+          cargar();
+        }
+      }, 100);
+    }
+  }
+
+  private onToken(token: string) {
+    this.resolviendo = true;
     this.error = "";
 
-    this.consultaService
-      .resolverCaptcha(this.sessionId, this.tokenResuelto)
+    // Enviar el token al backend junto con la cédula
+    this.http
+      .post(`${this.API}/api/consulta-antecedentes`, {
+        cedula: this.cedula,
+        id_type: this.idType,
+        captchaToken: token,
+        sessionId: this.sessionId,
+      })
       .subscribe({
-        next: (resultado: any) => {
-          this.cargando = false;
-          this.visible = false;
-          this.resuelto.emit(resultado);
+        next: (res: any) => {
+          this.resolviendo = false;
+          this.resuelto.emit(res.data);
         },
-        error: (err: any) => {
-          this.cargando = false;
+        error: (err) => {
+          this.resolviendo = false;
           this.error =
-            err.error?.detalle || "Error al verificar. Intenta de nuevo.";
-          // Resetear captcha
-          (window as any).grecaptcha?.reset(this.widgetId);
-          this.tokenResuelto = "";
+            err.error?.detalle || "Error al consultar. Intenta de nuevo.";
+          // Reset captcha para que el usuario pueda reintentar
+          if (this.widgetId !== null) {
+            try {
+              grecaptcha.reset(this.widgetId);
+            } catch (_) {}
+          }
         },
       });
   }
 
   cancelar() {
-    this.visible = false;
-    this.tokenResuelto = "";
-    this.error = "";
     this.cancelado.emit();
   }
 }
