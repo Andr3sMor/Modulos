@@ -2,6 +2,7 @@
 
 const axios = require("axios");
 const https = require("https");
+const pdfParse = require("pdf-parse");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const BASE_URL =
@@ -40,11 +41,9 @@ exports.consultarContraloria = async (req, res) => {
   console.log(`--- Iniciando consulta Contraloría para: ${cedula} ---`);
 
   try {
-    // 1. GET para obtener campos ASP.NET y cookie de sesión
     const { viewState, viewStateGenerator, eventValidation, cookie } =
       await fetchFormFields();
 
-    // 2. POST con los campos del formulario
     const { buffer, contentType } = await submitForm({
       cedula,
       tipoDocumento: TIPO_MAP[tipo_documento] || "CC",
@@ -54,38 +53,32 @@ exports.consultarContraloria = async (req, res) => {
       cookie,
     });
 
-    // 3. Responder según lo que devolvió el portal
-    if (contentType.includes("pdf") || contentType.includes("octet-stream")) {
-      console.log("✅ Contraloría — PDF recibido.");
-      return res.json({
-        fuente: "Contraloría General de la República",
-        status: "success",
-        data: {
-          cedula,
-          pdfBase64: buffer.toString("base64"),
-          fecha: new Date().toLocaleString(),
-        },
-      });
+    if (!contentType.includes("pdf") && !contentType.includes("octet-stream")) {
+      const html = buffer.toString("utf-8");
+      if (
+        html.toLowerCase().includes("captcha") ||
+        html.toLowerCase().includes("robot")
+      ) {
+        throw new Error("El portal validó el captcha — no se pudo omitir.");
+      }
+      throw new Error(
+        "El portal no devolvió un PDF. Content-Type: " + contentType,
+      );
     }
 
-    // Si llegó HTML, revisar si el captcha bloqueó
-    const html = buffer.toString("utf-8");
+    // Extraer texto del PDF para determinar responsabilidad fiscal
+    const { tieneFiscal, mensaje } = await analizarPDF(buffer);
 
-    if (
-      html.toLowerCase().includes("captcha") ||
-      html.toLowerCase().includes("robot")
-    ) {
-      throw new Error("El portal validó el captcha — no se pudo omitir.");
-    }
+    console.log(`✅ Contraloría — tieneFiscal: ${tieneFiscal}`);
 
-    // Algunos portados devuelven el resultado en HTML en lugar de PDF
-    console.log("✅ Contraloría — respuesta HTML recibida.");
     return res.json({
       fuente: "Contraloría General de la República",
       status: "success",
       data: {
         cedula,
-        html: html,
+        tieneFiscal,
+        mensaje,
+        pdfBase64: buffer.toString("base64"),
         fecha: new Date().toLocaleString(),
       },
     });
@@ -97,6 +90,62 @@ exports.consultarContraloria = async (req, res) => {
     });
   }
 };
+
+// ─── Parsear PDF ──────────────────────────────────────────────────────────────
+
+async function analizarPDF(buffer) {
+  try {
+    const data = await pdfParse(buffer);
+    const texto = data.text.toUpperCase();
+
+    console.log(
+      "[Contraloría] Texto extraído del PDF:",
+      data.text.substring(0, 300),
+    );
+
+    // Detectar si tiene o no responsabilidad fiscal
+    const tieneReporte =
+      texto.includes("SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL") &&
+      !texto.includes("NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL");
+
+    const noTieneReporte = texto.includes(
+      "NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL",
+    );
+
+    if (noTieneReporte) {
+      return {
+        tieneFiscal: false,
+        mensaje:
+          "El número de identificación NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
+      };
+    }
+
+    if (tieneReporte) {
+      return {
+        tieneFiscal: true,
+        mensaje:
+          "El número de identificación SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
+      };
+    }
+
+    // Si el texto no coincide con ninguno de los patrones esperados
+    console.warn(
+      "[Contraloría] No se reconoció el patrón en el PDF. Texto:",
+      data.text.substring(0, 500),
+    );
+    return {
+      tieneFiscal: null,
+      mensaje:
+        "No se pudo determinar el estado fiscal. Descarga el certificado para revisarlo manualmente.",
+    };
+  } catch (parseError) {
+    console.warn("[Contraloría] Error parseando PDF:", parseError.message);
+    return {
+      tieneFiscal: null,
+      mensaje: "No se pudo leer el certificado automáticamente.",
+    };
+  }
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,13 +159,10 @@ async function fetchFormFields() {
   });
 
   const html = response.data;
-
-  // Extraer cookie de sesión
   const cookie = (response.headers["set-cookie"] || [])
     .map((c) => c.split(";")[0])
     .join("; ");
 
-  // Extraer campos ASP.NET con regex — sin dependencias extra
   const viewState = extractField(html, "__VIEWSTATE");
   const viewStateGenerator = extractField(html, "__VIEWSTATEGENERATOR");
   const eventValidation = extractField(html, "__EVENTVALIDATION");
@@ -146,7 +192,7 @@ async function submitForm({
   params.append("__EVENTVALIDATION", eventValidation);
   params.append("ctl00$MainContent$ddlTipoDocumento", tipoDocumento);
   params.append("ctl00$MainContent$txtNumeroDocumento", String(cedula));
-  params.append("g-recaptcha-response", "test"); // probar si el portal valida o no
+  params.append("g-recaptcha-response", "test");
   params.append("ctl00$MainContent$btnBuscar", "Buscar");
 
   const response = await axios.post(BASE_URL, params.toString(), {
@@ -168,17 +214,9 @@ async function submitForm({
   };
 }
 
-// Extrae el value de un input hidden por su id
 function extractField(html, fieldId) {
-  const match = html.match(
-    new RegExp(`id="${fieldId}"[^>]*value="([^"]*)"`, "i") ||
-      new RegExp(`name="${fieldId}"[^>]*value="([^"]*)"`, "i"),
-  );
-  if (match) return match[1];
-
-  // Formato alternativo: value antes del id
-  const match2 = html.match(
-    new RegExp(`value="([^"]*)"[^>]*id="${fieldId}"`, "i"),
-  );
-  return match2 ? match2[1] : "";
+  const m1 = html.match(new RegExp(`id="${fieldId}"[^>]*value="([^"]*)"`, "i"));
+  if (m1) return m1[1];
+  const m2 = html.match(new RegExp(`value="([^"]*)"[^>]*id="${fieldId}"`, "i"));
+  return m2 ? m2[1] : "";
 }

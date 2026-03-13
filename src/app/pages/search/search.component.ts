@@ -231,6 +231,8 @@ export class SearchComponent {
                   this.resultados.push({
                     tipo: "contraloria",
                     fuente: res.fuente || "Contraloría General de la República",
+                    tieneFiscal: res.data?.tieneFiscal ?? null,
+                    mensaje: res.data?.mensaje || "",
                     pdfBase64: res.data?.pdfBase64 || null,
                     data: { fecha: new Date().toLocaleString() },
                   });

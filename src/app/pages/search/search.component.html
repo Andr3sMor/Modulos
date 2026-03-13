@@ -198,15 +198,19 @@
             <span
               *ngIf="r.tipo === 'contraloria'"
               [class]="
-                r.pdfBase64
-                  ? 'status-badge badge-success'
-                  : 'status-badge badge-neutral'
+                r.tieneFiscal === true
+                  ? 'status-badge badge-danger'
+                  : r.tieneFiscal === false
+                    ? 'status-badge badge-success'
+                    : 'status-badge badge-neutral'
               "
             >
               {{
-                r.pdfBase64
-                  ? "✅ Certificado disponible"
-                  : "ℹ️ Consulta realizada"
+                r.tieneFiscal === true
+                  ? "⚠️ Reportado como responsable fiscal"
+                  : r.tieneFiscal === false
+                    ? "✅ Sin responsabilidad fiscal"
+                    : "ℹ️ Consulta realizada"
               }}
             </span>
 
@@ -289,6 +293,12 @@
               </span>
             </div>
 
+            <!-- Contraloría — mensaje fiscal -->
+            <div class="result-item" *ngIf="r.tipo === 'contraloria'">
+              <span class="item-label">Resultado</span>
+              <span class="item-value">{{ r.mensaje }}</span>
+            </div>
+
             <!-- Contraloría — botón de descarga -->
             <div
               class="result-item"
@@ -300,18 +310,6 @@
                   📄 Descargar certificado →
                 </button>
               </span>
-            </div>
-
-            <!-- Contraloría — sin PDF (captcha bloqueó o respuesta HTML) -->
-            <div
-              class="result-item"
-              *ngIf="r.tipo === 'contraloria' && !r.pdfBase64"
-            >
-              <span class="item-label">Resultado</span>
-              <span class="item-value"
-                >Consulta procesada. El portal no generó un PDF
-                descargable.</span
-              >
             </div>
 
             <div class="result-item" *ngIf="r.data?.fecha">
