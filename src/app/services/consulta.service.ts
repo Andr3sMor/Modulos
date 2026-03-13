@@ -70,11 +70,13 @@ export class ConsultaService {
     cedula: string,
     tipoDocumento = "CC",
     tipoCertificado = "1",
+    nombre = "",
   ) {
     return this.http.post<any>(`${this.apiUrl}/api/consulta-procuraduria`, {
       cedula,
       tipoDocumento,
       tipoCertificado,
+      nombre,
     });
   }
 
