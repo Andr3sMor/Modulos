@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 const https = require("https");
-const pdfParse = require("pdf-parse");
+const pdfParse = require("pdf-parse/lib/pdf-parse.js");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const BASE_URL =
