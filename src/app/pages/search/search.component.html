@@ -11,18 +11,54 @@
     <div class="search-section">
       <h3 class="section-title">Datos de Búsqueda</h3>
 
+      <!-- ── Selector tipo de persona ── -->
+      <div class="tipo-persona-row">
+        <label
+          class="tipo-persona-btn"
+          [class.activo]="tipoPersona === 'natural'"
+          (click)="tipoPersona = 'natural'; onTipoPersonaChange()"
+        >
+          <span class="tipo-persona-icon">👤</span>
+          Persona Natural
+        </label>
+        <label
+          class="tipo-persona-btn"
+          [class.activo]="tipoPersona === 'juridica'"
+          (click)="tipoPersona = 'juridica'; onTipoPersonaChange()"
+        >
+          <span class="tipo-persona-icon">🏢</span>
+          Persona Jurídica
+        </label>
+      </div>
+
+      <!-- ── Campos según tipo de persona ── -->
       <div class="fields-row">
+        <!-- Número de documento (siempre) -->
         <div class="field-group">
           <label class="field-label">Número de Identificación</label>
           <input
             type="text"
             class="field-input"
             [(ngModel)]="cedula"
-            placeholder="Ej: 12345678"
+            placeholder="{{
+              tipoPersona === 'juridica' ? 'Ej: 900123456' : 'Ej: 12345678'
+            }}"
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
+
+        <!-- Tipo documento -->
         <div class="field-group">
+          <label class="field-label">Tipo de Documento</label>
+          <select class="field-input" [(ngModel)]="tipoDocumento">
+            <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
+              {{ tipo }}
+            </option>
+          </select>
+        </div>
+
+        <!-- Persona Natural: Nombre(s) -->
+        <div class="field-group" *ngIf="tipoPersona === 'natural'">
           <label class="field-label">Nombre(s)</label>
           <input
             type="text"
@@ -32,20 +68,9 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-        <div class="field-group">
-          <label class="field-label"
-            >Razón Social
-            <span class="field-hint">(Supersociedades)</span></label
-          >
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="razonSocial"
-            placeholder="Ej: Alqueria S.A.S"
-            (keyup.enter)="ejecutarConsulta()"
-          />
-        </div>
-        <div class="field-group">
+
+        <!-- Persona Natural: Apellido(s) -->
+        <div class="field-group" *ngIf="tipoPersona === 'natural'">
           <label class="field-label">Apellido(s)</label>
           <input
             type="text"
@@ -55,22 +80,51 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-      </div>
 
-      <div class="action-row">
-        <div class="field-group field-small">
-          <label class="field-label">Tipo de Documento</label>
-          <select class="field-input" [(ngModel)]="tipoDocumento">
-            <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
-              {{ tipo }}
-            </option>
-          </select>
+        <!-- Persona Jurídica: Razón Social -->
+        <div class="field-group" *ngIf="tipoPersona === 'juridica'">
+          <label class="field-label">Razón Social</label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="razonSocial"
+            placeholder="Ej: Alqueria S.A.S"
+            (keyup.enter)="ejecutarConsulta()"
+          />
         </div>
 
+        <!-- Persona Jurídica: Matrícula Mercantil (para Contraloría) -->
+        <div class="field-group" *ngIf="tipoPersona === 'juridica'">
+          <label class="field-label">
+            Matrícula Mercantil
+            <span class="field-hint">(Contraloría)</span>
+          </label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="matriculaMercantil"
+            placeholder="Ej: 00123456"
+            (keyup.enter)="ejecutarConsulta()"
+          />
+        </div>
+      </div>
+
+      <!-- ── Servicios y botón ── -->
+      <div class="action-row">
         <div class="field-group field-large">
           <label class="field-label">Servicios a consultar</label>
           <div class="checkboxes-grid">
-            <label class="checkbox-item" *ngFor="let svc of servicios">
+            <label
+              class="checkbox-item"
+              *ngFor="let svc of servicios"
+              [class.checkbox-disabled]="
+                (tipoPersona === 'juridica' && svc.id === 'registraduria') ||
+                (tipoPersona === 'juridica' && svc.id === 'antecedentes') ||
+                (tipoPersona === 'juridica' && svc.id === 'contador') ||
+                (tipoPersona === 'juridica' && svc.id === 'ramaJudicial') ||
+                (tipoPersona === 'natural' && svc.id === 'supersociedades')
+              "
+            >
               <input type="checkbox" [(ngModel)]="svc.activo" />
               <span class="checkbox-label">{{ svc.nombre }}</span>
             </label>
@@ -103,7 +157,6 @@
       class="results-section gemini-section"
     >
       <h3 class="section-title">Análisis Gemini AI</h3>
-
       <div class="result-card gemini-card">
         <div class="result-header">
           <span class="source-badge gemini-badge"
@@ -111,22 +164,24 @@
           >
           <span *ngIf="cargandoIA" class="gemini-status">
             <span class="spinner spinner-purple"></span> Buscando sobre "{{
-              nombre
+              tipoPersona === "natural" ? nombre : razonSocial
             }}"...
           </span>
           <span
             *ngIf="analisisIA && !cargandoIA"
             class="status-badge badge-success"
+            >✅ Análisis listo</span
           >
-            ✅ Análisis listo
-          </span>
         </div>
-
         <div class="result-body">
           <div *ngIf="cargandoIA" class="gemini-loading">
             <div class="gemini-loading-text">
               Gemini está consultando fuentes públicas de internet sobre
-              <strong>"{{ nombre }}"</strong>. Esto puede tomar unos segundos...
+              <strong
+                >"{{
+                  tipoPersona === "natural" ? nombre : razonSocial
+                }}"</strong
+              >. Esto puede tomar unos segundos...
             </div>
           </div>
           <div *ngIf="errorIA && !cargandoIA" class="gemini-error">
@@ -164,7 +219,6 @@
             >
               {{ r.data?.vigencia }}
             </span>
-
             <!-- Contador -->
             <span
               *ngIf="r.tipo === 'contador'"
@@ -176,7 +230,6 @@
             >
               {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
             </span>
-
             <!-- Antecedentes -->
             <span
               *ngIf="r.tipo === 'antecedentes'"
@@ -192,7 +245,6 @@
                   : "✅ Sin antecedentes"
               }}
             </span>
-
             <!-- Procuraduría -->
             <span
               *ngIf="r.tipo === 'procuraduria'"
@@ -206,7 +258,6 @@
                 r.tieneSanciones ? "⚠️ Registra sanciones" : "✅ Sin sanciones"
               }}
             </span>
-
             <!-- Contraloría -->
             <span
               *ngIf="r.tipo === 'contraloria'"
@@ -226,7 +277,6 @@
                     : "ℹ️ Consulta realizada"
               }}
             </span>
-
             <!-- Offshore -->
             <span
               *ngIf="r.tipo === 'offshore'"
@@ -242,7 +292,6 @@
                   : "✅ Sin registros"
               }}
             </span>
-
             <!-- Rama Judicial -->
             <span
               *ngIf="r.tipo === 'ramaJudicial'"
@@ -258,7 +307,6 @@
                   : "✅ Sin procesos activos"
               }}
             </span>
-
             <!-- Supersociedades -->
             <span
               *ngIf="r.tipo === 'supersociedades'"
@@ -283,12 +331,10 @@
               <span class="item-label">Estado</span>
               <span class="item-value">{{ r.data?.vigencia }}</span>
             </div>
-
             <div class="result-item" *ngIf="r.data?.codigo">
               <span class="item-label">Código</span>
               <span class="item-value">{{ r.data?.codigo }}</span>
             </div>
-
             <div
               class="result-item"
               *ngIf="r.mensaje && r.tipo === 'antecedentes'"
@@ -296,12 +342,10 @@
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
-
             <div class="result-item" *ngIf="r.tipo === 'procuraduria'">
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
-
             <div
               class="result-item"
               *ngIf="r.tipo === 'procuraduria' && r.pdfBase64"
@@ -313,14 +357,10 @@
                 </button>
               </span>
             </div>
-
-            <!-- Contraloría — mensaje fiscal -->
             <div class="result-item" *ngIf="r.tipo === 'contraloria'">
               <span class="item-label">Resultado</span>
               <span class="item-value">{{ r.mensaje }}</span>
             </div>
-
-            <!-- Contraloría — botón de descarga -->
             <div
               class="result-item"
               *ngIf="r.tipo === 'contraloria' && r.pdfBase64"
@@ -332,7 +372,6 @@
                 </button>
               </span>
             </div>
-
             <div class="result-item" *ngIf="r.data?.fecha">
               <span class="item-label">Fecha consulta</span>
               <span class="item-value">{{ r.data?.fecha }}</span>
@@ -341,12 +380,9 @@
 
           <!-- ══ SUPERSOCIEDADES ══════════════════════════════════ -->
           <div *ngIf="r.tipo === 'supersociedades'" class="supersoc-container">
-            <!-- Sin resultados -->
             <div *ngIf="r.totalRegistros === 0" class="sin-resultados">
               No se encontraron empresas con esa razón social.
             </div>
-
-            <!-- Lista de empresas -->
             <ng-container
               *ngIf="
                 r.totalRegistros > 0 &&
@@ -382,20 +418,17 @@
                         emp.estado !== 'EN LIQUIDACIÓN' &&
                         emp.estado !== 'EN REORGANIZACIÓN'
                       "
-                      >{{ emp.estado }}</span
                     >
+                      {{ emp.estado }}
+                    </span>
                     <span class="supersoc-arrow">→</span>
                   </div>
                 </div>
               </div>
             </ng-container>
-
-            <!-- Cargando detalle -->
             <div *ngIf="cargandoDetalle" class="supersoc-loading">
               <span class="spinner"></span> Consultando detalle...
             </div>
-
-            <!-- Detalle empresa -->
             <div
               *ngIf="supersociedadesDetalle && !cargandoDetalle"
               class="supersoc-detalle"
@@ -418,8 +451,6 @@
                   ← Volver
                 </button>
               </div>
-
-              <!-- Banner insolvencia -->
               <div
                 class="insolvencia-banner"
                 [class.insolvencia-activa]="
@@ -467,42 +498,40 @@
                   </span>
                 </div>
               </div>
-
-              <!-- Grid de datos -->
               <div class="supersoc-grid">
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Estado</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Estado</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.estado
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Tipo societario</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Tipo societario</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.tipoSocietario
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Expediente</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Expediente</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.expediente || "—"
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Actividad económica</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Actividad económica</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.actividadEconomica?.descripcion
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Ciudad</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Ciudad</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.direccion?.ciudad
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Constitución</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Constitución</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.fechas?.constitucion || "—"
                   }}</span>
                 </div>
@@ -510,8 +539,8 @@
                   class="supersoc-dato"
                   *ngIf="supersociedadesDetalle.causal"
                 >
-                  <span class="supersoc-dato-label">Causal</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Causal</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.causal
                   }}</span>
                 </div>
@@ -519,32 +548,32 @@
                   class="supersoc-dato"
                   *ngIf="supersociedadesDetalle.contacto?.email"
                 >
-                  <span class="supersoc-dato-label">Email</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Email</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.contacto?.email
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Revisor fiscal</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Revisor fiscal</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.tieneRevisorFiscal ? "Sí" : "No"
                   }}</span>
                 </div>
                 <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Entidad IVC</span>
-                  <span class="supersoc-dato-valor">{{
+                  <span class="supersoc-dato-label">Entidad IVC</span
+                  ><span class="supersoc-dato-valor">{{
                     supersociedadesDetalle.entidadIVC
                   }}</span>
                 </div>
               </div>
             </div>
           </div>
+
           <!-- ══ OFFSHORE ══════════════════════════════════════════ -->
           <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
             <div *ngIf="!r.tieneRegistros" class="sin-resultados">
               No se encontraron registros en bases de datos offshore
             </div>
-
             <ng-container *ngIf="r.tieneRegistros">
               <div class="informe-resumen">
                 <span class="informe-icono">📋</span>
@@ -552,10 +581,9 @@
                 <strong
                   >{{ r.totalResultados }} coincidencia(s) exacta(s)</strong
                 >
-                para <strong>"{{ nombre }}"</strong> en las bases de datos del
-                ICIJ Offshore Leaks.
+                para <strong>"{{ r.terminoBuscado }}"</strong> en las bases de
+                datos del ICIJ Offshore Leaks.
               </div>
-
               <ng-container *ngFor="let cat of r.categorias">
                 <ng-container
                   *ngIf="filtrarScore100(cat.resultados).length > 0"
@@ -564,11 +592,13 @@
                     <div class="categoria-header">
                       <span class="categoria-icono">📁</span>
                       <span class="categoria-nombre">{{ cat.nombre }}</span>
-                      <span class="categoria-count">
-                        {{ filtrarScore100(cat.resultados).length }} registro(s)
-                      </span>
+                      <span class="categoria-count"
+                        >{{
+                          filtrarScore100(cat.resultados).length
+                        }}
+                        registro(s)</span
+                      >
                     </div>
-
                     <p class="categoria-descripcion">
                       En la base de datos <strong>{{ cat.nombre }}</strong> se
                       encontraron
@@ -577,7 +607,6 @@
                       }}</strong>
                       registro(s) con coincidencia exacta:
                     </p>
-
                     <div class="registros-lista">
                       <div
                         *ngFor="
@@ -613,10 +642,8 @@
           <div *ngIf="r.tipo === 'ramaJudicial'" class="rama-judicial-informe">
             <div *ngIf="r.totalAlertas === 0" class="sin-resultados">
               ✅ No se encontraron procesos activos confirmados en ninguna de
-              las
-              {{ r.totalCiudades }} ciudades consultadas.
+              las {{ r.totalCiudades }} ciudades consultadas.
             </div>
-
             <ng-container *ngIf="r.totalAlertas > 0">
               <div class="informe-resumen">
                 <span class="informe-icono">⚖️</span>
@@ -624,16 +651,15 @@
                 <strong>{{ r.totalAlertas }} ciudad(es)</strong> de
                 {{ r.totalCiudades }} consultadas.
               </div>
-
               <div
                 *ngFor="let ciudad of r.ciudades"
                 class="rama-ciudad-item"
                 [class.rama-alerta]="ciudad.alert"
               >
                 <div class="rama-ciudad-header">
-                  <span class="rama-ciudad-nombre">
-                    {{ ciudad.alert ? "⚠️" : "✅" }} {{ ciudad.ciudad }}
-                  </span>
+                  <span class="rama-ciudad-nombre"
+                    >{{ ciudad.alert ? "⚠️" : "✅" }} {{ ciudad.ciudad }}</span
+                  >
                   <span
                     class="status-badge"
                     [class.badge-danger]="ciudad.alert"
@@ -647,7 +673,6 @@
                     }}
                   </span>
                 </div>
-
                 <div *ngIf="ciudad.alert" class="rama-ciudad-detalle">
                   <div class="rama-verificacion">
                     <span class="rama-paso">Paso 1 — Estructural:</span>
@@ -682,7 +707,6 @@
       [idType]="tipoDocumento"
       (resuelto)="onCaptchaResuelto($event)"
       (cancelado)="onCaptchaCancelado()"
-    >
-    </app-captcha-resolver>
+    ></app-captcha-resolver>
   </div>
 </div>

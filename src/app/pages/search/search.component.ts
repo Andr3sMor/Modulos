@@ -16,6 +16,7 @@ export class SearchComponent {
   nombre = "";
   apellido = "";
   razonSocial = "";
+  matriculaMercantil = "";
   cargando = false;
   error = "";
   resultados: any[] = [];
@@ -30,13 +31,18 @@ export class SearchComponent {
   cargandoIA = false;
   errorIA = "";
 
+  tipoPersona: "natural" | "juridica" = "natural";
   tipoDocumento = "Cédula de Ciudadanía";
-  tiposDocumento = [
-    "Cédula de Ciudadanía",
-    "Cédula de Extranjería",
-    "Pasaporte",
-    "Documento País Origen",
-  ];
+
+  get tiposDocumento(): string[] {
+    if (this.tipoPersona === "juridica") return ["NIT"];
+    return [
+      "Cédula de Ciudadanía",
+      "Cédula de Extranjería",
+      "Pasaporte",
+      "Documento País Origen",
+    ];
+  }
 
   servicios = [
     { id: "registraduria", nombre: "Registraduría", activo: true },
@@ -58,13 +64,44 @@ export class SearchComponent {
     private cdr: ChangeDetectorRef,
   ) {}
 
+  onTipoPersonaChange() {
+    if (this.tipoPersona === "natural") {
+      this.tipoDocumento = "Cédula de Ciudadanía";
+      const activar = new Set([
+        "registraduria",
+        "procuraduria",
+        "contraloria",
+        "offshore",
+        "paco",
+      ]);
+      this.servicios.forEach((s) => (s.activo = activar.has(s.id)));
+      this.matriculaMercantil = "";
+    } else {
+      this.tipoDocumento = "NIT";
+      const activar = new Set([
+        "procuraduria",
+        "contraloria",
+        "offshore",
+        "supersociedades",
+        "paco",
+      ]);
+      this.servicios.forEach((s) => (s.activo = activar.has(s.id)));
+    }
+    this.cdr.detectChanges();
+  }
+
+  get nombreOffshore(): string {
+    if (this.tipoPersona === "juridica") return this.razonSocial.trim();
+    return [this.nombre.trim(), this.apellido.trim()].filter(Boolean).join(" ");
+  }
+
   ejecutarConsulta() {
     const activos = this.servicios.filter((s) => s.activo);
     if (!activos.length) {
       this.error = "Selecciona al menos un servicio.";
       return;
     }
-    if (!this.cedula && !this.nombre) {
+    if (!this.cedula && !this.nombre && !this.razonSocial) {
       this.error = "Ingresa al menos un dato.";
       return;
     }
@@ -76,36 +113,38 @@ export class SearchComponent {
     this.supersociedadesEmpresas = [];
     this.supersociedadesDetalle = null;
 
-    if (this.nombre.trim()) {
+    const terminoIA =
+      this.tipoPersona === "natural"
+        ? this.nombre.trim()
+        : this.razonSocial.trim();
+    if (terminoIA) {
       this.cargandoIA = true;
       this.cdr.detectChanges();
-
-      this.consultaService.buscarPersonaConIA(this.nombre).subscribe({
-        next: (res: any) => {
+      this.consultaService.buscarPersonaConIA(terminoIA).subscribe({
+        next: (res: any) =>
           this.zone.run(() => {
             this.analisisIA = res.analisis;
             this.cargandoIA = false;
             this.cdr.detectChanges();
-          });
-        },
-        error: () => {
+          }),
+        error: () =>
           this.zone.run(() => {
             this.errorIA = "No se pudo obtener el análisis de IA.";
             this.cargandoIA = false;
             this.cdr.detectChanges();
-          });
-        },
+          }),
       });
     }
 
     this.cargando = true;
-    const tareas = activos.map((s) => this.llamarServicio(s.id));
-    Promise.allSettled(tareas).then(() => {
-      this.zone.run(() => {
-        this.cargando = false;
-        this.cdr.detectChanges();
-      });
-    });
+    Promise.allSettled(activos.map((s) => this.llamarServicio(s.id))).then(
+      () => {
+        this.zone.run(() => {
+          this.cargando = false;
+          this.cdr.detectChanges();
+        });
+      },
+    );
   }
 
   private llamarServicio(id: string): Promise<void> {
@@ -239,16 +278,22 @@ export class SearchComponent {
             return;
           }
           this.consultaService
-            .consultarContraloria(this.cedula, this.tipoDocumento)
+            .consultarContraloria(
+              this.cedula,
+              this.tipoDocumento,
+              this.tipoPersona === "juridica"
+                ? this.matriculaMercantil
+                : undefined,
+            )
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
                   this.resultados.push({
                     tipo: "contraloria",
                     fuente: res.fuente || "Contraloría General de la República",
-                    tieneFiscal: res.data?.tieneFiscal ?? null,
-                    mensaje: res.data?.mensaje || "",
-                    pdfBase64: res.data?.pdfBase64 || null,
+                    tieneFiscal: res.tieneFiscal,
+                    mensaje: res.mensaje,
+                    pdfBase64: res.pdfBase64 || null,
                     data: { fecha: new Date().toLocaleString() },
                   });
                   this.cdr.detectChanges();
@@ -262,12 +307,13 @@ export class SearchComponent {
             });
           break;
 
-        case "offshore":
-          if (!this.nombre) {
+        case "offshore": {
+          const termino = this.nombreOffshore;
+          if (!termino) {
             resolve();
             return;
           }
-          this.consultaService.consultarOffshore(this.nombre).subscribe({
+          this.consultaService.consultarOffshore(termino).subscribe({
             next: (res: any) =>
               this.zone.run(() => {
                 const categorias = res.categorias || [];
@@ -282,6 +328,7 @@ export class SearchComponent {
                   fuente: "ICIJ Offshore Leaks",
                   tieneRegistros: total100 > 0,
                   totalResultados: total100,
+                  terminoBuscado: termino,
                   categorias,
                   data: { fecha: new Date().toLocaleString() },
                 });
@@ -295,6 +342,7 @@ export class SearchComponent {
               }),
           });
           break;
+        }
 
         case "ramaJudicial":
           if (!this.cedula && !this.apellido) {
@@ -329,33 +377,33 @@ export class SearchComponent {
             });
           break;
 
-        case "supersociedades":
-          if (!this.razonSocial.trim()) {
+        case "supersociedades": {
+          const rs = this.razonSocial.trim();
+          if (!rs) {
             resolve();
             return;
           }
-          this.consultaService
-            .consultarSupersociedades(this.razonSocial.trim())
-            .subscribe({
-              next: (res: any) =>
-                this.zone.run(() => {
-                  this.supersociedadesEmpresas = res.data || [];
-                  this.resultados.push({
-                    tipo: "supersociedades",
-                    fuente: "Superintendencia de Sociedades",
-                    totalRegistros: res.totalRegistros || 0,
-                    data: { fecha: new Date().toLocaleString() },
-                  });
-                  this.cdr.detectChanges();
-                  resolve();
-                }),
-              error: (err: any) =>
-                this.zone.run(() => {
-                  this.agregarError("Supersociedades", err);
-                  resolve();
-                }),
-            });
+          this.consultaService.consultarSupersociedades(rs).subscribe({
+            next: (res: any) =>
+              this.zone.run(() => {
+                this.supersociedadesEmpresas = res.data || [];
+                this.resultados.push({
+                  tipo: "supersociedades",
+                  fuente: "Superintendencia de Sociedades",
+                  totalRegistros: res.totalRegistros || 0,
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              }),
+            error: (err: any) =>
+              this.zone.run(() => {
+                this.agregarError("Supersociedades", err);
+                resolve();
+              }),
+          });
           break;
+        }
 
         case "paco":
           if (!this.cedula) {
@@ -363,7 +411,10 @@ export class SearchComponent {
             return;
           }
           this.consultaService
-            .consultarPACO(this.cedula, this.tipoPACO)
+            .consultarPACO(
+              this.cedula,
+              this.tipoPersona === "juridica" ? 2 : this.tipoPACO,
+            )
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
@@ -400,7 +451,6 @@ export class SearchComponent {
     this.cargandoDetalle = true;
     this.supersociedadesDetalle = null;
     this.cdr.detectChanges();
-
     this.consultaService.consultarSupersociedadesNit(nit).subscribe({
       next: (res: any) =>
         this.zone.run(() => {
@@ -423,8 +473,7 @@ export class SearchComponent {
     for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
     const blob = new Blob([arr], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
-
-    const nombreArchivo: { [key: string]: string } = {
+    const map: { [k: string]: string } = {
       procuraduria: "Certificado_Procuraduria",
       contraloria: "Certificado_Contraloria",
       antecedentes: "Certificado_Policia",
@@ -433,11 +482,9 @@ export class SearchComponent {
       offshore: "Certificado_Offshore",
       contador: "Certificado_JCC",
     };
-
-    const nombre = nombreArchivo[r.tipo] ?? `Certificado_${r.tipo}`;
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${nombre}.pdf`;
+    a.download = `${map[r.tipo] ?? "Certificado_" + r.tipo}.pdf`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
@@ -490,8 +537,7 @@ export class SearchComponent {
   getTabActivo(resultadoIndex: number, categorias: any[]): string {
     if (this.tabOffshoreActivo[resultadoIndex])
       return this.tabOffshoreActivo[resultadoIndex];
-    const primera = categorias?.find((c) => c.total > 0);
-    return primera?.tipo || "";
+    return categorias?.find((c) => c.total > 0)?.tipo || "";
   }
 
   filtrarScore100(resultados: any[]): any[] {

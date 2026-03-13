@@ -102,10 +102,18 @@ export class ConsultaService {
     );
   }
 
-  consultarContraloria(cedula: string, tipoDocumento = "CC") {
+  consultarContraloria(
+    cedula: string,
+    tipoDocumento = "CC",
+    matriculaMercantil?: string,
+  ) {
     return this.http.post<ContraloriaResult>(
       `${this.apiUrl}/api/consulta-contraloria`,
-      { cedula, tipo_documento: tipoDocumento },
+      {
+        cedula,
+        tipo_documento: tipoDocumento,
+        ...(matriculaMercantil ? { matriculaMercantil } : {}),
+      },
     );
   }
   consultarSupersociedades(razonSocial: string, pagina = 1) {
