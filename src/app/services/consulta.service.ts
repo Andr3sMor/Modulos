@@ -123,4 +123,22 @@ export class ConsultaService {
       },
     );
   }
+
+  consultarPACO(
+    identificacion: string,
+    tipo: 1 | 2 = 1,
+    opciones?: {
+      start_year?: number;
+      end_year?: number;
+      limit?: number;
+      sort?: "value" | "date";
+      order?: "desc" | "asc";
+    },
+  ) {
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-paco`, {
+      identificacion,
+      tipo,
+      ...opciones,
+    });
+  }
 }

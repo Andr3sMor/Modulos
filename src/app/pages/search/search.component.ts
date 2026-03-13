@@ -47,7 +47,10 @@ export class SearchComponent {
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
     { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
     { id: "supersociedades", nombre: "Supersociedades", activo: false },
+    { id: "paco", nombre: "Contratos PACO", activo: false },
   ];
+
+  tipoPACO: 1 | 2 = 1;
 
   constructor(
     private consultaService: ConsultaService,
@@ -349,6 +352,39 @@ export class SearchComponent {
               error: (err: any) =>
                 this.zone.run(() => {
                   this.agregarError("Supersociedades", err);
+                  resolve();
+                }),
+            });
+          break;
+
+        case "paco":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarPACO(this.cedula, this.tipoPACO)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "paco",
+                    fuente: res.fuente || "PACO – SECOP II",
+                    totalContratos: res.resumen?.totalContratos ?? 0,
+                    totalValor: res.resumen?.totalValor ?? 0,
+                    departamentos: res.resumen?.departamentos ?? [],
+                    contratoPorAno: res.resumen?.contratoPorAno ?? {},
+                    entidades: res.entidades ?? [],
+                    contratos: res.contratos ?? [],
+                    portalUrl: res.portalUrl,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("PACO", err);
                   resolve();
                 }),
             });

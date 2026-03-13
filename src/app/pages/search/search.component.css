@@ -827,3 +827,68 @@ select.field-input { cursor: pointer; }
   background: #f3f4f6;
   color: #374151;
 }
+/* ══ PACO ══════════════════════════════════════════════════════ */
+.paco-resumen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.paco-stat {
+  background: #f8f9fa;
+  border-radius: 8px;
+  padding: 10px 16px;
+  min-width: 130px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.paco-stat-label {
+  font-size: 11px;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.paco-stat-valor {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.paco-tabla-wrapper {
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+
+.paco-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.paco-tabla th {
+  text-align: left;
+  padding: 8px 10px;
+  font-weight: 500;
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+  white-space: nowrap;
+}
+
+.paco-tabla td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: top;
+}
+
+.paco-tabla tr:last-child td { border-bottom: none; }
+
+.paco-objeto  { max-width: 280px; font-size: 12px; color: #374151; }
+.paco-entidad { max-width: 180px; font-size: 12px; color: #374151; }
+.paco-valor   { white-space: nowrap; font-weight: 500; color: #059669; }
+.paco-fecha   { white-space: nowrap; font-size: 12px; color: #6b7280; }
+
+.paco-footer { margin-top: 8px; }

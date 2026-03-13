@@ -266,6 +266,16 @@
             >
               🏢 {{ r.totalRegistros }} empresa(s) encontrada(s)
             </span>
+
+            <!-- PACO -->
+            <span
+              *ngIf="r.tipo === 'paco'"
+              class="status-badge"
+              [class.badge-success]="r.totalContratos === 0"
+              [class.badge-neutral]="r.totalContratos > 0"
+            >
+              📋 {{ r.totalContratos }} contrato(s) en SECOP II
+            </span>
           </div>
         </div>
 
@@ -673,6 +683,68 @@
         </div>
       </div>
     </div>
+
+          <!-- ══ PACO ═══════════════════════════════════════════ -->
+          <div *ngIf="r.tipo === 'paco'" class="paco-informe">
+
+            <div *ngIf="r.totalContratos === 0" class="sin-resultados">
+              ✅ No se encontraron contratos en SECOP II para esta identificación.
+            </div>
+
+            <ng-container *ngIf="r.totalContratos > 0">
+
+              <div class="paco-resumen">
+                <div class="paco-stat">
+                  <span class="paco-stat-label">Total contratos</span>
+                  <span class="paco-stat-valor">{{ r.totalContratos }}</span>
+                </div>
+                <div class="paco-stat">
+                  <span class="paco-stat-label">Valor total</span>
+                  <span class="paco-stat-valor">${{ r.totalValor | number:'1.0-0' }}</span>
+                </div>
+                <div class="paco-stat">
+                  <span class="paco-stat-label">Entidades</span>
+                  <span class="paco-stat-valor">{{ r.entidades?.length }}</span>
+                </div>
+                <div class="paco-stat" *ngIf="r.departamentos?.length">
+                  <span class="paco-stat-label">Departamentos</span>
+                  <span class="paco-stat-valor">{{ r.departamentos?.join(', ') }}</span>
+                </div>
+              </div>
+
+              <div class="paco-tabla-wrapper">
+                <table class="paco-tabla">
+                  <thead>
+                    <tr>
+                      <th>Entidad</th>
+                      <th>Objeto</th>
+                      <th>Valor</th>
+                      <th>Inicio</th>
+                      <th>Fin</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr *ngFor="let c of r.contratos">
+                      <td class="paco-entidad">{{ c.entity }}</td>
+                      <td class="paco-objeto">{{ c.object }}</td>
+                      <td class="paco-valor">${{ c.value | number:'1.0-0' }}</td>
+                      <td class="paco-fecha">{{ c.contract_start_date | date:'dd/MM/yyyy' }}</td>
+                      <td class="paco-fecha">{{ c.contract_end_date | date:'dd/MM/yyyy' }}</td>
+                      <td><a [href]="c.url" target="_blank" class="meta-link">Ver →</a></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="paco-footer">
+                <a [href]="r.portalUrl" target="_blank" class="btn-pdf">
+                  🌐 Ver perfil completo en PACO →
+                </a>
+              </div>
+
+            </ng-container>
+          </div>
 
     <!-- Captcha resolver modal -->
     <app-captcha-resolver
