@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 const https = require("https");
-const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
+const pdfjsLib = require("pdfjs-dist");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const BASE_URL =
