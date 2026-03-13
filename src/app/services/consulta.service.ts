@@ -1,5 +1,6 @@
 import { Injectable } from "@angular/core";
 import { HttpClient } from "@angular/common/http";
+import { Observable } from "rxjs";
 
 export interface AntecedentesResult {
   fuente: string;
@@ -42,28 +43,54 @@ export class ConsultaService {
     cedula: string,
     tipoDocumento = "Cédula de Ciudadanía",
   ) {
-    return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/consulta-antecedentes`,
-      { cedula, tipoDocumento },
-    );
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-antecedentes`, {
+      cedula,
+      tipoDocumento,
+    });
   }
 
-  consultarAntecedentesConToken(
-    cedula: string,
-    tipoDocumento: string,
-    recaptchaToken: string,
-  ) {
-    return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/consulta-antecedentes`,
-      { cedula, tipoDocumento, recaptchaToken },
-    );
-  }
+  /**
+   * Suscribe al stream SSE para recibir el resultado cuando el usuario
+   * resuelve el CAPTCHA manualmente en el navegador abierto por el backend.
+   * Emite { tipo: 'resultado' | 'error', datos: any }
+   */
+  suscribirCaptchaStatus(
+    sessionId: string,
+  ): Observable<{ tipo: string; datos: any }> {
+    return new Observable((observer) => {
+      const url = `${this.apiUrl}/api/captcha-status/${sessionId}`;
+      const source = new EventSource(url, { withCredentials: true });
 
-  resolverCaptcha(sessionId: string, token: string) {
-    return this.http.post<AntecedentesResult>(
-      `${this.apiUrl}/api/resolver-captcha`,
-      { sessionId, token },
-    );
+      source.addEventListener("resultado", (e: any) => {
+        observer.next({ tipo: "resultado", datos: JSON.parse(e.data) });
+        source.close();
+        observer.complete();
+      });
+
+      source.addEventListener("error", (e: any) => {
+        try {
+          observer.next({
+            tipo: "error",
+            datos: JSON.parse((e as any).data || "{}"),
+          });
+        } catch (_) {
+          observer.next({
+            tipo: "error",
+            datos: { error: "Error desconocido en SSE" },
+          });
+        }
+        source.close();
+        observer.complete();
+      });
+
+      // onerror del EventSource se dispara también por keepalive — no cerramos aquí
+      source.onerror = () => {
+        console.warn("[SSE] Evento onerror recibido (puede ser keepalive)");
+      };
+
+      // Cleanup al desubscribir
+      return () => source.close();
+    });
   }
 
   consultarProcuraduria(
@@ -116,6 +143,7 @@ export class ConsultaService {
       },
     );
   }
+
   consultarSupersociedades(razonSocial: string, pagina = 1) {
     return this.http.post<any>(`${this.apiUrl}/api/consulta-supersociedades`, {
       razonSocial,
@@ -126,9 +154,7 @@ export class ConsultaService {
   consultarSupersociedadesNit(nit: number | string) {
     return this.http.post<any>(
       `${this.apiUrl}/api/consulta-supersociedades-nit`,
-      {
-        nit,
-      },
+      { nit },
     );
   }
 

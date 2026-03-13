@@ -948,3 +948,16 @@ select.field-input { cursor: pointer; }
   font-weight: 400;
   margin-left: 4px;
 }
+
+.alert-captcha-manual {
+  margin: 0 32px 16px;
+  padding: 14px 18px;
+  background: #faf5ff;
+  border: 1px solid #d8b4fe;
+  border-radius: 8px;
+  color: #6d28d9;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

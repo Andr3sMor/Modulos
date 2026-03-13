@@ -13,17 +13,6 @@ const contraloriaController = require("./controllers/contraloria.controller");
 const supersociedadesController = require("./controllers/supersociedades.controller");
 const pacoController = require("./controllers/paco.controller");
 
-console.log("jcc:", typeof jccController.consultarContador);
-console.log("reg:", typeof regController.consultarCedula);
-console.log("policia:", typeof policiaController.consultarAntecedentes);
-console.log("offshore:", typeof offshoreController.consultarOffshore);
-console.log(
-  "procuraduria:",
-  typeof procuraduriaController.consultarProcuraduria,
-);
-console.log("gemini:", typeof geminiController.buscarPersonaConIA);
-console.log("rama:", typeof ramaJudicialController.consultarRamaJudicial);
-
 const corsOptions = {
   origin: [
     "https://andr3smor.github.io",
@@ -41,6 +30,7 @@ app.use(express.json());
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
+app.get("/api/captcha-status/:sessionId", policiaController.captchaStatus); // ← SSE nuevo
 app.post("/api/consulta-offshore", offshoreController.consultarOffshore);
 app.post(
   "/api/consulta-procuraduria",
@@ -55,7 +45,6 @@ app.post(
   "/api/consulta-contraloria",
   contraloriaController.consultarContraloria,
 );
-
 app.post(
   "/api/consulta-supersociedades",
   supersociedadesController.consultarSociedades,
@@ -64,7 +53,6 @@ app.post(
   "/api/consulta-supersociedades-nit",
   supersociedadesController.consultarDetallePorNit,
 );
-
 app.post("/api/consulta-paco", pacoController.consultarPACO);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
