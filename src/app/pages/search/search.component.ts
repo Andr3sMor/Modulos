@@ -332,7 +332,22 @@ export class SearchComponent {
     for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
     const blob = new Blob([arr], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
+
+    const nombreArchivo: { [key: string]: string } = {
+      procuraduria: "Certificado_Procuraduria",
+      contraloria: "Certificado_Contraloria",
+      antecedentes: "Certificado_Policia",
+      registraduria: "Certificado_Registraduria",
+      ramaJudicial: "Certificado_Rama_Judicial",
+      offshore: "Certificado_Offshore",
+      contador: "Certificado_JCC",
+    };
+
+    const nombre = nombreArchivo[r.tipo] ?? `Certificado_${r.tipo}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${nombre}.pdf`;
+    a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
