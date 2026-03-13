@@ -26,10 +26,11 @@
  *   a.click();
  *
  * TIPOS DE CAPTCHA SOPORTADOS:
- *  1. Matemático:        "¿ CUANTO ES 5 + 3 ?"
- *  2. Geográfico:        "¿ CAPITAL DE COLOMBIA ?"
- *  3. Nombre:            "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE?"
- *  4. Últimos dígitos:   "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO?"
+ *  1. Matemático:          "¿ CUANTO ES 5 + 3 ?"
+ *  2. Geográfico:          "¿ CAPITAL DE COLOMBIA ?"
+ *  3. Nombre:              "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE?"
+ *  4. Últimos dígitos:     "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO?"
+ *  5. Primeros dígitos:    "¿ ESCRIBA LOS TRES PRIMEROS DIGITOS DEL DOCUMENTO A CONSULTAR?"
  */
 
 const puppeteer = require("puppeteer-core");
@@ -182,7 +183,33 @@ function resolverCaptcha(textoCrudo, nombre = "", cedula = "") {
     return String(r);
   }
 
-  // 2. Últimos N dígitos del documento
+  // 2a. Primeros N dígitos del documento
+  const primDigitosRe =
+    /PRIMEROS?\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*DIGITOS?/i;
+  const primDigitosMatch = texto.match(primDigitosRe);
+  if (
+    primDigitosMatch ||
+    texto.includes("PRIMEROS DIGITOS") ||
+    texto.includes("PRIMER DIGITO") ||
+    (texto.includes("PRIMEROS") &&
+      texto.includes("DIGITOS") &&
+      texto.includes("DOCUMENTO"))
+  ) {
+    const MAP_N = { UN: 1, UNO: 1, DOS: 2, TRES: 3, CUATRO: 4, CINCO: 5 };
+    let n = 3;
+    if (primDigitosMatch) {
+      const raw = primDigitosMatch[1].toUpperCase();
+      n = MAP_N[raw] !== undefined ? MAP_N[raw] : parseInt(raw) || 3;
+    }
+    if (cedula && String(cedula).length >= n) {
+      const r = String(cedula).substring(0, n);
+      console.log(`✅ Captcha dígitos: primeros ${n} de "${cedula}" → "${r}"`);
+      return r;
+    }
+    return "__CEDULA_REQUERIDA__";
+  }
+
+  // 2b. Últimos N dígitos del documento
   const digitosRe = /ULTIMOS?\s*(\d+|DOS|TRES|CUATRO|CINCO|UN|UNO)\s*DIGITOS?/i;
   const digitosMatch = texto.match(digitosRe);
   if (
