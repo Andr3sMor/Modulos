@@ -1,760 +1,500 @@
-<div class="page-wrapper">
-  <div class="main-card">
-    <div class="card-header">
-      <h2 class="card-title">Consulta de Información</h2>
-      <p class="card-subtitle">
-        Verifique información en bases de datos oficiales y registros
-        internacionales
-      </p>
-    </div>
+import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
+import { CommonModule } from "@angular/common";
+import { FormsModule } from "@angular/forms";
+import { ConsultaService } from "../../services/consulta.service";
+import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
-    <div class="search-section">
-      <h3 class="section-title">Datos de Búsqueda</h3>
+@Component({
+  selector: "app-search",
+  standalone: true,
+  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
+  templateUrl: "./search.component.html",
+  styleUrls: ["./search.component.css"],
+})
+export class SearchComponent {
+  cedula = "";
+  nombre = "";
+  apellido = "";
+  razonSocial = "";
+  cargando = false;
+  error = "";
+  resultados: any[] = [];
+  tabOffshoreActivo: { [key: string]: string } = {};
 
-      <div class="fields-row">
-        <div class="field-group">
-          <label class="field-label">Número de Identificación</label>
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="cedula"
-            placeholder="Ej: 12345678"
-            (keyup.enter)="ejecutarConsulta()"
-          />
-        </div>
-        <div class="field-group">
-          <label class="field-label">Nombre(s)</label>
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="nombre"
-            placeholder="Ej: Carlos Andrés"
-            (keyup.enter)="ejecutarConsulta()"
-          />
-        </div>
-        <div class="field-group">
-          <label class="field-label"
-            >Razón Social
-            <span class="field-hint">(Supersociedades)</span></label
-          >
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="razonSocial"
-            placeholder="Ej: Alqueria S.A.S"
-            (keyup.enter)="ejecutarConsulta()"
-          />
-        </div>
-        <div class="field-group">
-          <label class="field-label">Apellido(s)</label>
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="apellido"
-            placeholder="Ej: García López"
-            (keyup.enter)="ejecutarConsulta()"
-          />
-        </div>
-      </div>
+  captchaData: { sessionId: string } | null = null;
+  supersociedadesEmpresas: any[] = [];
+  supersociedadesDetalle: any | null = null;
+  cargandoDetalle = false;
 
-      <div class="action-row">
-        <div class="field-group field-small">
-          <label class="field-label">Tipo de Documento</label>
-          <select class="field-input" [(ngModel)]="tipoDocumento">
-            <option *ngFor="let tipo of tiposDocumento" [value]="tipo">
-              {{ tipo }}
-            </option>
-          </select>
-        </div>
+  analisisIA = "";
+  cargandoIA = false;
+  errorIA = "";
 
-        <div class="field-group field-large">
-          <label class="field-label">Servicios a consultar</label>
-          <div class="checkboxes-grid">
-            <label class="checkbox-item" *ngFor="let svc of servicios">
-              <input type="checkbox" [(ngModel)]="svc.activo" />
-              <span class="checkbox-label">{{ svc.nombre }}</span>
-            </label>
-          </div>
-        </div>
+  tipoDocumento = "Cédula de Ciudadanía";
+  tiposDocumento = [
+    "Cédula de Ciudadanía",
+    "Cédula de Extranjería",
+    "Pasaporte",
+    "Documento País Origen",
+  ];
 
-        <div class="field-group field-btn">
-          <label class="field-label">&nbsp;</label>
-          <button
-            class="btn-search"
-            (click)="ejecutarConsulta()"
-            [disabled]="cargando || cargandoIA"
-          >
-            <span *ngIf="!cargando && !cargandoIA">🔍 Consultar</span>
-            <span *ngIf="cargando || cargandoIA" class="loading-text">
-              <span class="spinner"></span> Buscando...
-            </span>
-          </button>
-        </div>
-      </div>
-    </div>
+  servicios = [
+    { id: "registraduria", nombre: "Registraduría", activo: true },
+    { id: "contador", nombre: "Contador JCC", activo: false },
+    { id: "antecedentes", nombre: "Policía", activo: false },
+    { id: "procuraduria", nombre: "Procuraduría", activo: false },
+    { id: "contraloria", nombre: "Contraloría", activo: false },
+    { id: "offshore", nombre: "Offshore ICIJ", activo: false },
+    { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
+    { id: "supersociedades", nombre: "Supersociedades", activo: false },
+    { id: "paco", nombre: "Contratos PACO", activo: false },
+  ];
 
-    <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
+  tipoPACO: 1 | 2 = 1;
 
-    <!-- ═══════════════════════════════════════════════════════════
-         BLOQUE GEMINI AI
-         ═══════════════════════════════════════════════════════════ -->
-    <div
-      *ngIf="cargandoIA || analisisIA || errorIA"
-      class="results-section gemini-section"
-    >
-      <h3 class="section-title">Análisis Gemini AI</h3>
+  constructor(
+    private consultaService: ConsultaService,
+    private zone: NgZone,
+    private cdr: ChangeDetectorRef,
+  ) {}
 
-      <div class="result-card gemini-card">
-        <div class="result-header">
-          <span class="source-badge gemini-badge"
-            >Gemini AI · Búsqueda en Internet</span
-          >
-          <span *ngIf="cargandoIA" class="gemini-status">
-            <span class="spinner spinner-purple"></span> Buscando sobre "{{
-              nombre
-            }}"...
-          </span>
-          <span
-            *ngIf="analisisIA && !cargandoIA"
-            class="status-badge badge-success"
-          >
-            ✅ Análisis listo
-          </span>
-        </div>
+  ejecutarConsulta() {
+    const activos = this.servicios.filter((s) => s.activo);
+    if (!activos.length) {
+      this.error = "Selecciona al menos un servicio.";
+      return;
+    }
+    if (!this.cedula && !this.nombre) {
+      this.error = "Ingresa al menos un dato.";
+      return;
+    }
 
-        <div class="result-body">
-          <div *ngIf="cargandoIA" class="gemini-loading">
-            <div class="gemini-loading-text">
-              Gemini está consultando fuentes públicas de internet sobre
-              <strong>"{{ nombre }}"</strong>. Esto puede tomar unos segundos...
-            </div>
-          </div>
-          <div *ngIf="errorIA && !cargandoIA" class="gemini-error">
-            ⚠️ {{ errorIA }}
-          </div>
-          <div *ngIf="analisisIA && !cargandoIA" class="gemini-content">
-            {{ analisisIA }}
-          </div>
-        </div>
-      </div>
-    </div>
+    this.error = "";
+    this.resultados = [];
+    this.analisisIA = "";
+    this.errorIA = "";
+    this.supersociedadesEmpresas = [];
+    this.supersociedadesDetalle = null;
 
-    <!-- ═══════════════════════════════════════════════════════════
-         RESULTADOS BASES DE DATOS OFICIALES
-         ═══════════════════════════════════════════════════════════ -->
-    <div *ngIf="resultados.length > 0" class="results-section">
-      <h3 class="section-title">Resultados de Bases de Datos Oficiales</h3>
+    if (this.nombre.trim()) {
+      this.cargandoIA = true;
+      this.cdr.detectChanges();
 
-      <div *ngFor="let r of resultados; let i = index" class="result-card">
-        <div class="result-header">
-          <div class="result-source">
-            <span class="source-badge">{{ r.fuente }}</span>
-          </div>
-          <div class="result-badges">
-            <!-- Registraduría -->
-            <span
-              *ngIf="r.tipo === 'registraduria'"
-              class="status-badge"
-              [class.badge-success]="
-                r.data?.vigencia?.toUpperCase()?.includes('VIGENTE')
-              "
-              [class.badge-danger]="
-                !r.data?.vigencia?.toUpperCase()?.includes('VIGENTE')
-              "
-            >
-              {{ r.data?.vigencia }}
-            </span>
+      this.consultaService.buscarPersonaConIA(this.nombre).subscribe({
+        next: (res: any) => {
+          this.zone.run(() => {
+            this.analisisIA = res.analisis;
+            this.cargandoIA = false;
+            this.cdr.detectChanges();
+          });
+        },
+        error: () => {
+          this.zone.run(() => {
+            this.errorIA = "No se pudo obtener el análisis de IA.";
+            this.cargandoIA = false;
+            this.cdr.detectChanges();
+          });
+        },
+      });
+    }
 
-            <!-- Contador -->
-            <span
-              *ngIf="r.tipo === 'contador'"
-              [class]="
-                r.esContador
-                  ? 'status-badge badge-success'
-                  : 'status-badge badge-neutral'
-              "
-            >
-              {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
-            </span>
+    this.cargando = true;
+    const tareas = activos.map((s) => this.llamarServicio(s.id));
+    Promise.allSettled(tareas).then(() => {
+      this.zone.run(() => {
+        this.cargando = false;
+        this.cdr.detectChanges();
+      });
+    });
+  }
 
-            <!-- Antecedentes -->
-            <span
-              *ngIf="r.tipo === 'antecedentes'"
-              [class]="
-                r.tieneAntecedentes
-                  ? 'status-badge badge-danger'
-                  : 'status-badge badge-success'
-              "
-            >
-              {{
-                r.tieneAntecedentes
-                  ? "⚠️ Registra antecedentes"
-                  : "✅ Sin antecedentes"
-              }}
-            </span>
+  private llamarServicio(id: string): Promise<void> {
+    return new Promise((resolve) => {
+      switch (id) {
+        case "registraduria":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService.verificarCedula(this.cedula).subscribe({
+            next: (res: any) =>
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "registraduria",
+                  fuente: "Registraduría Nacional",
+                  data: {
+                    vigencia: res.data?.vigencia || res.vigencia,
+                    codigo: res.data?.codigo,
+                    fecha: new Date().toLocaleString(),
+                  },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              }),
+            error: (err: any) =>
+              this.zone.run(() => {
+                this.agregarError("Registraduría", err);
+                resolve();
+              }),
+          });
+          break;
 
-            <!-- Procuraduría -->
-            <span
-              *ngIf="r.tipo === 'procuraduria'"
-              [class]="
-                r.tieneSanciones
-                  ? 'status-badge badge-danger'
-                  : 'status-badge badge-success'
-              "
-            >
-              {{
-                r.tieneSanciones ? "⚠️ Registra sanciones" : "✅ Sin sanciones"
-              }}
-            </span>
+        case "contador":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService.verificarContador(this.cedula).subscribe({
+            next: (res: any) =>
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "contador",
+                  fuente: "Junta Central de Contadores",
+                  esContador: res.esContador,
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              }),
+            error: (err: any) =>
+              this.zone.run(() => {
+                this.agregarError("Contador JCC", err);
+                resolve();
+              }),
+          });
+          break;
 
-            <!-- Contraloría -->
-            <span
-              *ngIf="r.tipo === 'contraloria'"
-              [class]="
-                r.tieneFiscal === true
-                  ? 'status-badge badge-danger'
-                  : r.tieneFiscal === false
-                    ? 'status-badge badge-success'
-                    : 'status-badge badge-neutral'
-              "
-            >
-              {{
-                r.tieneFiscal === true
-                  ? "⚠️ Reportado como responsable fiscal"
-                  : r.tieneFiscal === false
-                    ? "✅ Sin responsabilidad fiscal"
-                    : "ℹ️ Consulta realizada"
-              }}
-            </span>
+        case "antecedentes":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarAntecedentes(this.cedula, this.tipoDocumento)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  if (res.requiereCaptcha) {
+                    this.captchaData = { sessionId: res.sessionId };
+                    this.cdr.detectChanges();
+                    (this as any)._pendingCaptchaResolve = resolve;
+                  } else {
+                    this.resultados.push({
+                      tipo: "antecedentes",
+                      fuente: res.fuente || "Policía Nacional de Colombia",
+                      tieneAntecedentes: res.tieneAntecedentes,
+                      mensaje: res.mensaje,
+                      data: { fecha: new Date().toLocaleString() },
+                    });
+                    this.cdr.detectChanges();
+                    resolve();
+                  }
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Policía Nacional", err);
+                  resolve();
+                }),
+            });
+          break;
 
-            <!-- Offshore -->
-            <span
-              *ngIf="r.tipo === 'offshore'"
-              [class]="
-                r.tieneRegistros
-                  ? 'status-badge badge-danger'
-                  : 'status-badge badge-success'
-              "
-            >
-              {{
-                r.tieneRegistros
-                  ? "⚠️ " + r.totalResultados + " coincidencia(s) exacta(s)"
-                  : "✅ Sin registros"
-              }}
-            </span>
+        case "procuraduria":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarProcuraduria(
+              this.cedula,
+              this.tipoDocumento,
+              "1",
+              this.nombre,
+            )
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "procuraduria",
+                    fuente: "Procuraduría General de la Nación",
+                    tieneSanciones: res.tieneSanciones,
+                    sinSanciones: res.sinSanciones,
+                    mensaje: res.mensaje,
+                    pdfBase64: res.pdfBase64 || null,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Procuraduría", err);
+                  resolve();
+                }),
+            });
+          break;
 
-            <!-- Rama Judicial -->
-            <span
-              *ngIf="r.tipo === 'ramaJudicial'"
-              [class]="
-                r.totalAlertas > 0
-                  ? 'status-badge badge-danger'
-                  : 'status-badge badge-success'
-              "
-            >
-              {{
-                r.totalAlertas > 0
-                  ? "⚠️ " + r.totalAlertas + " ciudad(es) con procesos"
-                  : "✅ Sin procesos activos"
-              }}
-            </span>
+        case "contraloria":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarContraloria(this.cedula, this.tipoDocumento)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "contraloria",
+                    fuente: res.fuente || "Contraloría General de la República",
+                    tieneFiscal: res.data?.tieneFiscal ?? null,
+                    mensaje: res.data?.mensaje || "",
+                    pdfBase64: res.data?.pdfBase64 || null,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Contraloría", err);
+                  resolve();
+                }),
+            });
+          break;
 
-            <!-- Supersociedades -->
-            <span
-              *ngIf="r.tipo === 'supersociedades'"
-              class="status-badge badge-neutral"
-            >
-              🏢 {{ r.totalRegistros }} empresa(s) encontrada(s)
-            </span>
+        case "offshore":
+          if (!this.nombre) {
+            resolve();
+            return;
+          }
+          this.consultaService.consultarOffshore(this.nombre).subscribe({
+            next: (res: any) =>
+              this.zone.run(() => {
+                const categorias = res.categorias || [];
+                const total100 = categorias.reduce(
+                  (acc: number, cat: any) =>
+                    acc +
+                    cat.resultados.filter((o: any) => o.score === 100).length,
+                  0,
+                );
+                this.resultados.push({
+                  tipo: "offshore",
+                  fuente: "ICIJ Offshore Leaks",
+                  tieneRegistros: total100 > 0,
+                  totalResultados: total100,
+                  categorias,
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              }),
+            error: (err: any) =>
+              this.zone.run(() => {
+                this.agregarError("Offshore ICIJ", err);
+                resolve();
+              }),
+          });
+          break;
 
-            <!-- PACO -->
-            <span
-              *ngIf="r.tipo === 'paco'"
-              class="status-badge"
-              [class.badge-success]="r.totalContratos === 0"
-              [class.badge-neutral]="r.totalContratos > 0"
-            >
-              📋 {{ r.totalContratos }} contrato(s) en SECOP II
-            </span>
-          </div>
-        </div>
+        case "ramaJudicial":
+          if (!this.cedula && !this.apellido) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarRamaJudicial({
+              cedula: this.cedula || undefined,
+              nombres: this.nombre || undefined,
+              apellidos: this.apellido || undefined,
+            })
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "ramaJudicial",
+                    fuente: res.fuente || "Rama Judicial de Colombia",
+                    totalAlertas: res.totalAlertas,
+                    totalCiudades: res.totalCiudades,
+                    ciudades: res.ciudades || [],
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Rama Judicial", err);
+                  resolve();
+                }),
+            });
+          break;
 
-        <div class="result-body">
-          <div class="result-grid">
-            <div
-              class="result-item"
-              *ngIf="
-                r.data?.vigencia &&
-                r.tipo !== 'contador' &&
-                r.tipo !== 'antecedentes' &&
-                r.tipo !== 'offshore'
-              "
-            >
-              <span class="item-label">Estado</span>
-              <span class="item-value">{{ r.data?.vigencia }}</span>
-            </div>
+        case "supersociedades":
+          if (!this.razonSocial.trim()) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarSupersociedades(this.razonSocial.trim())
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.supersociedadesEmpresas = res.data || [];
+                  this.resultados.push({
+                    tipo: "supersociedades",
+                    fuente: "Superintendencia de Sociedades",
+                    totalRegistros: res.totalRegistros || 0,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Supersociedades", err);
+                  resolve();
+                }),
+            });
+          break;
 
-            <div class="result-item" *ngIf="r.data?.codigo">
-              <span class="item-label">Código</span>
-              <span class="item-value">{{ r.data?.codigo }}</span>
-            </div>
+        case "paco":
+          if (!this.cedula) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarPACO(this.cedula, this.tipoPACO)
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.resultados.push({
+                    tipo: "paco",
+                    fuente: res.fuente || "PACO – SECOP II",
+                    totalContratos: res.resumen?.totalContratos ?? 0,
+                    totalValor: res.resumen?.totalValor ?? 0,
+                    departamentos: res.resumen?.departamentos ?? [],
+                    contratoPorAno: res.resumen?.contratoPorAno ?? {},
+                    entidades: res.entidades ?? [],
+                    contratos: res.contratos ?? [],
+                    portalUrl: res.portalUrl,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("PACO", err);
+                  resolve();
+                }),
+            });
+          break;
 
-            <div
-              class="result-item"
-              *ngIf="r.mensaje && r.tipo === 'antecedentes'"
-            >
-              <span class="item-label">Resultado</span>
-              <span class="item-value">{{ r.mensaje }}</span>
-            </div>
+        default:
+          resolve();
+      }
+    });
+  }
 
-            <div class="result-item" *ngIf="r.tipo === 'procuraduria'">
-              <span class="item-label">Resultado</span>
-              <span class="item-value">{{ r.mensaje }}</span>
-            </div>
+  seleccionarEmpresa(nit: number) {
+    this.cargandoDetalle = true;
+    this.supersociedadesDetalle = null;
+    this.cdr.detectChanges();
 
-            <div
-              class="result-item"
-              *ngIf="r.tipo === 'procuraduria' && r.pdfBase64"
-            >
-              <span class="item-label">Certificado</span>
-              <span class="item-value">
-                <button (click)="descargarCertificado(r)" class="btn-pdf">
-                  📄 Ver certificado →
-                </button>
-              </span>
-            </div>
+    this.consultaService.consultarSupersociedadesNit(nit).subscribe({
+      next: (res: any) =>
+        this.zone.run(() => {
+          this.supersociedadesDetalle = res.data;
+          this.cargandoDetalle = false;
+          this.cdr.detectChanges();
+        }),
+      error: () =>
+        this.zone.run(() => {
+          this.cargandoDetalle = false;
+          this.cdr.detectChanges();
+        }),
+    });
+  }
 
-            <!-- Contraloría — mensaje fiscal -->
-            <div class="result-item" *ngIf="r.tipo === 'contraloria'">
-              <span class="item-label">Resultado</span>
-              <span class="item-value">{{ r.mensaje }}</span>
-            </div>
+  descargarCertificado(r: any): void {
+    if (!r.pdfBase64) return;
+    const bytes = atob(r.pdfBase64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const blob = new Blob([arr], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
 
-            <!-- Contraloría — botón de descarga -->
-            <div
-              class="result-item"
-              *ngIf="r.tipo === 'contraloria' && r.pdfBase64"
-            >
-              <span class="item-label">Certificado</span>
-              <span class="item-value">
-                <button (click)="descargarCertificado(r)" class="btn-pdf">
-                  📄 Descargar certificado →
-                </button>
-              </span>
-            </div>
+    const nombreArchivo: { [key: string]: string } = {
+      procuraduria: "Certificado_Procuraduria",
+      contraloria: "Certificado_Contraloria",
+      antecedentes: "Certificado_Policia",
+      registraduria: "Certificado_Registraduria",
+      ramaJudicial: "Certificado_Rama_Judicial",
+      offshore: "Certificado_Offshore",
+      contador: "Certificado_JCC",
+    };
 
-            <div class="result-item" *ngIf="r.data?.fecha">
-              <span class="item-label">Fecha consulta</span>
-              <span class="item-value">{{ r.data?.fecha }}</span>
-            </div>
-          </div>
+    const nombre = nombreArchivo[r.tipo] ?? `Certificado_${r.tipo}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${nombre}.pdf`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
 
-          <!-- ══ SUPERSOCIEDADES ══════════════════════════════════ -->
-          <div *ngIf="r.tipo === 'supersociedades'" class="supersoc-container">
-            <!-- Sin resultados -->
-            <div *ngIf="r.totalRegistros === 0" class="sin-resultados">
-              No se encontraron empresas con esa razón social.
-            </div>
+  onCaptchaResuelto(resultado: any) {
+    this.captchaData = null;
+    this.zone.run(() => {
+      this.resultados.push({
+        tipo: "antecedentes",
+        fuente: resultado.fuente || "Policía Nacional de Colombia",
+        tieneAntecedentes: resultado.tieneAntecedentes,
+        mensaje: resultado.mensaje,
+        data: { fecha: new Date().toLocaleString() },
+      });
+      this.cdr.detectChanges();
+      const res = (this as any)._pendingCaptchaResolve;
+      if (res) {
+        res();
+        (this as any)._pendingCaptchaResolve = null;
+      }
+    });
+  }
 
-            <!-- Lista de empresas -->
-            <ng-container
-              *ngIf="
-                r.totalRegistros > 0 &&
-                !supersociedadesDetalle &&
-                !cargandoDetalle
-              "
-            >
-              <p class="supersoc-hint">
-                Selecciona una empresa para ver el detalle e información de
-                insolvencia.
-              </p>
-              <div class="supersoc-lista">
-                <div
-                  *ngFor="let emp of supersociedadesEmpresas"
-                  class="supersoc-empresa-item"
-                  (click)="seleccionarEmpresa(emp.nit)"
-                >
-                  <div class="supersoc-empresa-info">
-                    <span class="supersoc-razon">{{ emp.razonSocial }}</span>
-                    <span class="supersoc-nit">NIT {{ emp.nit }}</span>
-                    <span class="supersoc-dep">{{ emp.dependencia }}</span>
-                  </div>
-                  <div class="supersoc-empresa-right">
-                    <span
-                      class="status-badge"
-                      [class.badge-success]="emp.estado === 'ACTIVA'"
-                      [class.badge-danger]="
-                        emp.estado === 'EN LIQUIDACIÓN' ||
-                        emp.estado === 'EN REORGANIZACIÓN'
-                      "
-                      [class.badge-neutral]="
-                        emp.estado !== 'ACTIVA' &&
-                        emp.estado !== 'EN LIQUIDACIÓN' &&
-                        emp.estado !== 'EN REORGANIZACIÓN'
-                      "
-                      >{{ emp.estado }}</span
-                    >
-                    <span class="supersoc-arrow">→</span>
-                  </div>
-                </div>
-              </div>
-            </ng-container>
+  onCaptchaCancelado() {
+    this.captchaData = null;
+    this.cargando = false;
+    const res = (this as any)._pendingCaptchaResolve;
+    if (res) {
+      res();
+      (this as any)._pendingCaptchaResolve = null;
+    }
+  }
 
-            <!-- Cargando detalle -->
-            <div *ngIf="cargandoDetalle" class="supersoc-loading">
-              <span class="spinner"></span> Consultando detalle...
-            </div>
+  private agregarError(fuente: string, err: any) {
+    this.resultados.push({
+      tipo: "error",
+      fuente,
+      data: {
+        vigencia: err.error?.error || "Error al consultar",
+        fecha: new Date().toLocaleString(),
+      },
+    });
+    this.cdr.detectChanges();
+  }
 
-            <!-- Detalle empresa -->
-            <div
-              *ngIf="supersociedadesDetalle && !cargandoDetalle"
-              class="supersoc-detalle"
-            >
-              <div class="supersoc-detalle-header">
-                <div>
-                  <h4 class="supersoc-detalle-razon">
-                    {{ supersociedadesDetalle.razonSocial }}
-                  </h4>
-                  <span class="supersoc-nit"
-                    >NIT {{ supersociedadesDetalle.nit }}-{{
-                      supersociedadesDetalle.digitoVerificacion
-                    }}</span
-                  >
-                </div>
-                <button
-                  class="btn-volver"
-                  (click)="supersociedadesDetalle = null"
-                >
-                  ← Volver
-                </button>
-              </div>
+  seleccionarTab(resultadoIndex: number, tab: string) {
+    this.tabOffshoreActivo[resultadoIndex] = tab;
+  }
 
-              <!-- Banner insolvencia -->
-              <div
-                class="insolvencia-banner"
-                [class.insolvencia-activa]="
-                  supersociedadesDetalle.insolvencia?.procesoActivo
-                "
-                [class.insolvencia-pasada]="
-                  supersociedadesDetalle.insolvencia?.tieneProcesoInsolvencia &&
-                  !supersociedadesDetalle.insolvencia?.procesoActivo
-                "
-                [class.insolvencia-ok]="
-                  !supersociedadesDetalle.insolvencia?.tieneProcesoInsolvencia
-                "
-              >
-                <span class="insolvencia-icono">
-                  {{
-                    supersociedadesDetalle.insolvencia?.procesoActivo
-                      ? "⚠️"
-                      : supersociedadesDetalle.insolvencia
-                            ?.tieneProcesoInsolvencia
-                        ? "📋"
-                        : "✅"
-                  }}
-                </span>
-                <div class="insolvencia-texto">
-                  <strong>
-                    {{
-                      supersociedadesDetalle.insolvencia?.procesoActivo
-                        ? "Proceso de " +
-                          supersociedadesDetalle.insolvencia?.tipoInsolvencia +
-                          " ACTIVO"
-                        : supersociedadesDetalle.insolvencia
-                              ?.tieneProcesoInsolvencia
-                          ? "Tuvo proceso de " +
-                            supersociedadesDetalle.insolvencia
-                              ?.tipoInsolvencia +
-                            " (finalizado)"
-                          : "Sin procesos de insolvencia registrados"
-                    }}
-                  </strong>
-                  <span
-                    *ngIf="supersociedadesDetalle.insolvencia?.grupoProceso"
-                    class="insolvencia-grupo"
-                  >
-                    {{ supersociedadesDetalle.insolvencia?.grupoProceso }}
-                  </span>
-                </div>
-              </div>
+  getTabActivo(resultadoIndex: number, categorias: any[]): string {
+    if (this.tabOffshoreActivo[resultadoIndex])
+      return this.tabOffshoreActivo[resultadoIndex];
+    const primera = categorias?.find((c) => c.total > 0);
+    return primera?.tipo || "";
+  }
 
-              <!-- Grid de datos -->
-              <div class="supersoc-grid">
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Estado</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.estado
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Tipo societario</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.tipoSocietario
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Expediente</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.expediente || "—"
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Actividad económica</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.actividadEconomica?.descripcion
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Ciudad</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.direccion?.ciudad
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Constitución</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.fechas?.constitucion || "—"
-                  }}</span>
-                </div>
-                <div
-                  class="supersoc-dato"
-                  *ngIf="supersociedadesDetalle.causal"
-                >
-                  <span class="supersoc-dato-label">Causal</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.causal
-                  }}</span>
-                </div>
-                <div
-                  class="supersoc-dato"
-                  *ngIf="supersociedadesDetalle.contacto?.email"
-                >
-                  <span class="supersoc-dato-label">Email</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.contacto?.email
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Revisor fiscal</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.tieneRevisorFiscal ? "Sí" : "No"
-                  }}</span>
-                </div>
-                <div class="supersoc-dato">
-                  <span class="supersoc-dato-label">Entidad IVC</span>
-                  <span class="supersoc-dato-valor">{{
-                    supersociedadesDetalle.entidadIVC
-                  }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <!-- ══ OFFSHORE ══════════════════════════════════════════ -->
-          <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
-            <div *ngIf="!r.tieneRegistros" class="sin-resultados">
-              No se encontraron registros en bases de datos offshore
-            </div>
-
-            <ng-container *ngIf="r.tieneRegistros">
-              <div class="informe-resumen">
-                <span class="informe-icono">📋</span>
-                Se encontraron
-                <strong
-                  >{{ r.totalResultados }} coincidencia(s) exacta(s)</strong
-                >
-                para <strong>"{{ nombre }}"</strong> en las bases de datos del
-                ICIJ Offshore Leaks.
-              </div>
-
-              <ng-container *ngFor="let cat of r.categorias">
-                <ng-container
-                  *ngIf="filtrarScore100(cat.resultados).length > 0"
-                >
-                  <div class="informe-categoria">
-                    <div class="categoria-header">
-                      <span class="categoria-icono">📁</span>
-                      <span class="categoria-nombre">{{ cat.nombre }}</span>
-                      <span class="categoria-count">
-                        {{ filtrarScore100(cat.resultados).length }} registro(s)
-                      </span>
-                    </div>
-
-                    <p class="categoria-descripcion">
-                      En la base de datos <strong>{{ cat.nombre }}</strong> se
-                      encontraron
-                      <strong>{{
-                        filtrarScore100(cat.resultados).length
-                      }}</strong>
-                      registro(s) con coincidencia exacta:
-                    </p>
-
-                    <div class="registros-lista">
-                      <div
-                        *ngFor="
-                          let o of filtrarScore100(cat.resultados);
-                          let j = index
-                        "
-                        class="registro-item"
-                      >
-                        <div class="registro-numero">{{ j + 1 }}</div>
-                        <div class="registro-contenido">
-                          <div class="registro-nombre">{{ o.nombre }}</div>
-                          <div class="registro-meta">
-                            <span class="meta-score-exacto"
-                              >✅ 100% coincidencia</span
-                            >
-                            <span *ngIf="o.match" class="meta-exacto"
-                              >Nombre exacto</span
-                            >
-                            <a [href]="o.url" target="_blank" class="meta-link"
-                              >Ver en ICIJ →</a
-                            >
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </ng-container>
-              </ng-container>
-            </ng-container>
-          </div>
-
-          <!-- ══ RAMA JUDICIAL ═════════════════════════════════════ -->
-          <div *ngIf="r.tipo === 'ramaJudicial'" class="rama-judicial-informe">
-            <div *ngIf="r.totalAlertas === 0" class="sin-resultados">
-              ✅ No se encontraron procesos activos confirmados en ninguna de
-              las
-              {{ r.totalCiudades }} ciudades consultadas.
-            </div>
-
-            <ng-container *ngIf="r.totalAlertas > 0">
-              <div class="informe-resumen">
-                <span class="informe-icono">⚖️</span>
-                Se confirmaron procesos activos en
-                <strong>{{ r.totalAlertas }} ciudad(es)</strong> de
-                {{ r.totalCiudades }} consultadas.
-              </div>
-
-              <div
-                *ngFor="let ciudad of r.ciudades"
-                class="rama-ciudad-item"
-                [class.rama-alerta]="ciudad.alert"
-              >
-                <div class="rama-ciudad-header">
-                  <span class="rama-ciudad-nombre">
-                    {{ ciudad.alert ? "⚠️" : "✅" }} {{ ciudad.ciudad }}
-                  </span>
-                  <span
-                    class="status-badge"
-                    [class.badge-danger]="ciudad.alert"
-                    [class.badge-success]="!ciudad.alert"
-                  >
-                    {{
-                      ciudad.alert
-                        ? ciudad.paso2_identidad?.matchedRows +
-                          " proceso(s) confirmado(s)"
-                        : "Sin procesos"
-                    }}
-                  </span>
-                </div>
-
-                <div *ngIf="ciudad.alert" class="rama-ciudad-detalle">
-                  <div class="rama-verificacion">
-                    <span class="rama-paso">Paso 1 — Estructural:</span>
-                    {{ ciudad.paso1_estructural?.reason }}
-                  </div>
-                  <div class="rama-verificacion">
-                    <span class="rama-paso">Paso 2 — Identidad:</span>
-                    {{ ciudad.paso2_identidad?.detail }}
-                  </div>
-                  <div class="rama-mensaje">{{ ciudad.mensaje }}</div>
-                  <div *ngIf="ciudad.screenshot" class="rama-screenshot">
-                    <p class="rama-screenshot-label">📸 Evidencia:</p>
-                    <img
-                      [src]="'data:image/png;base64,' + ciudad.screenshot"
-                      alt="Evidencia {{ ciudad.ciudad }}"
-                      class="rama-screenshot-img"
-                    />
-                  </div>
-                </div>
-              </div>
-            </ng-container>
-          </div>
-        </div>
-      </div>
-    </div>
-
-          <!-- ══ PACO ═══════════════════════════════════════════ -->
-          <div *ngIf="r.tipo === 'paco'" class="paco-informe">
-
-            <div *ngIf="r.totalContratos === 0" class="sin-resultados">
-              ✅ No se encontraron contratos en SECOP II para esta identificación.
-            </div>
-
-            <ng-container *ngIf="r.totalContratos > 0">
-
-              <div class="paco-resumen">
-                <div class="paco-stat">
-                  <span class="paco-stat-label">Total contratos</span>
-                  <span class="paco-stat-valor">{{ r.totalContratos }}</span>
-                </div>
-                <div class="paco-stat">
-                  <span class="paco-stat-label">Valor total</span>
-                  <span class="paco-stat-valor">${{ r.totalValor | number:'1.0-0' }}</span>
-                </div>
-                <div class="paco-stat">
-                  <span class="paco-stat-label">Entidades</span>
-                  <span class="paco-stat-valor">{{ r.entidades?.length }}</span>
-                </div>
-                <div class="paco-stat" *ngIf="r.departamentos?.length">
-                  <span class="paco-stat-label">Departamentos</span>
-                  <span class="paco-stat-valor">{{ r.departamentos?.join(', ') }}</span>
-                </div>
-              </div>
-
-              <div class="paco-tabla-wrapper">
-                <table class="paco-tabla">
-                  <thead>
-                    <tr>
-                      <th>Entidad</th>
-                      <th>Objeto</th>
-                      <th>Valor</th>
-                      <th>Inicio</th>
-                      <th>Fin</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr *ngFor="let c of r.contratos">
-                      <td class="paco-entidad">{{ c.entity }}</td>
-                      <td class="paco-objeto">{{ c.object }}</td>
-                      <td class="paco-valor">${{ c.value | number:'1.0-0' }}</td>
-                      <td class="paco-fecha">{{ c.contract_start_date | date:'dd/MM/yyyy' }}</td>
-                      <td class="paco-fecha">{{ c.contract_end_date | date:'dd/MM/yyyy' }}</td>
-                      <td><a [href]="c.url" target="_blank" class="meta-link">Ver →</a></td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div class="paco-footer">
-                <a [href]="r.portalUrl" target="_blank" class="btn-pdf">
-                  🌐 Ver perfil completo en PACO →
-                </a>
-              </div>
-
-            </ng-container>
-          </div>
-
-    <!-- Captcha resolver modal -->
-    <app-captcha-resolver
-      *ngIf="captchaData"
-      [cedula]="cedula"
-      [sessionId]="captchaData.sessionId"
-      [idType]="tipoDocumento"
-      (resuelto)="onCaptchaResuelto($event)"
-      (cancelado)="onCaptchaCancelado()"
-    >
-    </app-captcha-resolver>
-  </div>
-</div>
+  filtrarScore100(resultados: any[]): any[] {
+    return (resultados || []).filter((o) => o.score === 100);
+  }
+}
