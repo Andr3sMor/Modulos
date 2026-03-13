@@ -194,13 +194,7 @@ export class SearchComponent {
             return;
           }
           this.consultaService
-            .consultarProcuraduria(
-              this.cedula,
-              this.tipoDocumento,
-              "1",
-              this.nombre,
-              this.apellido,
-            )
+            .consultarProcuraduria(this.cedula, this.tipoDocumento)
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
