@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 const https = require("https");
-const pdfParse = require("pdf-parse/lib/pdf-parse.js");
+const pdfjsLib = require("pdfjs-dist/legacy/build/pdf.js");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const BASE_URL =
@@ -95,22 +95,31 @@ exports.consultarContraloria = async (req, res) => {
 
 async function analizarPDF(buffer) {
   try {
-    const data = await pdfParse(buffer);
-    const texto = data.text.toUpperCase();
+    // Cargar el PDF desde el buffer
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
+    const pdf = await loadingTask.promise;
 
+    // Extraer texto de todas las páginas
+    let textoCompleto = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const textoPagina = content.items.map((item) => item.str).join(" ");
+      textoCompleto += textoPagina + " ";
+    }
+
+    const texto = textoCompleto.toUpperCase();
     console.log(
       "[Contraloría] Texto extraído del PDF:",
-      data.text.substring(0, 300),
+      textoCompleto.substring(0, 300),
     );
-
-    // Detectar si tiene o no responsabilidad fiscal
-    const tieneReporte =
-      texto.includes("SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL") &&
-      !texto.includes("NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL");
 
     const noTieneReporte = texto.includes(
       "NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL",
     );
+    const tieneReporte =
+      texto.includes("SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL") &&
+      !noTieneReporte;
 
     if (noTieneReporte) {
       return {
@@ -128,10 +137,9 @@ async function analizarPDF(buffer) {
       };
     }
 
-    // Si el texto no coincide con ninguno de los patrones esperados
     console.warn(
-      "[Contraloría] No se reconoció el patrón en el PDF. Texto:",
-      data.text.substring(0, 500),
+      "[Contraloría] Patrón no reconocido. Texto:",
+      textoCompleto.substring(0, 500),
     );
     return {
       tieneFiscal: null,
