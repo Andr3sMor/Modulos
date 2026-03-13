@@ -33,6 +33,19 @@
           />
         </div>
         <div class="field-group">
+          <label class="field-label"
+            >Razón Social
+            <span class="field-hint">(Supersociedades)</span></label
+          >
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="razonSocial"
+            placeholder="Ej: Alqueria S.A.S"
+            (keyup.enter)="ejecutarConsulta()"
+          />
+        </div>
+        <div class="field-group">
           <label class="field-label">Apellido(s)</label>
           <input
             type="text"
@@ -245,6 +258,14 @@
                   : "✅ Sin procesos activos"
               }}
             </span>
+
+            <!-- Supersociedades -->
+            <span
+              *ngIf="r.tipo === 'supersociedades'"
+              class="status-badge badge-neutral"
+            >
+              🏢 {{ r.totalRegistros }} empresa(s) encontrada(s)
+            </span>
           </div>
         </div>
 
@@ -318,6 +339,206 @@
             </div>
           </div>
 
+          <!-- ══ SUPERSOCIEDADES ══════════════════════════════════ -->
+          <div *ngIf="r.tipo === 'supersociedades'" class="supersoc-container">
+            <!-- Sin resultados -->
+            <div *ngIf="r.totalRegistros === 0" class="sin-resultados">
+              No se encontraron empresas con esa razón social.
+            </div>
+
+            <!-- Lista de empresas -->
+            <ng-container
+              *ngIf="
+                r.totalRegistros > 0 &&
+                !supersociedadesDetalle &&
+                !cargandoDetalle
+              "
+            >
+              <p class="supersoc-hint">
+                Selecciona una empresa para ver el detalle e información de
+                insolvencia.
+              </p>
+              <div class="supersoc-lista">
+                <div
+                  *ngFor="let emp of supersociedadesEmpresas"
+                  class="supersoc-empresa-item"
+                  (click)="seleccionarEmpresa(emp.nit)"
+                >
+                  <div class="supersoc-empresa-info">
+                    <span class="supersoc-razon">{{ emp.razonSocial }}</span>
+                    <span class="supersoc-nit">NIT {{ emp.nit }}</span>
+                    <span class="supersoc-dep">{{ emp.dependencia }}</span>
+                  </div>
+                  <div class="supersoc-empresa-right">
+                    <span
+                      class="status-badge"
+                      [class.badge-success]="emp.estado === 'ACTIVA'"
+                      [class.badge-danger]="
+                        emp.estado === 'EN LIQUIDACIÓN' ||
+                        emp.estado === 'EN REORGANIZACIÓN'
+                      "
+                      [class.badge-neutral]="
+                        emp.estado !== 'ACTIVA' &&
+                        emp.estado !== 'EN LIQUIDACIÓN' &&
+                        emp.estado !== 'EN REORGANIZACIÓN'
+                      "
+                      >{{ emp.estado }}</span
+                    >
+                    <span class="supersoc-arrow">→</span>
+                  </div>
+                </div>
+              </div>
+            </ng-container>
+
+            <!-- Cargando detalle -->
+            <div *ngIf="cargandoDetalle" class="supersoc-loading">
+              <span class="spinner"></span> Consultando detalle...
+            </div>
+
+            <!-- Detalle empresa -->
+            <div
+              *ngIf="supersociedadesDetalle && !cargandoDetalle"
+              class="supersoc-detalle"
+            >
+              <div class="supersoc-detalle-header">
+                <div>
+                  <h4 class="supersoc-detalle-razon">
+                    {{ supersociedadesDetalle.razonSocial }}
+                  </h4>
+                  <span class="supersoc-nit"
+                    >NIT {{ supersociedadesDetalle.nit }}-{{
+                      supersociedadesDetalle.digitoVerificacion
+                    }}</span
+                  >
+                </div>
+                <button
+                  class="btn-volver"
+                  (click)="supersociedadesDetalle = null"
+                >
+                  ← Volver
+                </button>
+              </div>
+
+              <!-- Banner insolvencia -->
+              <div
+                class="insolvencia-banner"
+                [class.insolvencia-activa]="
+                  supersociedadesDetalle.insolvencia?.procesoActivo
+                "
+                [class.insolvencia-pasada]="
+                  supersociedadesDetalle.insolvencia?.tieneProcesoInsolvencia &&
+                  !supersociedadesDetalle.insolvencia?.procesoActivo
+                "
+                [class.insolvencia-ok]="
+                  !supersociedadesDetalle.insolvencia?.tieneProcesoInsolvencia
+                "
+              >
+                <span class="insolvencia-icono">
+                  {{
+                    supersociedadesDetalle.insolvencia?.procesoActivo
+                      ? "⚠️"
+                      : supersociedadesDetalle.insolvencia
+                            ?.tieneProcesoInsolvencia
+                        ? "📋"
+                        : "✅"
+                  }}
+                </span>
+                <div class="insolvencia-texto">
+                  <strong>
+                    {{
+                      supersociedadesDetalle.insolvencia?.procesoActivo
+                        ? "Proceso de " +
+                          supersociedadesDetalle.insolvencia?.tipoInsolvencia +
+                          " ACTIVO"
+                        : supersociedadesDetalle.insolvencia
+                              ?.tieneProcesoInsolvencia
+                          ? "Tuvo proceso de " +
+                            supersociedadesDetalle.insolvencia
+                              ?.tipoInsolvencia +
+                            " (finalizado)"
+                          : "Sin procesos de insolvencia registrados"
+                    }}
+                  </strong>
+                  <span
+                    *ngIf="supersociedadesDetalle.insolvencia?.grupoProceso"
+                    class="insolvencia-grupo"
+                  >
+                    {{ supersociedadesDetalle.insolvencia?.grupoProceso }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Grid de datos -->
+              <div class="supersoc-grid">
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Estado</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.estado
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Tipo societario</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.tipoSocietario
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Expediente</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.expediente || "—"
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Actividad económica</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.actividadEconomica?.descripcion
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Ciudad</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.direccion?.ciudad
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Constitución</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.fechas?.constitucion || "—"
+                  }}</span>
+                </div>
+                <div
+                  class="supersoc-dato"
+                  *ngIf="supersociedadesDetalle.causal"
+                >
+                  <span class="supersoc-dato-label">Causal</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.causal
+                  }}</span>
+                </div>
+                <div
+                  class="supersoc-dato"
+                  *ngIf="supersociedadesDetalle.contacto?.email"
+                >
+                  <span class="supersoc-dato-label">Email</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.contacto?.email
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Revisor fiscal</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.tieneRevisorFiscal ? "Sí" : "No"
+                  }}</span>
+                </div>
+                <div class="supersoc-dato">
+                  <span class="supersoc-dato-label">Entidad IVC</span>
+                  <span class="supersoc-dato-valor">{{
+                    supersociedadesDetalle.entidadIVC
+                  }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
           <!-- ══ OFFSHORE ══════════════════════════════════════════ -->
           <div *ngIf="r.tipo === 'offshore'" class="offshore-informe">
             <div *ngIf="!r.tieneRegistros" class="sin-resultados">

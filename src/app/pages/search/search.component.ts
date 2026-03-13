@@ -15,12 +15,16 @@ export class SearchComponent {
   cedula = "";
   nombre = "";
   apellido = "";
+  razonSocial = "";
   cargando = false;
   error = "";
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
 
   captchaData: { sessionId: string } | null = null;
+  supersociedadesEmpresas: any[] = [];
+  supersociedadesDetalle: any | null = null;
+  cargandoDetalle = false;
 
   analisisIA = "";
   cargandoIA = false;
@@ -42,6 +46,7 @@ export class SearchComponent {
     { id: "contraloria", nombre: "Contraloría", activo: false },
     { id: "offshore", nombre: "Offshore ICIJ", activo: false },
     { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
+    { id: "supersociedades", nombre: "Supersociedades", activo: false },
   ];
 
   constructor(
@@ -65,6 +70,8 @@ export class SearchComponent {
     this.resultados = [];
     this.analisisIA = "";
     this.errorIA = "";
+    this.supersociedadesEmpresas = [];
+    this.supersociedadesDetalle = null;
 
     if (this.nombre.trim()) {
       this.cargandoIA = true;
@@ -319,9 +326,57 @@ export class SearchComponent {
             });
           break;
 
+        case "supersociedades":
+          if (!this.razonSocial.trim()) {
+            resolve();
+            return;
+          }
+          this.consultaService
+            .consultarSupersociedades(this.razonSocial.trim())
+            .subscribe({
+              next: (res: any) =>
+                this.zone.run(() => {
+                  this.supersociedadesEmpresas = res.data || [];
+                  this.resultados.push({
+                    tipo: "supersociedades",
+                    fuente: "Superintendencia de Sociedades",
+                    totalRegistros: res.totalRegistros || 0,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
+                }),
+              error: (err: any) =>
+                this.zone.run(() => {
+                  this.agregarError("Supersociedades", err);
+                  resolve();
+                }),
+            });
+          break;
+
         default:
           resolve();
       }
+    });
+  }
+
+  seleccionarEmpresa(nit: number) {
+    this.cargandoDetalle = true;
+    this.supersociedadesDetalle = null;
+    this.cdr.detectChanges();
+
+    this.consultaService.consultarSupersociedadesNit(nit).subscribe({
+      next: (res: any) =>
+        this.zone.run(() => {
+          this.supersociedadesDetalle = res.data;
+          this.cargandoDetalle = false;
+          this.cdr.detectChanges();
+        }),
+      error: () =>
+        this.zone.run(() => {
+          this.cargandoDetalle = false;
+          this.cdr.detectChanges();
+        }),
     });
   }
 

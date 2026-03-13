@@ -612,3 +612,218 @@ select.field-input { cursor: pointer; }
   border-radius: 6px;
   display: block;
 }
+/* ── Campo hint ── */
+.field-hint {
+  font-weight: 400;
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+/* ══ SUPERSOCIEDADES ══════════════════════════════════════════════ */
+
+.supersoc-container {
+  padding: 4px 0;
+}
+
+.supersoc-hint {
+  font-size: 0.82rem;
+  color: #6b7280;
+  margin: 0 0 12px;
+}
+
+/* Lista de empresas */
+.supersoc-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.supersoc-empresa-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: white;
+}
+
+.supersoc-empresa-item:hover {
+  border-color: #2563eb;
+  background: #eff6ff;
+  box-shadow: 0 2px 8px rgba(37,99,235,0.1);
+}
+
+.supersoc-empresa-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.supersoc-razon {
+  font-weight: 600;
+  color: #111827;
+  font-size: 0.92rem;
+}
+
+.supersoc-nit {
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+.supersoc-dep {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.supersoc-empresa-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.supersoc-arrow {
+  color: #9ca3af;
+  font-size: 1rem;
+  transition: transform 0.15s;
+}
+
+.supersoc-empresa-item:hover .supersoc-arrow {
+  transform: translateX(4px);
+  color: #2563eb;
+}
+
+/* Cargando detalle */
+.supersoc-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #6b7280;
+  font-size: 0.88rem;
+  padding: 16px 0;
+}
+
+/* Detalle */
+.supersoc-detalle {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.supersoc-detalle-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.supersoc-detalle-razon {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 4px;
+}
+
+.btn-volver {
+  padding: 7px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: white;
+  color: #374151;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-volver:hover {
+  background: #f3f4f6;
+  border-color: #9ca3af;
+}
+
+/* Banner insolvencia */
+.insolvencia-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.insolvencia-activa {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.insolvencia-pasada {
+  background: #fefce8;
+  border-color: #fde68a;
+}
+
+.insolvencia-ok {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.insolvencia-icono {
+  font-size: 1.3rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.insolvencia-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.insolvencia-texto strong {
+  font-size: 0.9rem;
+  color: #111827;
+}
+
+.insolvencia-grupo {
+  font-size: 0.78rem;
+  color: #6b7280;
+}
+
+/* Grid de datos */
+.supersoc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.supersoc-dato {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  border: 1px solid #f3f4f6;
+}
+
+.supersoc-dato-label {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #9ca3af;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.supersoc-dato-valor {
+  font-size: 0.88rem;
+  color: #111827;
+  font-weight: 500;
+}
+
+/* Badge neutral ya existente, aseguramos estilo */
+.badge-neutral {
+  background: #f3f4f6;
+  color: #374151;
+}

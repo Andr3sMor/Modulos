@@ -108,4 +108,19 @@ export class ConsultaService {
       { cedula, tipo_documento: tipoDocumento },
     );
   }
+  consultarSupersociedades(razonSocial: string, pagina = 1) {
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-supersociedades`, {
+      razonSocial,
+      pagina,
+    });
+  }
+
+  consultarSupersociedadesNit(nit: number | string) {
+    return this.http.post<any>(
+      `${this.apiUrl}/api/consulta-supersociedades-nit`,
+      {
+        nit,
+      },
+    );
+  }
 }

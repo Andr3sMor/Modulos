@@ -10,6 +10,7 @@ const procuraduriaController = require("./controllers/procuraduria.controller");
 const geminiController = require("./controllers/gemini.controller");
 const ramaJudicialController = require("./controllers/rama_judicial.controller");
 const contraloriaController = require("./controllers/contraloria.controller");
+const supersociedadesController = require("./controllers/supersociedades.controller");
 
 console.log("jcc:", typeof jccController.consultarContador);
 console.log("reg:", typeof regController.consultarCedula);
@@ -52,6 +53,15 @@ app.post(
 app.post(
   "/api/consulta-contraloria",
   contraloriaController.consultarContraloria,
+);
+
+app.post(
+  "/api/consulta-supersociedades",
+  supersociedadesController.consultarSociedades,
+);
+app.post(
+  "/api/consulta-supersociedades-nit",
+  supersociedadesController.consultarDetallePorNit,
 );
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
