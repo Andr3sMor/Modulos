@@ -22,7 +22,7 @@
     "duck-duck-scrape": "^2.2.7",
     "express": "^5.2.1",
     "https-proxy-agent": "^7.0.6",
-    "pdfjs-dist": "^5.5.207",
+    "pdf2json": "^4.0.2",
     "playwright": "^1.58.2",
     "puppeteer": "^24.37.5",
     "puppeteer-core": "^24.39.0",

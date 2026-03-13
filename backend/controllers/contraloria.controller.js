@@ -2,7 +2,7 @@
 
 const axios = require("axios");
 const https = require("https");
-const pdfjsLib = require("pdfjs-dist");
+const PDFParser = require("pdf2json");
 
 const agent = new https.Agent({ rejectUnauthorized: false });
 const BASE_URL =
@@ -94,65 +94,74 @@ exports.consultarContraloria = async (req, res) => {
 // ─── Parsear PDF ──────────────────────────────────────────────────────────────
 
 async function analizarPDF(buffer) {
-  try {
-    // Cargar el PDF desde el buffer
-    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
-    const pdf = await loadingTask.promise;
+  return new Promise((resolve) => {
+    const parser = new PDFParser();
 
-    // Extraer texto de todas las páginas
-    let textoCompleto = "";
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const content = await page.getTextContent();
-      const textoPagina = content.items.map((item) => item.str).join(" ");
-      textoCompleto += textoPagina + " ";
-    }
+    parser.on("pdfParser_dataError", (err) => {
+      console.warn("[Contraloría] Error parseando PDF:", err.parserError);
+      resolve({
+        tieneFiscal: null,
+        mensaje: "No se pudo leer el certificado automáticamente.",
+      });
+    });
 
-    const texto = textoCompleto.toUpperCase();
-    console.log(
-      "[Contraloría] Texto extraído del PDF:",
-      textoCompleto.substring(0, 300),
-    );
+    parser.on("pdfParser_dataReady", (data) => {
+      try {
+        // Extraer todo el texto del PDF
+        const textoCompleto = data.Pages.flatMap((page) => page.Texts)
+          .map((t) => decodeURIComponent(t.R.map((r) => r.T).join("")))
+          .join(" ");
 
-    const noTieneReporte = texto.includes(
-      "NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL",
-    );
-    const tieneReporte =
-      texto.includes("SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL") &&
-      !noTieneReporte;
+        const texto = textoCompleto.toUpperCase();
+        console.log(
+          "[Contraloría] Texto extraído:",
+          textoCompleto.substring(0, 300),
+        );
 
-    if (noTieneReporte) {
-      return {
-        tieneFiscal: false,
-        mensaje:
-          "El número de identificación NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
-      };
-    }
+        const noTieneReporte = texto.includes(
+          "NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL",
+        );
+        const tieneReporte =
+          texto.includes("SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL") &&
+          !noTieneReporte;
 
-    if (tieneReporte) {
-      return {
-        tieneFiscal: true,
-        mensaje:
-          "El número de identificación SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
-      };
-    }
+        if (noTieneReporte) {
+          resolve({
+            tieneFiscal: false,
+            mensaje:
+              "El número de identificación NO SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
+          });
+        } else if (tieneReporte) {
+          resolve({
+            tieneFiscal: true,
+            mensaje:
+              "El número de identificación SE ENCUENTRA REPORTADO COMO RESPONSABLE FISCAL.",
+          });
+        } else {
+          console.warn(
+            "[Contraloría] Patrón no reconocido. Texto:",
+            textoCompleto.substring(0, 500),
+          );
+          resolve({
+            tieneFiscal: null,
+            mensaje:
+              "No se pudo determinar el estado fiscal. Descarga el certificado para revisarlo manualmente.",
+          });
+        }
+      } catch (e) {
+        console.warn(
+          "[Contraloría] Error procesando texto del PDF:",
+          e.message,
+        );
+        resolve({
+          tieneFiscal: null,
+          mensaje: "No se pudo leer el certificado automáticamente.",
+        });
+      }
+    });
 
-    console.warn(
-      "[Contraloría] Patrón no reconocido. Texto:",
-      textoCompleto.substring(0, 500),
-    );
-    return {
-      tieneFiscal: null,
-      mensaje:
-        "No se pudo determinar el estado fiscal. Descarga el certificado para revisarlo manualmente.",
-    };
-  } catch (parseError) {
-    console.warn("[Contraloría] Error parseando PDF:", parseError.message);
-    return {
-      tieneFiscal: null,
-      mensaje: "No se pudo leer el certificado automáticamente.",
-    };
-  }
+    parser.parseBuffer(buffer);
+  });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
