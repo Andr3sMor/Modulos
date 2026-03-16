@@ -30,7 +30,6 @@ app.use(express.json());
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 app.post("/api/consulta-antecedentes", policiaController.consultarAntecedentes);
-app.get("/api/captcha-status/:sessionId", policiaController.captchaStatus); // ← SSE nuevo
 app.post("/api/consulta-offshore", offshoreController.consultarOffshore);
 app.post(
   "/api/consulta-procuraduria",
