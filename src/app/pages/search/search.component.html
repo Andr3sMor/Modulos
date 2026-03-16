@@ -7,10 +7,8 @@
         internacionales
       </p>
     </div>
-
     <div class="search-section">
       <h3 class="section-title">Datos de Búsqueda</h3>
-
       <!-- ── Selector tipo de persona ── -->
       <div class="tipo-persona-row">
         <label
@@ -30,10 +28,8 @@
           Persona Jurídica
         </label>
       </div>
-
       <!-- ── Campos según tipo de persona ── -->
       <div class="fields-row">
-        <!-- Número de documento (siempre) -->
         <div class="field-group">
           <label class="field-label">Número de Identificación</label>
           <input
@@ -46,8 +42,6 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-
-        <!-- Tipo documento -->
         <div class="field-group">
           <label class="field-label">Tipo de Documento</label>
           <select class="field-input" [(ngModel)]="tipoDocumento">
@@ -56,8 +50,6 @@
             </option>
           </select>
         </div>
-
-        <!-- Persona Natural: Nombre(s) -->
         <div class="field-group" *ngIf="tipoPersona === 'natural'">
           <label class="field-label">Nombre(s)</label>
           <input
@@ -68,8 +60,6 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-
-        <!-- Persona Natural: Apellido(s) -->
         <div class="field-group" *ngIf="tipoPersona === 'natural'">
           <label class="field-label">Apellido(s)</label>
           <input
@@ -80,8 +70,6 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-
-        <!-- Persona Jurídica: Razón Social -->
         <div class="field-group" *ngIf="tipoPersona === 'juridica'">
           <label class="field-label">Razón Social</label>
           <input
@@ -92,8 +80,6 @@
             (keyup.enter)="ejecutarConsulta()"
           />
         </div>
-
-        <!-- Persona Jurídica: Matrícula Mercantil (para Contraloría) -->
         <div class="field-group" *ngIf="tipoPersona === 'juridica'">
           <label class="field-label">
             Matrícula Mercantil
@@ -108,7 +94,6 @@
           />
         </div>
       </div>
-
       <!-- ── Servicios y botón ── -->
       <div class="action-row">
         <div class="field-group field-large">
@@ -130,7 +115,6 @@
             </label>
           </div>
         </div>
-
         <div class="field-group field-btn">
           <label class="field-label">&nbsp;</label>
           <button
@@ -199,7 +183,6 @@
          ═══════════════════════════════════════════════════════════ -->
     <div *ngIf="resultados.length > 0" class="results-section">
       <h3 class="section-title">Resultados de Bases de Datos Oficiales</h3>
-
       <div *ngFor="let r of resultados; let i = index" class="result-card">
         <div class="result-header">
           <div class="result-source">
@@ -216,9 +199,8 @@
               [class.badge-danger]="
                 !r.data?.vigencia?.toUpperCase()?.includes('VIGENTE')
               "
+              >{{ r.data?.vigencia }}</span
             >
-              {{ r.data?.vigencia }}
-            </span>
             <!-- Contador -->
             <span
               *ngIf="r.tipo === 'contador'"
@@ -227,9 +209,10 @@
                   ? 'status-badge badge-success'
                   : 'status-badge badge-neutral'
               "
+              >{{
+                r.esContador ? "✅ Contador Público" : "❌ No es Contador"
+              }}</span
             >
-              {{ r.esContador ? "✅ Contador Público" : "❌ No es Contador" }}
-            </span>
             <!-- Antecedentes -->
             <span
               *ngIf="r.tipo === 'antecedentes'"
@@ -238,13 +221,12 @@
                   ? 'status-badge badge-danger'
                   : 'status-badge badge-success'
               "
-            >
-              {{
+              >{{
                 r.tieneAntecedentes
                   ? "⚠️ Registra antecedentes"
                   : "✅ Sin antecedentes"
-              }}
-            </span>
+              }}</span
+            >
             <!-- Procuraduría -->
             <span
               *ngIf="r.tipo === 'procuraduria'"
@@ -253,11 +235,10 @@
                   ? 'status-badge badge-danger'
                   : 'status-badge badge-success'
               "
-            >
-              {{
+              >{{
                 r.tieneSanciones ? "⚠️ Registra sanciones" : "✅ Sin sanciones"
-              }}
-            </span>
+              }}</span
+            >
             <!-- Contraloría -->
             <span
               *ngIf="r.tipo === 'contraloria'"
@@ -268,15 +249,14 @@
                     ? 'status-badge badge-success'
                     : 'status-badge badge-neutral'
               "
-            >
-              {{
+              >{{
                 r.tieneFiscal === true
                   ? "⚠️ Reportado como responsable fiscal"
                   : r.tieneFiscal === false
                     ? "✅ Sin responsabilidad fiscal"
                     : "ℹ️ Consulta realizada"
-              }}
-            </span>
+              }}</span
+            >
             <!-- Offshore -->
             <span
               *ngIf="r.tipo === 'offshore'"
@@ -285,13 +265,12 @@
                   ? 'status-badge badge-danger'
                   : 'status-badge badge-success'
               "
-            >
-              {{
+              >{{
                 r.tieneRegistros
                   ? "⚠️ " + r.totalResultados + " coincidencia(s) exacta(s)"
                   : "✅ Sin registros"
-              }}
-            </span>
+              }}</span
+            >
             <!-- Rama Judicial -->
             <span
               *ngIf="r.tipo === 'ramaJudicial'"
@@ -300,13 +279,12 @@
                   ? 'status-badge badge-danger'
                   : 'status-badge badge-success'
               "
-            >
-              {{
+              >{{
                 r.totalAlertas > 0
                   ? "⚠️ " + r.totalAlertas + " ciudad(es) con procesos"
                   : "✅ Sin procesos activos"
-              }}
-            </span>
+              }}</span
+            >
             <!-- Supersociedades -->
             <span
               *ngIf="r.tipo === 'supersociedades'"
@@ -314,6 +292,20 @@
             >
               🏢 {{ r.totalRegistros }} empresa(s) encontrada(s)
             </span>
+            <!-- Infobae -->
+            <span
+              *ngIf="r.tipo === 'infobae'"
+              [class]="
+                r.tieneRelevantes
+                  ? 'status-badge badge-danger'
+                  : 'status-badge badge-success'
+              "
+              >{{
+                r.tieneRelevantes
+                  ? "⚠️ " + r.totalRelevantes + " noticia(s) relevante(s)"
+                  : "✅ Sin noticias relevantes"
+              }}</span
+            >
           </div>
         </div>
 
@@ -418,9 +410,8 @@
                         emp.estado !== 'EN LIQUIDACIÓN' &&
                         emp.estado !== 'EN REORGANIZACIÓN'
                       "
+                      >{{ emp.estado }}</span
                     >
-                      {{ emp.estado }}
-                    </span>
                     <span class="supersoc-arrow">→</span>
                   </div>
                 </div>
@@ -464,32 +455,27 @@
                   !supersociedadesDetalle.insolvencia?.tieneProcesoInsolvencia
                 "
               >
-                <span class="insolvencia-icono">
-                  {{
+                <span class="insolvencia-icono">{{
+                  supersociedadesDetalle.insolvencia?.procesoActivo
+                    ? "⚠️"
+                    : supersociedadesDetalle.insolvencia
+                          ?.tieneProcesoInsolvencia
+                      ? "📋"
+                      : "✅"
+                }}</span>
+                <div class="insolvencia-texto">
+                  <strong>{{
                     supersociedadesDetalle.insolvencia?.procesoActivo
-                      ? "⚠️"
+                      ? "Proceso de " +
+                        supersociedadesDetalle.insolvencia?.tipoInsolvencia +
+                        " ACTIVO"
                       : supersociedadesDetalle.insolvencia
                             ?.tieneProcesoInsolvencia
-                        ? "📋"
-                        : "✅"
-                  }}
-                </span>
-                <div class="insolvencia-texto">
-                  <strong>
-                    {{
-                      supersociedadesDetalle.insolvencia?.procesoActivo
-                        ? "Proceso de " +
+                        ? "Tuvo proceso de " +
                           supersociedadesDetalle.insolvencia?.tipoInsolvencia +
-                          " ACTIVO"
-                        : supersociedadesDetalle.insolvencia
-                              ?.tieneProcesoInsolvencia
-                          ? "Tuvo proceso de " +
-                            supersociedadesDetalle.insolvencia
-                              ?.tipoInsolvencia +
-                            " (finalizado)"
-                          : "Sin procesos de insolvencia registrados"
-                    }}
-                  </strong>
+                          " (finalizado)"
+                        : "Sin procesos de insolvencia registrados"
+                  }}</strong>
                   <span
                     *ngIf="supersociedadesDetalle.insolvencia?.grupoProceso"
                     class="insolvencia-grupo"
@@ -692,6 +678,55 @@
                     />
                   </div>
                 </div>
+              </div>
+            </ng-container>
+          </div>
+
+          <!-- ══ INFOBAE NOTICIAS ══════════════════════════════════ -->
+          <div *ngIf="r.tipo === 'infobae'" class="infobae-informe">
+            <div *ngIf="!r.tieneRelevantes" class="sin-resultados">
+              ✅ No se encontraron noticias relacionadas con corrupción, lavado
+              de activos o terrorismo para
+              <strong>"{{ r.terminoBuscado }}"</strong> en Infobae.
+              <span *ngIf="r.totalResultados > 0" class="infobae-total-hint">
+                ({{ r.totalResultados }} resultado(s) en total, ninguno
+                relevante)
+              </span>
+            </div>
+            <ng-container *ngIf="r.tieneRelevantes">
+              <div class="informe-resumen">
+                <span class="informe-icono">📰</span>
+                Se encontraron
+                <strong>{{ r.totalRelevantes }} noticia(s)</strong> relacionadas
+                con corrupción, lavado de activos o terrorismo para
+                <strong>"{{ r.terminoBuscado }}"</strong> en Infobae.
+              </div>
+              <div class="infobae-noticias-lista">
+                <a
+                  *ngFor="let noticia of r.noticias"
+                  [href]="noticia.enlace"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="infobae-noticia-item"
+                >
+                  <div class="infobae-noticia-contenido">
+                    <div class="infobae-noticia-titulo">
+                      {{ noticia.titulo }}
+                    </div>
+                    <div
+                      class="infobae-noticia-resumen"
+                      *ngIf="noticia.resumen"
+                    >
+                      {{ noticia.resumen }}
+                    </div>
+                    <div class="infobae-noticia-meta">
+                      <span *ngIf="noticia.fecha" class="infobae-noticia-fecha"
+                        >📅 {{ noticia.fecha }}</span
+                      >
+                      <span class="infobae-noticia-link">Ver en Infobae →</span>
+                    </div>
+                  </div>
+                </a>
               </div>
             </ng-container>
           </div>

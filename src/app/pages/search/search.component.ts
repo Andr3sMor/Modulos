@@ -21,15 +21,12 @@ export class SearchComponent {
   error = "";
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
-
   supersociedadesEmpresas: any[] = [];
   supersociedadesDetalle: any | null = null;
   cargandoDetalle = false;
-
   analisisIA = "";
   cargandoIA = false;
   errorIA = "";
-
   tipoPersona: "natural" | "juridica" = "natural";
   tipoDocumento = "Cédula de Ciudadanía";
 
@@ -53,6 +50,7 @@ export class SearchComponent {
     { id: "ramaJudicial", nombre: "Rama Judicial", activo: false },
     { id: "supersociedades", nombre: "Supersociedades", activo: false },
     { id: "paco", nombre: "Contratos PACO", activo: false },
+    { id: "infobae", nombre: "Infobae Noticias", activo: false },
   ];
 
   tipoPACO: 1 | 2 = 1;
@@ -79,6 +77,7 @@ export class SearchComponent {
         "contraloria",
         "offshore",
         "paco",
+        "infobae",
       ]);
       this.servicios.forEach((s) => (s.activo = activar.has(s.id)));
       this.matriculaMercantil = "";
@@ -90,6 +89,7 @@ export class SearchComponent {
         "offshore",
         "supersociedades",
         "paco",
+        "infobae",
       ]);
       this.servicios.forEach((s) => (s.activo = activar.has(s.id)));
     }
@@ -97,6 +97,12 @@ export class SearchComponent {
   }
 
   get nombreOffshore(): string {
+    if (this.tipoPersona === "juridica") return this.razonSocial.trim();
+    return [this.nombre.trim(), this.apellido.trim()].filter(Boolean).join(" ");
+  }
+
+  // Nombre completo para búsqueda en Infobae
+  get nombreInfobae(): string {
     if (this.tipoPersona === "juridica") return this.razonSocial.trim();
     return [this.nombre.trim(), this.apellido.trim()].filter(Boolean).join(" ");
   }
@@ -112,7 +118,6 @@ export class SearchComponent {
       this.error = "Ingresa al menos un dato.";
       return;
     }
-
     this.error = "";
     this.resultados = [];
     this.analisisIA = "";
@@ -124,6 +129,7 @@ export class SearchComponent {
       this.tipoPersona === "natural"
         ? this.nombre.trim()
         : this.razonSocial.trim();
+
     if (terminoIA) {
       this.cargandoIA = true;
       this.cdr.detectChanges();
@@ -213,7 +219,7 @@ export class SearchComponent {
           });
           break;
 
-        // ── Policía — abre popup para que rektcaptcha resuelva el captcha ────
+        // ── Policía ──────────────────────────────────────────────────────────
         case "antecedentes":
           if (!this.cedula) {
             resolve();
@@ -224,17 +230,15 @@ export class SearchComponent {
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
-                  // Si el backend pide captcha, mostrar el resolver
                   if (res.requiereCaptcha && res.sessionId) {
                     this.captchaSessionId = res.sessionId;
                     this.captchaPopupUrl = res.popupUrl || "";
                     this.mostrarCaptchaPolicia = true;
-                    // Guardar resolve para completar la promesa cuando
-                    // el usuario resuelva el captcha
                     this.captchaResolveRef = (resultado: any) => {
                       this.resultados.push({
                         tipo: "antecedentes",
-                        fuente: resultado.fuente || "Policía Nacional de Colombia",
+                        fuente:
+                          resultado.fuente || "Policía Nacional de Colombia",
                         tieneAntecedentes: resultado.tieneAntecedentes,
                         mensaje: resultado.mensaje,
                         screenshot: resultado.screenshot || null,
@@ -244,10 +248,8 @@ export class SearchComponent {
                       resolve();
                     };
                     this.cdr.detectChanges();
-                    // No resolvemos la promesa aún — esperamos el captcha
                     return;
                   }
-                  // Resultado directo (local con extensión)
                   this.resultados.push({
                     tipo: "antecedentes",
                     fuente: res.fuente || "Policía Nacional de Colombia",
@@ -477,6 +479,38 @@ export class SearchComponent {
             });
           break;
 
+        // ── Infobae Noticias ─────────────────────────────────────────────────
+        case "infobae": {
+          const termino = this.nombreInfobae;
+          if (!termino) {
+            resolve();
+            return;
+          }
+          this.consultaService.consultarInfobae(termino).subscribe({
+            next: (res: any) =>
+              this.zone.run(() => {
+                this.resultados.push({
+                  tipo: "infobae",
+                  fuente: "Infobae",
+                  tieneRelevantes: res.tieneRelevantes,
+                  totalRelevantes: res.totalRelevantes,
+                  totalResultados: res.totalResultados,
+                  terminoBuscado: res.terminoBuscado,
+                  noticias: res.noticias || [],
+                  data: { fecha: new Date().toLocaleString() },
+                });
+                this.cdr.detectChanges();
+                resolve();
+              }),
+            error: (err: any) =>
+              this.zone.run(() => {
+                this.agregarError("Infobae", err);
+                resolve();
+              }),
+          });
+          break;
+        }
+
         default:
           resolve();
       }
@@ -553,6 +587,7 @@ export class SearchComponent {
   filtrarScore100(resultados: any[]): any[] {
     return (resultados || []).filter((o) => o.score === 100);
   }
+
   // ── Captcha Policía ─────────────────────────────────────────────────────────
   onCaptchaResuelto(resultado: any) {
     this.mostrarCaptchaPolicia = false;
@@ -568,7 +603,6 @@ export class SearchComponent {
   onCaptchaCancelado() {
     this.mostrarCaptchaPolicia = false;
     if (this.captchaResolveRef) {
-      // Agregar error al resultado y resolver la promesa
       this.resultados.push({
         tipo: "error",
         fuente: "Policía Nacional",
@@ -584,6 +618,4 @@ export class SearchComponent {
     this.captchaPopupUrl = "";
     this.cdr.detectChanges();
   }
-
-
 }

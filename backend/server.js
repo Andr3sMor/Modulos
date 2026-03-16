@@ -12,6 +12,7 @@ const ramaJudicialController = require("./controllers/rama_judicial.controller")
 const contraloriaController = require("./controllers/contraloria.controller");
 const supersociedadesController = require("./controllers/supersociedades.controller");
 const pacoController = require("./controllers/paco.controller");
+const infobaeController = require("./controllers/infobae.controller");
 
 const corsOptions = {
   origin: [
@@ -149,5 +150,6 @@ app.post(
   "/api/consulta-rama-judicial",
   conTimeout(conSemaforo(ramaJudicialController.consultarRamaJudicial), 90000),
 );
+app.post("/api/consulta-infobae", infobaeController.consultarInfobae);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));

@@ -49,11 +49,6 @@ export class ConsultaService {
     });
   }
 
-  /**
-   * Suscribe al stream SSE para recibir el resultado cuando el usuario
-   * resuelve el CAPTCHA manualmente en el navegador abierto por el backend.
-   * Emite { tipo: 'resultado' | 'error', datos: any }
-   */
   suscribirCaptchaStatus(
     sessionId: string,
   ): Observable<{ tipo: string; datos: any }> {
@@ -83,12 +78,10 @@ export class ConsultaService {
         observer.complete();
       });
 
-      // onerror del EventSource se dispara también por keepalive — no cerramos aquí
       source.onerror = () => {
         console.warn("[SSE] Evento onerror recibido (puede ser keepalive)");
       };
 
-      // Cleanup al desubscribir
       return () => source.close();
     });
   }
@@ -173,6 +166,12 @@ export class ConsultaService {
       identificacion,
       tipo,
       ...opciones,
+    });
+  }
+
+  consultarInfobae(nombre: string) {
+    return this.http.post<any>(`${this.apiUrl}/api/consulta-infobae`, {
+      nombre,
     });
   }
 }
