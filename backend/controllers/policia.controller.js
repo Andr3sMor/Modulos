@@ -369,6 +369,29 @@ async function resolverCaptchaAudio(page) {
   );
   const bFrame = await esperarBframe(page, 20000);
 
+  // DIAGNÓSTICO TEMPORAL — quitar después
+  const bFrameContent = await bFrame
+    .evaluate(() => {
+      return {
+        url: window.location.href,
+        botones: [...document.querySelectorAll("button")].map((b) => ({
+          id: b.id,
+          clase: b.className,
+          texto: b.textContent?.trim().slice(0, 50),
+          visible: b.offsetParent !== null,
+        })),
+        iframes: [...document.querySelectorAll("iframe")].map((f) =>
+          f.src?.slice(0, 100),
+        ),
+        html_snippet: document.body?.innerHTML?.slice(0, 800),
+      };
+    })
+    .catch((e) => ({ error: e.message }));
+  console.log(
+    "[Policía] 🔍 bFrame contenido:",
+    JSON.stringify(bFrameContent, null, 2),
+  );
+
   // 5. Detectar bloqueo inmediato
   const bloqueado = await bFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
