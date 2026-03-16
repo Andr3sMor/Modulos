@@ -127,6 +127,7 @@ exports.consultarInfobae = async (req, res) => {
 
   try {
     const html = await fetchConReintentos(url);
+    console.log("[Infobae] HTML snippet:", html.slice(0, 2000));
     const noticias = parsearResultados(html);
 
     const conNombre = noticias.filter((n) =>
