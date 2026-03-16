@@ -2,27 +2,19 @@
 /**
  * policia.controller.js
  *
- * Flujo en producción (Render):
+ * Flujo completo automático (sin popup, sin extensión, sin intervención del usuario):
  *  1. POST /api/consulta-antecedentes
  *     → Puppeteer navega, acepta términos, llena formulario
- *     → Queda pausado esperando que el captcha sea resuelto
- *     → Devuelve { requiereCaptcha: true, sessionId, popupUrl }
+ *     → Detecta el iframe del captcha reCAPTCHA
+ *     → Hace clic en el botón de audio challenge
+ *     → Descarga el audio MP3 del challenge
+ *     → Envía el audio a Wit.ai Speech API
+ *     → Obtiene la transcripción como solución
+ *     → Ingresa la solución en el campo de texto
+ *     → Envía el formulario
+ *     → Extrae y devuelve el resultado
  *
- *  2. Frontend abre popup con popupUrl (página real de la Policía)
- *     El usuario tiene rektcaptcha instalada → la extensión resuelve el captcha
- *     automáticamente en su browser.
- *
- *  3. Frontend se conecta a SSE GET /api/captcha-status/:sessionId
- *     → El backend hace polling de g-recaptcha-response en la sesión Puppeteer
- *     → Cuando detecta el token, lo inyecta, envía el formulario y extrae el resultado
- *     → Notifica via SSE con el resultado final
- *     → Frontend cierra popup y muestra resultado
- *
- * NOTA: En servidor local (Windows/Mac/Linux con escritorio) la extensión
- * rektcaptcha corre directamente en el Puppeteer del backend — no necesita
- * popup ni intervención del usuario. En Linux sin escritorio se usa Xvfb
- * como display virtual para que Chrome pueda cargar la extensión.
- * En Render se mantiene el flujo de popup con la extensión del usuario.
+ * Requiere variable de entorno: WIT_AI_API_KEY
  */
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
@@ -56,7 +48,6 @@ const TIPO_MAP = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ─── Sesiones en memoria ──────────────────────────────────────────────────────
-// sessionId → { browser, page, cedula, tipoCodigo, sseClients, creadoEn }
 const sesiones = new Map();
 const SESION_TTL_MS = 10 * 60 * 1000;
 
@@ -82,29 +73,18 @@ setInterval(
   5 * 60 * 1000,
 );
 
-// ─── Xvfb helper ──────────────────────────────────────────────────────────────
-// Inicia un display virtual en Linux cuando no hay pantalla real disponible.
-// Es idempotente: solo arranca una vez por proceso y se limpia al salir.
+// ─── Xvfb helper (solo Linux local sin display) ───────────────────────────────
 let xvfbInstance = null;
 
 async function asegurarDisplay() {
-  // Windows y macOS tienen display nativo — no se necesita Xvfb
   if (process.platform !== "linux") return;
-
-  // Ya hay un DISPLAY configurado (escritorio real o variable de entorno)
   if (process.env.DISPLAY) return;
-
-  // Xvfb ya fue iniciado en esta ejecución
   if (xvfbInstance) return;
 
   let Xvfb;
   try {
     Xvfb = require("xvfb");
   } catch (_) {
-    console.warn(
-      "[Policía] ⚠️  Paquete 'xvfb' no instalado. " +
-        "Ejecuta: npm install xvfb   y   apt-get install -y xvfb",
-    );
     throw new Error("Xvfb no disponible — instala el paquete 'xvfb'");
   }
 
@@ -121,7 +101,6 @@ async function asegurarDisplay() {
   process.env.DISPLAY = ":99";
   console.log("[Policía] 🖥️  Xvfb iniciado en DISPLAY=:99");
 
-  // Limpiar al terminar el proceso
   process.once("exit", () => xvfbInstance?.stop());
   process.once("SIGINT", () => {
     xvfbInstance?.stop();
@@ -135,11 +114,8 @@ async function asegurarDisplay() {
 
 // ─── Lanzar browser ────────────────────────────────────────────────────────────
 async function lanzarBrowser() {
-  // ── Render.com: usa @sparticuz/chromium sin extensión ─────────────────────
   if (process.env.RENDER) {
-    console.log(
-      "[Policía] 🌐 Render — usando @sparticuz/chromium (sin extensión)",
-    );
+    console.log("[Policía] 🌐 Render — @sparticuz/chromium headless");
     return puppeteerCore.launch({
       args: [
         ...chromium.args,
@@ -154,9 +130,8 @@ async function lanzarBrowser() {
     });
   }
 
-  // ── Local / servidor propio ────────────────────────────────────────────────
+  // Local
   const extensionExiste = fs.existsSync(EXTENSION_PATH);
-
   const args = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -168,11 +143,9 @@ async function lanzarBrowser() {
     "--disable-blink-features=AutomationControlled",
     "--window-size=1920,1080",
   ];
-
   const ignoreDefaultArgs = ["--enable-automation"];
 
   if (extensionExiste) {
-    // Garantizar que haya display disponible (real o virtual via Xvfb)
     await asegurarDisplay();
     console.log("[Policía] 🔌 Local + extensión rektcaptcha");
     args.push(
@@ -181,12 +154,10 @@ async function lanzarBrowser() {
     );
     ignoreDefaultArgs.push("--disable-extensions");
   } else {
-    console.log("[Policía] 💻 Local sin extensión — headless puro");
+    console.log("[Policía] 💻 Local sin extensión — headless");
   }
 
   const browser = await puppeteerExtra.launch({
-    // Con extensión necesita headless:false (display real o Xvfb)
-    // Sin extensión puede correr headless normal
     headless: extensionExiste ? false : true,
     ignoreHTTPSErrors: true,
     args,
@@ -258,7 +229,6 @@ async function aceptarTerminos(page) {
           );
         });
       }
-
       if (activo) exito = true;
     } catch (e) {
       console.warn(`[Policía] ⚠️ Términos intento ${i}: ${e.message}`);
@@ -335,7 +305,176 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
   }
 
   await sleep(500);
-  console.log("[Policía] ✅ Formulario llenado — esperando token del captcha");
+  console.log("[Policía] ✅ Formulario llenado — resolviendo captcha...");
+}
+
+// ─── Resolver captcha por audio con Wit.ai ────────────────────────────────────
+async function resolverCaptchaAudio(page) {
+  const apiKey = process.env.WIT_AI_API_KEY;
+  if (!apiKey) throw new Error("WIT_AI_API_KEY no configurada");
+
+  console.log("[Policía] 🎧 Iniciando resolución de captcha por audio...");
+
+  // 1. Esperar a que el iframe del captcha esté presente
+  await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 15000 });
+  await sleep(1500);
+
+  // 2. Hacer clic en el checkbox del captcha (iframe anchor)
+  const anchorFrame = page
+    .frames()
+    .find(
+      (f) =>
+        f.url().includes("recaptcha/api2/anchor") ||
+        f.url().includes("recaptcha/enterprise/anchor"),
+    );
+
+  if (!anchorFrame)
+    throw new Error("No se encontró el iframe anchor del captcha");
+
+  await anchorFrame.waitForSelector("#recaptcha-anchor", { timeout: 10000 });
+  await anchorFrame.click("#recaptcha-anchor");
+  console.log("[Policía] ☑️  Checkbox del captcha clickeado");
+  await sleep(2000);
+
+  // 3. Verificar si ya se resolvió solo (sin challenge visual)
+  const resueltoDirecto = await anchorFrame
+    .evaluate(() => {
+      const anchor = document.querySelector("#recaptcha-anchor");
+      return anchor && anchor.getAttribute("aria-checked") === "true";
+    })
+    .catch(() => false);
+
+  if (resueltoDirecto) {
+    console.log("[Policía] ✅ Captcha resuelto directamente (sin challenge)");
+    return await obtenerToken(page);
+  }
+
+  // 4. Buscar el iframe del challenge (bframe)
+  let bFrame = null;
+  for (let i = 0; i < 10; i++) {
+    bFrame = page
+      .frames()
+      .find(
+        (f) =>
+          f.url().includes("recaptcha/api2/bframe") ||
+          f.url().includes("recaptcha/enterprise/bframe"),
+      );
+    if (bFrame) break;
+    await sleep(1000);
+  }
+  if (!bFrame) throw new Error("No apareció el iframe bframe del captcha");
+
+  // 5. Hacer clic en el botón de audio challenge
+  await bFrame.waitForSelector("#recaptcha-audio-button", { timeout: 10000 });
+  await bFrame.click("#recaptcha-audio-button");
+  console.log("[Policía] 🔊 Botón de audio clickeado");
+  await sleep(2000);
+
+  // 6. Detectar bloqueo de Google
+  const bloqueado = await bFrame
+    .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
+    .catch(() => false);
+  if (bloqueado)
+    throw new Error(
+      "Google bloqueó los intentos de audio captcha — intenta más tarde",
+    );
+
+  // 7. Obtener la URL del audio MP3
+  let audioUrl = null;
+  for (let i = 0; i < 10; i++) {
+    audioUrl = await bFrame
+      .evaluate(() => {
+        const audio = document.querySelector("audio#audio-source");
+        return audio ? audio.src : null;
+      })
+      .catch(() => null);
+    if (audioUrl) break;
+    await sleep(1000);
+  }
+  if (!audioUrl) throw new Error("No se encontró la URL del audio del captcha");
+
+  console.log("[Policía] 🎵 Audio URL obtenida");
+
+  // 8. Descargar el audio como buffer desde el contexto del browser
+  const audioBuffer = await page.evaluate(async (url) => {
+    const resp = await fetch(url);
+    const buf = await resp.arrayBuffer();
+    return Array.from(new Uint8Array(buf));
+  }, audioUrl);
+
+  const buffer = Buffer.from(audioBuffer);
+
+  // 9. Enviar el audio a Wit.ai para transcripción
+  console.log("[Policía] 📤 Enviando audio a Wit.ai...");
+  const witResponse = await fetch("https://api.wit.ai/speech?v=20240304", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "audio/mpeg3",
+    },
+    body: buffer,
+  });
+
+  if (!witResponse.ok) {
+    const errorText = await witResponse.text().catch(() => "");
+    throw new Error(`Wit.ai error ${witResponse.status}: ${errorText}`);
+  }
+
+  const rawText = await witResponse.text();
+  // Wit.ai puede devolver múltiples JSON separados por \r\n — tomar el último
+  const lastLine = rawText.split("\r\n").filter(Boolean).at(-1);
+  const witData = JSON.parse(lastLine);
+  const solucion = witData?.text?.trim();
+
+  if (!solucion)
+    throw new Error("Wit.ai no pudo transcribir el audio del captcha");
+
+  console.log(`[Policía] 💬 Solución obtenida: "${solucion}"`);
+
+  // 10. Ingresar la solución en el campo de texto del challenge
+  await bFrame.waitForSelector("#audio-response", { timeout: 5000 });
+  await bFrame.click("#audio-response");
+  await bFrame.type("#audio-response", solucion, { delay: 50 });
+  await sleep(500);
+
+  // 11. Hacer clic en Verify
+  await bFrame.click("#recaptcha-verify-button");
+  console.log("[Policía] ✔️  Verify clickeado — esperando validación...");
+  await sleep(3000);
+
+  // 12. Verificar si la solución fue incorrecta
+  const incorrecto = await bFrame
+    .evaluate(() => {
+      const err = document.querySelector(".rc-audiochallenge-error-message");
+      return err && err.offsetParent !== null;
+    })
+    .catch(() => false);
+
+  if (incorrecto) throw new Error("La solución de audio fue incorrecta");
+
+  // 13. Obtener el token final
+  return await obtenerToken(page);
+}
+
+// ─── Obtener g-recaptcha-response del DOM ─────────────────────────────────────
+async function obtenerToken(page) {
+  let token = null;
+  for (let i = 0; i < 15; i++) {
+    token = await page
+      .evaluate(() => {
+        const el = document.querySelector('[name="g-recaptcha-response"]');
+        return el && el.value && el.value.length > 20 ? el.value : null;
+      })
+      .catch(() => null);
+    if (token) break;
+    await sleep(1000);
+  }
+  if (!token)
+    throw new Error(
+      "No se obtuvo el token de reCAPTCHA tras resolver el audio",
+    );
+  console.log("[Policía] 🎟️  Token reCAPTCHA obtenido");
+  return token;
 }
 
 // ─── Inyectar token y enviar formulario ───────────────────────────────────────
@@ -409,7 +548,7 @@ function notificarSSE(sesion, evento, datos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONTROLADOR PRINCIPAL — Primera llamada
+// CONTROLADOR PRINCIPAL — Todo automático, sin popup, sin intervención
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "CC", captchaToken, sessionId } = req.body;
@@ -417,6 +556,7 @@ exports.consultarAntecedentes = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
+  // Compatibilidad: si el frontend manda token + sessionId (flujo de fallback)
   if (captchaToken && sessionId) {
     return exports.resolverConToken(req, res);
   }
@@ -439,44 +579,87 @@ exports.consultarAntecedentes = async (req, res) => {
     await aceptarTerminos(page);
     await rellenarFormulario(page, identificacion, tipoCodigo);
 
-    const id = uuidv4();
-    sesiones.set(id, {
-      browser,
-      page,
-      cedula: identificacion,
-      tipoCodigo,
-      sseClients: [],
-      creadoEn: Date.now(),
-    });
-    browser = null;
-    page = null;
+    // ── Resolver captcha automáticamente con Wit.ai ───────────────────────────
+    let token;
+    try {
+      token = await resolverCaptchaAudio(page);
+    } catch (captchaErr) {
+      console.error(
+        "[Policía] ❌ Auto-captcha falló:",
+        captchaErr.message,
+        "— activando fallback manual",
+      );
 
-    console.log(`[Policía] ⏸️ Sesión creada: ${id}`);
+      // Fallback: guardar sesión y devolver popup para resolución manual
+      const id = uuidv4();
+      sesiones.set(id, {
+        browser,
+        page,
+        cedula: identificacion,
+        tipoCodigo,
+        sseClients: [],
+        creadoEn: Date.now(),
+      });
+      browser = null;
+      page = null;
 
-    const backendBase =
-      process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
+      const backendBase =
+        process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
+
+      return res.json({
+        requiereCaptcha: true,
+        sessionId: id,
+        popupUrl: `${backendBase}/api/policia-captcha-bridge/${id}`,
+        mensaje:
+          "No se pudo resolver el captcha automáticamente. Complétalo manualmente.",
+        errorAuto: captchaErr.message,
+      });
+    }
+
+    // ── Inyectar token, enviar formulario y extraer resultado ─────────────────
+    await inyectarTokenYEnviar(page, token);
+    const texto = await extraerResultado(page);
+
+    const tieneAntecedentes = !texto
+      .toUpperCase()
+      .includes("NO TIENE ASUNTOS PENDIENTES");
+
+    const ahora = new Date().toLocaleString("es-CO");
+    const mensaje = tieneAntecedentes
+      ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${identificacion} TIENE antecedentes judiciales.`
+      : `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${identificacion} no tiene antecedentes judiciales.`;
+
+    let screenshot = null;
+    try {
+      const buffer = await page.screenshot({
+        fullPage: false,
+        fromSurface: true,
+      });
+      screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
+    } catch (_) {}
+
+    await browser.close().catch(() => {});
+    console.log(`[Policía] ✅ Consulta completada para ${identificacion}`);
 
     return res.json({
-      requiereCaptcha: true,
-      sessionId: id,
-      popupUrl: `${backendBase}/api/policia-captcha-bridge/${id}`,
-      mensaje: "Completa el captcha en la ventana que se abrirá.",
+      fuente: "Policía Nacional de Colombia",
+      tieneAntecedentes,
+      mensaje,
+      screenshot,
     });
   } catch (error) {
-    console.error("[Policía] ❌ Error preparando sesión:", error.message);
+    console.error("[Policía] ❌ Error general:", error.message);
+    if (page && !page.isClosed()) await page.close().catch(() => {});
+    if (browser) await browser.close().catch(() => {});
     return res.status(502).json({
       error: "Error consultando Policía Nacional",
       detalle: error.message,
     });
-  } finally {
-    if (page && !page.isClosed()) await page.close().catch(() => {});
-    if (browser) await browser.close().catch(() => {});
   }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PÁGINA BRIDGE — Sirve una página HTML que redirige a la Policía e inyecta
-// un script de monitoreo que captura el token y lo envía al backend
+// PÁGINA BRIDGE — Fallback manual si el audio falla
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaBridge = (req, res) => {
   const { sessionId } = req.params;
@@ -530,12 +713,12 @@ exports.captchaBridge = (req, res) => {
 <body>
   <div class="card">
     <div style="font-size:48px">🛡️</div>
-    <h1>Verificación Policía Nacional</h1>
+    <h1>Verificación manual requerida</h1>
     <div id="waitingMsg">
       <p>
-        Se abrirá la página de la Policía Nacional.<br>
-        <strong>La extensión rektcaptcha resolverá el captcha automáticamente</strong>
-        y esta ventana se cerrará sola.
+        El sistema no pudo resolver el captcha automáticamente.<br>
+        Se abrirá la página de la Policía. <strong>La extensión rektcaptcha</strong>
+        resolverá el captcha y esta ventana se cerrará sola.
       </p>
       <div class="status">
         <div class="spinner"></div>
@@ -556,17 +739,12 @@ exports.captchaBridge = (req, res) => {
 
     function guardarSesion() {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({
-          policiaSessionId: SESSION_ID,
-          policiaBackendUrl: BACKEND
-        }, () => {
-          document.getElementById("statusText").textContent =
-            "Abriendo portal de la Policía...";
+        chrome.storage.local.set({ policiaSessionId: SESSION_ID, policiaBackendUrl: BACKEND }, () => {
+          document.getElementById("statusText").textContent = "Abriendo portal de la Policía...";
           abrirPolicia();
         });
       } else {
-        document.getElementById("statusText").textContent =
-          "Instala la extensión rektcaptcha para resolución automática.";
+        document.getElementById("statusText").textContent = "Instala rektcaptcha para resolución automática.";
         abrirPolicia();
       }
     }
@@ -574,13 +752,10 @@ exports.captchaBridge = (req, res) => {
     function abrirPolicia() {
       const win = window.open(POLICIA_URL, "_blank");
       if (!win) {
-        document.getElementById("statusText").textContent =
-          "⚠️ Permite ventanas emergentes e intenta de nuevo.";
+        document.getElementById("statusText").textContent = "⚠️ Permite ventanas emergentes e intenta de nuevo.";
         return;
       }
-      document.getElementById("statusText").textContent =
-        "Esperando que rektcaptcha resuelva el captcha...";
-
+      document.getElementById("statusText").textContent = "Esperando que rektcaptcha resuelva el captcha...";
       const interval = setInterval(async () => {
         try {
           const r = await fetch(BACKEND + "/api/captcha-resuelto/" + SESSION_ID);
@@ -594,11 +769,7 @@ exports.captchaBridge = (req, res) => {
           }
         } catch (_) {}
       }, 2000);
-
-      setTimeout(() => {
-        clearInterval(interval);
-        window.close();
-      }, 5 * 60 * 1000);
+      setTimeout(() => { clearInterval(interval); window.close(); }, 5 * 60 * 1000);
     }
 
     window.onload = guardarSesion;
@@ -608,32 +779,21 @@ exports.captchaBridge = (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENDPOINT: Notifica al frontend via SSE que puede pedir el token
+// Endpoints de soporte (SSE, bridge callbacks, fallback manual)
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaConfirmado = async (req, res) => {
   const { sessionId } = req.params;
   const sesion = sesiones.get(sessionId);
-
-  if (!sesion) {
-    return res.json({ ok: false, error: "Sesión expirada" });
-  }
-
+  if (!sesion) return res.json({ ok: false, error: "Sesión expirada" });
   notificarSSE(sesion, "captcha_listo", { sessionId });
   return res.json({ ok: true });
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ENDPOINT: Bridge page pregunta si la sesión ya fue resuelta
-// ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaResuelto = (req, res) => {
   const { sessionId } = req.params;
-  const resuelto = !sesiones.has(sessionId);
-  res.json({ resuelto });
+  res.json({ resuelto: !sesiones.has(sessionId) });
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SSE — Frontend escucha aquí para recibir el resultado final
-// ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaStatus = (req, res) => {
   const { sessionId } = req.params;
   const sesion = sesiones.get(sessionId);
@@ -668,9 +828,6 @@ exports.captchaStatus = (req, res) => {
   console.log(`[Policía] 📡 SSE conectado para sesión: ${sessionId}`);
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Segunda llamada — con token enviado por el frontend
-// ═══════════════════════════════════════════════════════════════════════════════
 exports.resolverConToken = async (req, res) => {
   const { sessionId, captchaToken } = req.body;
 
@@ -680,24 +837,22 @@ exports.resolverConToken = async (req, res) => {
       .json({ error: "sessionId y captchaToken son requeridos." });
 
   const sesion = sesiones.get(sessionId);
-  if (!sesion) {
+  if (!sesion)
     return res
       .status(410)
       .json({ error: "Sesión expirada. Intenta de nuevo." });
-  }
 
   const { browser, page, cedula, tipoCodigo } = sesion;
   sesiones.delete(sessionId);
 
   try {
-    console.log(`[Policía] 🔑 Resolviendo sesión ${sessionId}`);
+    console.log(`[Policía] 🔑 Resolviendo sesión manual ${sessionId}`);
     await inyectarTokenYEnviar(page, captchaToken);
     const texto = await extraerResultado(page);
 
     const tieneAntecedentes = !texto
       .toUpperCase()
       .includes("NO TIENE ASUNTOS PENDIENTES");
-
     const ahora = new Date().toLocaleString("es-CO");
     const mensaje = tieneAntecedentes
       ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedula} TIENE antecedentes judiciales.`
@@ -718,7 +873,6 @@ exports.resolverConToken = async (req, res) => {
       mensaje,
       screenshot,
     };
-
     notificarSSE(sesion, "resultado", resultado);
     await browser.close().catch(() => {});
     console.log(`[Policía] ✅ Consulta completada para ${cedula}`);
