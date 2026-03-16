@@ -2,14 +2,9 @@
 /**
  * policia.controller.js
  *
- * Flujo completo automático (sin popup, sin extensión):
- *  1. Navega y llena el formulario
- *  2. Hace clic en el checkbox del reCAPTCHA
- *  3. Espera el bframe y a que su DOM se pueble (recaptcha.frame.Main.init es async)
- *  4. Busca el botón de audio por múltiples selectores
- *  5. Descarga el MP3 y transcribe con Wit.ai
- *  6. Ingresa la solución y verifica
- *  7. Si falla → fallback al popup manual
+ * El challenge de reCAPTCHA carga su contenido en un frame hijo del bframe.
+ * Este controlador itera TODOS los frames de la página para encontrar
+ * el que contiene botones reales, y desde ahí opera el audio challenge.
  *
  * Requiere variable de entorno: WIT_AI_API_KEY
  */
@@ -70,7 +65,7 @@ setInterval(
   5 * 60 * 1000,
 );
 
-// ─── Xvfb helper (solo Linux local sin display) ───────────────────────────────
+// ─── Xvfb helper ─────────────────────────────────────────────────────────────
 let xvfbInstance = null;
 
 async function asegurarDisplay() {
@@ -90,14 +85,11 @@ async function asegurarDisplay() {
     silent: true,
     xvfb_args: ["-screen", "0", "1920x1080x24", "-ac"],
   });
-
   await new Promise((resolve, reject) => {
     xvfbInstance.start((err) => (err ? reject(err) : resolve()));
   });
-
   process.env.DISPLAY = ":99";
   console.log("[Policía] 🖥️  Xvfb iniciado en DISPLAY=:99");
-
   process.once("exit", () => xvfbInstance?.stop());
   process.once("SIGINT", () => {
     xvfbInstance?.stop();
@@ -109,7 +101,7 @@ async function asegurarDisplay() {
   });
 }
 
-// ─── Lanzar browser ────────────────────────────────────────────────────────────
+// ─── Lanzar browser ──────────────────────────────────────────────────────────
 async function lanzarBrowser() {
   if (process.env.RENDER) {
     console.log("[Policía] 🌐 Render — @sparticuz/chromium headless");
@@ -127,7 +119,6 @@ async function lanzarBrowser() {
     });
   }
 
-  // Local
   const extensionExiste = fs.existsSync(EXTENSION_PATH);
   const args = [
     "--no-sandbox",
@@ -269,7 +260,7 @@ async function aceptarTerminos(page) {
   throw new Error("No se llegó a antecedentes.xhtml. URL: " + page.url());
 }
 
-// ─── Rellenar formulario ───────────────────────────────────────────────────────
+// ─── Rellenar formulario ──────────────────────────────────────────────────────
 async function rellenarFormulario(page, cedula, tipoCodigo) {
   await page.waitForFunction(
     () => window.location.href.includes("antecedentes.xhtml"),
@@ -305,21 +296,39 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
   console.log("[Policía] ✅ Formulario llenado — resolviendo captcha...");
 }
 
-// ─── Esperar bframe con reintentos ────────────────────────────────────────────
-async function esperarBframe(page, timeoutMs = 20000) {
+// ─── Buscar frame con botones (itera todos los frames) ───────────────────────
+// El contenido real del challenge no está en el bframe sino en un frame hijo.
+// Esta función espera hasta encontrar cualquier frame que tenga botones visibles.
+async function esperarFrameConBotones(page, timeoutMs = 25000) {
   const inicio = Date.now();
   while (Date.now() - inicio < timeoutMs) {
-    const bFrame = page
-      .frames()
-      .find(
-        (f) =>
-          f.url().includes("recaptcha/api2/bframe") ||
-          f.url().includes("recaptcha/enterprise/bframe"),
-      );
-    if (bFrame) return bFrame;
-    await sleep(500);
+    for (const f of page.frames()) {
+      try {
+        const botones = await f.evaluate(() => {
+          const btns = [...document.querySelectorAll("button")];
+          return btns.map((b) => ({
+            id: b.id,
+            clase: b.className.slice(0, 80),
+            texto: b.textContent?.trim().slice(0, 40),
+            ariaLabel: b.getAttribute("aria-label"),
+            title: b.getAttribute("title"),
+            visible: b.offsetParent !== null,
+          }));
+        });
+        if (botones.length > 0) {
+          console.log(
+            "[Policía] 🔍 Frame con botones encontrado:",
+            JSON.stringify({ url: f.url().slice(0, 80), botones }),
+          );
+          return f;
+        }
+      } catch (_) {}
+    }
+    await sleep(800);
   }
-  throw new Error("bframe del captcha no apareció en " + timeoutMs + "ms");
+  throw new Error(
+    "No se encontró ningún frame con botones en " + timeoutMs + "ms",
+  );
 }
 
 // ─── Resolver captcha por audio con Wit.ai ────────────────────────────────────
@@ -346,7 +355,7 @@ async function resolverCaptchaAudio(page) {
   await anchorFrame.waitForSelector("#recaptcha-anchor", { timeout: 10000 });
   await anchorFrame.click("#recaptcha-anchor");
   console.log("[Policía] ☑️  Checkbox clickeado — esperando challenge...");
-  await sleep(2000);
+  await sleep(2500);
 
   // 3. Verificar si se resolvió sin challenge
   const resueltoDirecto = await anchorFrame
@@ -361,50 +370,18 @@ async function resolverCaptchaAudio(page) {
     return await obtenerToken(page);
   }
 
-  // 4. Esperar el bframe
-  console.log("[Policía] 🖼️  Esperando bframe...");
-  const bFrame = await esperarBframe(page, 20000);
+  // 4. Buscar el frame que contiene los botones reales del challenge
+  console.log("[Policía] 🔎 Buscando frame con botones del challenge...");
+  const challengeFrame = await esperarFrameConBotones(page, 25000);
 
-  // 5. Esperar a que el DOM del bframe se pueble
-  //    recaptcha.frame.Main.init() es async y tarda en renderizar el contenido real
-  console.log("[Policía] ⏳ Esperando que el bframe cargue su contenido...");
-  await bFrame
-    .waitForFunction(
-      () => {
-        const divs = document.querySelectorAll("div");
-        // Esperar a que haya al menos un div con contenido visible
-        return [...divs].some(
-          (d) => d.children.length > 0 && d.offsetHeight > 0,
-        );
-      },
-      { timeout: 15000 },
-    )
-    .catch(() => null);
-  await sleep(2000);
-
-  // 6. Log de diagnóstico del contenido real del bframe
-  const info = await bFrame
-    .evaluate(() => ({
-      botones: [...document.querySelectorAll("button")].map((b) => ({
-        id: b.id,
-        clase: b.className.slice(0, 80),
-        texto: b.textContent?.trim().slice(0, 40),
-        ariaLabel: b.getAttribute("aria-label"),
-        visible: b.offsetParent !== null,
-      })),
-      snippet: document.body?.innerHTML?.slice(0, 600),
-    }))
-    .catch(() => ({}));
-  console.log("[Policía] 🔍 bFrame poblado:", JSON.stringify(info));
-
-  // 7. Detectar bloqueo
-  const bloqueado = await bFrame
+  // 5. Detectar bloqueo
+  const bloqueado = await challengeFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
     .catch(() => false);
   if (bloqueado) throw new Error("Google bloqueó el captcha desde esta IP");
 
-  // 8. Buscar el botón de audio por múltiples selectores posibles
-  const selectorAudio = await bFrame
+  // 6. Buscar botón de audio por múltiples criterios
+  const selectorAudio = await challengeFrame
     .evaluate(() => {
       const candidatos = [
         "#recaptcha-audio-button",
@@ -415,15 +392,16 @@ async function resolverCaptchaAudio(page) {
         "button[aria-label*='Audio']",
         "button[aria-label*='sonido']",
         "button[aria-label*='Sonido']",
+        "button[class*='audio']",
       ];
       for (const sel of candidatos) {
         if (document.querySelector(sel)) return sel;
       }
-      // Último recurso: buscar por texto o aria-label que contenga audio/sonido
+      // Búsqueda por texto/aria-label
       const btns = [...document.querySelectorAll("button")];
       const audioBtn = btns.find((b) => {
         const label = (
-          b.textContent +
+          (b.textContent || "") +
           (b.getAttribute("aria-label") || "") +
           (b.getAttribute("title") || "")
         ).toLowerCase();
@@ -431,8 +409,8 @@ async function resolverCaptchaAudio(page) {
       });
       if (audioBtn) {
         if (audioBtn.id) return `#${audioBtn.id}`;
-        if (audioBtn.className)
-          return `button.${audioBtn.className.trim().split(" ")[0]}`;
+        const cls = audioBtn.className?.trim().split(/\s+/)[0];
+        if (cls) return `button.${cls}`;
       }
       return null;
     })
@@ -440,40 +418,62 @@ async function resolverCaptchaAudio(page) {
 
   if (!selectorAudio) {
     throw new Error(
-      "Botón de audio no encontrado en el bframe — ver log 🔍 para diagnóstico",
+      "Botón de audio no encontrado — ver log 🔍 para ver qué botones hay",
     );
   }
 
-  console.log(
-    `[Policía] 🔊 Botón audio encontrado: ${selectorAudio} — cambiando a audio...`,
-  );
-  await bFrame.click(selectorAudio);
-  await sleep(2000);
+  console.log(`[Policía] 🔊 Cambiando a audio: ${selectorAudio}`);
+  await challengeFrame.click(selectorAudio);
+  await sleep(2500);
 
-  // 9. Verificar bloqueo tras pedir audio
-  const bloqueadoTras = await bFrame
+  // 7. Verificar bloqueo tras pedir audio
+  const bloqueadoTras = await challengeFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
     .catch(() => false);
   if (bloqueadoTras)
     throw new Error("Google bloqueó el audio challenge desde esta IP");
 
-  // 10. Esperar URL del audio
+  // 8. Esperar URL del audio — puede estar en challengeFrame o en un frame hijo nuevo
   let audioUrl = null;
-  for (let i = 0; i < 15; i++) {
-    audioUrl = await bFrame
+  let audioFrame = challengeFrame;
+
+  for (let i = 0; i < 20; i++) {
+    // Buscar en el frame actual
+    audioUrl = await challengeFrame
       .evaluate(() => {
         const audio = document.querySelector("audio#audio-source");
         return audio && audio.src ? audio.src : null;
       })
       .catch(() => null);
+
+    if (!audioUrl) {
+      // Buscar en todos los frames por si abrió uno nuevo para el audio
+      for (const f of page.frames()) {
+        audioUrl = await f
+          .evaluate(() => {
+            const audio = document.querySelector("audio#audio-source");
+            return audio && audio.src ? audio.src : null;
+          })
+          .catch(() => null);
+        if (audioUrl) {
+          audioFrame = f;
+          break;
+        }
+      }
+    }
+
     if (audioUrl) break;
     await sleep(1000);
   }
-  if (!audioUrl) throw new Error("URL del audio del captcha no encontrada");
 
-  console.log("[Policía] 🎵 Audio URL obtenida — transcribiendo...");
+  if (!audioUrl)
+    throw new Error(
+      "URL del audio del captcha no encontrada tras cambiar a audio",
+    );
 
-  // 11. Descargar audio desde el contexto del browser
+  console.log("[Policía] 🎵 Audio URL obtenida — descargando...");
+
+  // 9. Descargar audio desde el contexto del browser
   const audioArray = await page
     .evaluate(async (url) => {
       const resp = await fetch(url, { credentials: "omit" });
@@ -486,8 +486,9 @@ async function resolverCaptchaAudio(page) {
     throw new Error("No se pudo descargar el audio del captcha");
 
   const buffer = Buffer.from(audioArray);
+  console.log(`[Policía] 📦 Audio descargado: ${buffer.length} bytes`);
 
-  // 12. Enviar a Wit.ai
+  // 10. Enviar a Wit.ai
   console.log("[Policía] 📤 Enviando audio a Wit.ai...");
   const witResponse = await fetch("https://api.wit.ai/speech?v=20240304", {
     method: "POST",
@@ -504,7 +505,6 @@ async function resolverCaptchaAudio(page) {
   }
 
   const rawText = await witResponse.text();
-  // Wit.ai devuelve múltiples JSON separados por \r\n — tomar el último
   const lastLine = rawText.split("\r\n").filter(Boolean).at(-1);
   const witData = JSON.parse(lastLine);
   const solucion = witData?.text?.trim();
@@ -513,19 +513,19 @@ async function resolverCaptchaAudio(page) {
 
   console.log(`[Policía] 💬 Solución: "${solucion}"`);
 
-  // 13. Ingresar solución
-  await bFrame.waitForSelector("#audio-response", { timeout: 5000 });
-  await bFrame.click("#audio-response");
-  await bFrame.type("#audio-response", solucion, { delay: 50 });
+  // 11. Ingresar solución en el frame de audio
+  await audioFrame.waitForSelector("#audio-response", { timeout: 8000 });
+  await audioFrame.click("#audio-response");
+  await audioFrame.type("#audio-response", solucion, { delay: 50 });
   await sleep(300);
 
-  // 14. Verificar
-  await bFrame.click("#recaptcha-verify-button");
-  console.log("[Policía] ✔️  Verify enviado — esperando validación...");
+  // 12. Verificar
+  await audioFrame.click("#recaptcha-verify-button");
+  console.log("[Policía] ✔️  Verify enviado...");
   await sleep(3000);
 
-  // 15. Comprobar si la respuesta fue incorrecta
-  const incorrecto = await bFrame
+  // 13. Comprobar si fue incorrecto
+  const incorrecto = await audioFrame
     .evaluate(() => {
       const err = document.querySelector(".rc-audiochallenge-error-message");
       return err && err.offsetParent !== null;
@@ -533,11 +533,10 @@ async function resolverCaptchaAudio(page) {
     .catch(() => false);
   if (incorrecto) throw new Error("Solución de audio incorrecta según Google");
 
-  // 16. Obtener token final
   return await obtenerToken(page);
 }
 
-// ─── Obtener g-recaptcha-response ─────────────────────────────────────────────
+// ─── Obtener g-recaptcha-response ────────────────────────────────────────────
 async function obtenerToken(page) {
   let token = null;
   for (let i = 0; i < 15; i++) {
@@ -556,7 +555,7 @@ async function obtenerToken(page) {
   return token;
 }
 
-// ─── Inyectar token y enviar formulario ───────────────────────────────────────
+// ─── Inyectar token y enviar formulario ──────────────────────────────────────
 async function inyectarTokenYEnviar(page, token) {
   console.log("[Policía] 💉 Inyectando token...");
   await page.evaluate((t) => {
@@ -634,9 +633,7 @@ exports.consultarAntecedentes = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  if (captchaToken && sessionId) {
-    return exports.resolverConToken(req, res);
-  }
+  if (captchaToken && sessionId) return exports.resolverConToken(req, res);
 
   const tipoCodigo = TIPO_MAP[tipoDocumento] || "cc";
   const identificacion = String(cedula).replace(/[.,]/g, "");
@@ -656,7 +653,6 @@ exports.consultarAntecedentes = async (req, res) => {
     await aceptarTerminos(page);
     await rellenarFormulario(page, identificacion, tipoCodigo);
 
-    // ── Intentar resolver automáticamente ────────────────────────────────────
     let token;
     try {
       token = await resolverCaptchaAudio(page);
@@ -681,7 +677,6 @@ exports.consultarAntecedentes = async (req, res) => {
 
       const backendBase =
         process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
-
       return res.json({
         requiereCaptcha: true,
         sessionId: id,
@@ -692,7 +687,6 @@ exports.consultarAntecedentes = async (req, res) => {
       });
     }
 
-    // ── Enviar formulario y extraer resultado ─────────────────────────────────
     await inyectarTokenYEnviar(page, token);
     const texto = await extraerResultado(page);
 
@@ -706,11 +700,8 @@ exports.consultarAntecedentes = async (req, res) => {
 
     let screenshot = null;
     try {
-      const buffer = await page.screenshot({
-        fullPage: false,
-        fromSurface: true,
-      });
-      screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
+      const buf = await page.screenshot({ fullPage: false, fromSurface: true });
+      screenshot = `data:image/png;base64,${buf.toString("base64")}`;
     } catch (_) {}
 
     await browser.close().catch(() => {});
@@ -726,10 +717,12 @@ exports.consultarAntecedentes = async (req, res) => {
     console.error("[Policía] ❌ Error general:", error.message);
     if (page && !page.isClosed()) await page.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
-    return res.status(502).json({
-      error: "Error consultando Policía Nacional",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({
+        error: "Error consultando Policía Nacional",
+        detalle: error.message,
+      });
   }
 };
 
@@ -738,7 +731,6 @@ exports.consultarAntecedentes = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaBridge = (req, res) => {
   const { sessionId } = req.params;
-
   if (!sesiones.has(sessionId)) {
     return res
       .status(410)
@@ -749,7 +741,6 @@ exports.captchaBridge = (req, res) => {
 
   const backendBase =
     process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
-
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -758,28 +749,12 @@ exports.captchaBridge = (req, res) => {
   <title>Verificación - Policía Nacional</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0d1b2a; color: #fff;
-      min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    }
-    .card {
-      background: #1a2744; border-radius: 16px; padding: 40px 32px;
-      max-width: 480px; width: 90%; text-align: center;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
-    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0d1b2a; color: #fff; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: #1a2744; border-radius: 16px; padding: 40px 32px; max-width: 480px; width: 90%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.4); }
     h1 { font-size: 22px; font-weight: 700; margin: 16px 0 8px; }
     p { color: #aab; font-size: 14px; line-height: 1.6; margin-bottom: 16px; }
-    .status {
-      background: #0d1b2a; border-radius: 10px; padding: 16px;
-      margin: 16px 0; font-size: 14px; color: #7df;
-      display: flex; align-items: center; gap: 12px;
-    }
-    .spinner {
-      width: 20px; height: 20px; border: 2px solid #334;
-      border-top-color: #7df; border-radius: 50%;
-      animation: spin 0.8s linear infinite; flex-shrink: 0;
-    }
+    .status { background: #0d1b2a; border-radius: 10px; padding: 16px; margin: 16px 0; font-size: 14px; color: #7df; display: flex; align-items: center; gap: 12px; }
+    .spinner { width: 20px; height: 20px; border: 2px solid #334; border-top-color: #7df; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .success { font-size: 40px; margin: 12px 0; }
     #successMsg { display: none; }
@@ -790,28 +765,19 @@ exports.captchaBridge = (req, res) => {
     <div style="font-size:48px">🛡️</div>
     <h1>Verificación manual requerida</h1>
     <div id="waitingMsg">
-      <p>
-        El sistema no pudo resolver el captcha automáticamente.<br>
-        Se abrirá la página de la Policía. <strong>La extensión rektcaptcha</strong>
-        resolverá el captcha y esta ventana se cerrará sola.
-      </p>
-      <div class="status">
-        <div class="spinner"></div>
-        <span id="statusText">Preparando verificación...</span>
-      </div>
+      <p>El sistema no pudo resolver el captcha automáticamente.<br>
+        Se abrirá la página de la Policía. <strong>La extensión rektcaptcha</strong> resolverá el captcha y esta ventana se cerrará sola.</p>
+      <div class="status"><div class="spinner"></div><span id="statusText">Preparando verificación...</span></div>
     </div>
     <div id="successMsg">
       <div class="success">✅</div>
-      <p style="color:#4caf50; font-size:16px; margin-top:8px">
-        ¡Captcha resuelto! Cerrando ventana...
-      </p>
+      <p style="color:#4caf50;font-size:16px;margin-top:8px">¡Captcha resuelto! Cerrando ventana...</p>
     </div>
   </div>
   <script>
     const SESSION_ID = "${sessionId}";
-    const BACKEND   = "${backendBase}";
+    const BACKEND = "${backendBase}";
     const POLICIA_URL = "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
-
     function guardarSesion() {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({ policiaSessionId: SESSION_ID, policiaBackendUrl: BACKEND }, () => {
@@ -823,15 +789,10 @@ exports.captchaBridge = (req, res) => {
         abrirPolicia();
       }
     }
-
     function abrirPolicia() {
       const win = window.open(POLICIA_URL, "_blank");
-      if (!win) {
-        document.getElementById("statusText").textContent = "⚠️ Permite ventanas emergentes e intenta de nuevo.";
-        return;
-      }
-      document.getElementById("statusText").textContent =
-        "Esperando que rektcaptcha resuelva el captcha...";
+      if (!win) { document.getElementById("statusText").textContent = "⚠️ Permite ventanas emergentes e intenta de nuevo."; return; }
+      document.getElementById("statusText").textContent = "Esperando que rektcaptcha resuelva el captcha...";
       const interval = setInterval(async () => {
         try {
           const r = await fetch(BACKEND + "/api/captcha-resuelto/" + SESSION_ID);
@@ -847,7 +808,6 @@ exports.captchaBridge = (req, res) => {
       }, 2000);
       setTimeout(() => { clearInterval(interval); window.close(); }, 5 * 60 * 1000);
     }
-
     window.onload = guardarSesion;
   </script>
 </body>
@@ -936,11 +896,8 @@ exports.resolverConToken = async (req, res) => {
 
     let screenshot = null;
     try {
-      const buffer = await page.screenshot({
-        fullPage: false,
-        fromSurface: true,
-      });
-      screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
+      const buf = await page.screenshot({ fullPage: false, fromSurface: true });
+      screenshot = `data:image/png;base64,${buf.toString("base64")}`;
     } catch (_) {}
 
     const resultado = {
@@ -957,9 +914,8 @@ exports.resolverConToken = async (req, res) => {
     console.error("[Policía] ❌ Error resolviendo con token:", error.message);
     notificarSSE(sesion, "error", { error: error.message });
     await browser?.close().catch(() => {});
-    return res.status(502).json({
-      error: "Error al procesar el captcha",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({ error: "Error al procesar el captcha", detalle: error.message });
   }
 };
