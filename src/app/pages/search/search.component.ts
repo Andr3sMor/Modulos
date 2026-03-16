@@ -2,12 +2,11 @@ import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
-import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
+  imports: [CommonModule, FormsModule],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -21,13 +20,6 @@ export class SearchComponent {
   error = "";
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
-
-  // Ya no se usa el modal de captcha antiguo — se reemplaza por SSE
-  captchaData: { sessionId: string } | null = null;
-
-  // Estado del captcha manual (puzzle)
-  captchaManualMensaje = "";
-  captchaManualSessionId = "";
 
   supersociedadesEmpresas: any[] = [];
   supersociedadesDetalle: any | null = null;
@@ -118,8 +110,6 @@ export class SearchComponent {
     this.resultados = [];
     this.analisisIA = "";
     this.errorIA = "";
-    this.captchaManualMensaje = "";
-    this.captchaManualSessionId = "";
     this.supersociedadesEmpresas = [];
     this.supersociedadesDetalle = null;
 
@@ -216,7 +206,7 @@ export class SearchComponent {
           });
           break;
 
-        // ── Policía — captcha híbrido ─────────────────────────────────────────
+        // ── Policía — rektcaptcha resuelve automáticamente en el backend ─────
         case "antecedentes":
           if (!this.cedula) {
             resolve();
@@ -227,70 +217,16 @@ export class SearchComponent {
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
-                  if (res.requiereCaptcha) {
-                    // ── Caso B: puzzle — backend abrió browser visible ──────────
-                    this.captchaManualMensaje =
-                      res.mensaje ||
-                      "Se abrió el navegador en el servidor. Resuelve el CAPTCHA y el resultado aparecerá aquí automáticamente.";
-                    this.captchaManualSessionId = res.sessionId;
-                    this.cdr.detectChanges();
-
-                    // Suscribir SSE — esperar resultado o error
-                    this.consultaService
-                      .suscribirCaptchaStatus(res.sessionId)
-                      .subscribe({
-                        next: (evento: any) =>
-                          this.zone.run(() => {
-                            this.captchaManualMensaje = "";
-                            this.captchaManualSessionId = "";
-
-                            if (evento.tipo === "resultado") {
-                              const r = evento.datos;
-                              this.resultados.push({
-                                tipo: "antecedentes",
-                                fuente:
-                                  r.fuente || "Policía Nacional de Colombia",
-                                tieneAntecedentes: r.tieneAntecedentes,
-                                mensaje: r.mensaje,
-                                screenshot: r.screenshot || null,
-                                data: { fecha: new Date().toLocaleString() },
-                              });
-                            } else {
-                              this.agregarError("Policía Nacional", {
-                                error: {
-                                  error:
-                                    evento.datos?.error ||
-                                    "Error en captcha manual",
-                                },
-                              });
-                            }
-                            this.cdr.detectChanges();
-                            resolve();
-                          }),
-                        error: () =>
-                          this.zone.run(() => {
-                            this.captchaManualMensaje = "";
-                            this.captchaManualSessionId = "";
-                            this.agregarError("Policía Nacional", {
-                              error: { error: "Error en conexión SSE" },
-                            });
-                            this.cdr.detectChanges();
-                            resolve();
-                          }),
-                      });
-                  } else {
-                    // ── Caso A: captcha resuelto automáticamente ────────────────
-                    this.resultados.push({
-                      tipo: "antecedentes",
-                      fuente: res.fuente || "Policía Nacional de Colombia",
-                      tieneAntecedentes: res.tieneAntecedentes,
-                      mensaje: res.mensaje,
-                      screenshot: res.screenshot || null,
-                      data: { fecha: new Date().toLocaleString() },
-                    });
-                    this.cdr.detectChanges();
-                    resolve();
-                  }
+                  this.resultados.push({
+                    tipo: "antecedentes",
+                    fuente: res.fuente || "Policía Nacional de Colombia",
+                    tieneAntecedentes: res.tieneAntecedentes,
+                    mensaje: res.mensaje,
+                    screenshot: res.screenshot || null,
+                    data: { fecha: new Date().toLocaleString() },
+                  });
+                  this.cdr.detectChanges();
+                  resolve();
                 }),
               error: (err: any) =>
                 this.zone.run(() => {
@@ -558,27 +494,6 @@ export class SearchComponent {
     a.download = `${map[r.tipo] ?? "Certificado_" + r.tipo}.pdf`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-  }
-
-  // ── Captcha modal legacy (ya no se usa para Policía, conservado por compatibilidad) ──
-  onCaptchaResuelto(resultado: any) {
-    this.captchaData = null;
-    this.zone.run(() => {
-      this.resultados.push({
-        tipo: "antecedentes",
-        fuente: resultado.fuente || "Policía Nacional de Colombia",
-        tieneAntecedentes: resultado.tieneAntecedentes,
-        mensaje: resultado.mensaje,
-        data: { fecha: new Date().toLocaleString() },
-      });
-      this.cdr.detectChanges();
-    });
-  }
-
-  onCaptchaCancelado() {
-    this.captchaData = null;
-    this.cargando = false;
-    this.cdr.detectChanges();
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -1,31 +1,24 @@
 "use strict";
 
 /**
- * policia.controller.js — Flujo con reCAPTCHA híbrido
+ * policia.controller.js
  *
- * FLUJO:
- *  1. POST /api/consulta-antecedentes { cedula, tipoDocumento }
- *     → Abre Puppeteer, navega a index, acepta términos, llega a antecedentes.xhtml
- *     → Rellena formulario (cédula + tipo)
- *     → Hace click en el widget reCAPTCHA
- *        a) Si reCAPTCHA entrega token solo (sin puzzle):
- *           → Envía formulario → retorna resultado final
- *        b) Si lanza puzzle (iframe de desafío):
- *           → Abre el browser con pantalla (xvfb / display) para que el usuario vea
- *           → Responde al frontend: { requiereCaptcha: true, sessionId }
- *           → Deja el browser abierto y en espera
+ * Usa la extensión rektcaptcha cargada en Puppeteer headless para resolver
+ * el reCAPTCHA automáticamente desde el browser, sin depender del dominio
+ * del frontend ni de servicios externos.
  *
- *  2. El frontend suscribe SSE a GET /api/captcha-status/:sessionId
- *     → Recibe evento "resuelto" cuando el usuario resolvió el puzzle
- *
- *  3. Una vez detectado el token (polling interno del browser):
- *     → Envía el formulario
- *     → Emite evento SSE "resultado" con los datos
- *     → Cierra browser
+ * Flujo:
+ *  1. Lanzar browser con la extensión rektcaptcha
+ *  2. Configurar la extensión via service worker
+ *  3. Navegar a index.xhtml → aceptar términos → antecedentes.xhtml
+ *  4. Rellenar formulario (tipo + cédula)
+ *  5. Esperar que rektcaptcha resuelva el captcha (polling g-recaptcha-response)
+ *  6. Enviar formulario y extraer resultado
  */
 
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+const path = require("path");
 
 if (!puppeteer.plugins.some((p) => p.name === "stealth")) {
   puppeteer.use(StealthPlugin());
@@ -36,12 +29,13 @@ const INDEX_URL =
 const ANTECEDENTES_URL =
   "https://antecedentes.policia.gov.co:7005/WebJudicial/antecedentes.xhtml";
 
-// ── Mapa de sesiones pendientes (sessionId → { browser, page, sseClients[] }) ─
-const sesiones = new Map();
+// Ruta a la extensión rektcaptcha — ajusta según tu estructura de proyecto
+const EXTENSION_PATH = path.resolve(
+  __dirname,
+  "../browser-extensions/rektcaptcha",
+);
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// ─── Tipo de documento → valor del select ──────────────────────────────────────
+// Mapa tipo documento → valor del select
 const TIPO_MAP = {
   CC: "cc",
   CE: "ce",
@@ -53,92 +47,215 @@ const TIPO_MAP = {
   Pasaporte: "pa",
 };
 
-// ─── Lanzar browser ────────────────────────────────────────────────────────────
-async function lanzarBrowser(headless = true) {
-  const args = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--ignore-certificate-errors",
-    "--allow-running-insecure-content",
-    "--disable-blink-features=AutomationControlled",
-  ];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  if (!headless) {
-    // Necesita Xvfb o display real para mostrar al usuario
-    args.push("--start-maximized");
-  }
-
-  return puppeteer.launch({
-    headless,
+// ─── Lanzar browser con extensión ─────────────────────────────────────────────
+async function lanzarBrowser() {
+  const browser = await puppeteer.launch({
+    headless: true,
+    devtools: false,
     ignoreHTTPSErrors: true,
-    args,
-    defaultViewport: headless ? { width: 1280, height: 800 } : null,
+    args: [
+      `--disable-extensions-except=${EXTENSION_PATH}`,
+      `--load-extension=${EXTENSION_PATH}`,
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-features=IsolateOrigins,site-per-process",
+      "--ignore-certificate-errors",
+      "--allow-running-insecure-content",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+      "--disable-software-rasterizer",
+      "--font-render-hinting=none",
+      "--window-size=1920,1080",
+    ],
+    ignoreDefaultArgs: ["--disable-extensions", "--enable-automation"],
   });
+
+  // Abrir chrome://extensions/ para asegurar que los service workers de la extensión arranquen
+  const warmupPage = await browser.newPage();
+  try {
+    await warmupPage.goto("chrome://extensions/", {
+      waitUntil: "domcontentloaded",
+      timeout: 5000,
+    });
+  } catch (_) {}
+  await sleep(500);
+  await warmupPage.close().catch(() => {});
+
+  return browser;
 }
 
-// ─── Paso 1: navegar a index y aceptar términos ────────────────────────────────
+// ─── Configurar extensión rektcaptcha via service worker ──────────────────────
+async function configurarExtension(browser) {
+  try {
+    const targets = await browser.targets();
+    const extensionTarget = targets.find(
+      (t) => t.type() === "service_worker" || t.url().includes("rektcaptcha"),
+    );
+
+    if (extensionTarget) {
+      const worker = await extensionTarget.worker();
+      if (worker) {
+        await worker.evaluate(() => {
+          const chrome = self.chrome;
+          if (chrome?.storage?.local) {
+            chrome.storage.local.set({
+              recaptcha_auto_open: true,
+              recaptcha_auto_solve: true,
+              recaptcha_click_delay_time: 300,
+              recaptcha_solve_delay_time: 1000,
+            });
+          }
+        });
+        console.log("[Policía] ✅ Extensión rektcaptcha configurada");
+      }
+    } else {
+      console.warn("[Policía] ⚠️ Service worker de rektcaptcha no encontrado");
+    }
+  } catch (e) {
+    console.warn("[Policía] ⚠️ Error configurando extensión:", e.message);
+  }
+}
+
+// ─── Aceptar términos y navegar a antecedentes.xhtml ─────────────────────────
 async function aceptarTerminos(page) {
   console.log("[Policía] 🌐 Navegando a index.xhtml...");
   await page.goto(INDEX_URL, { waitUntil: "networkidle2", timeout: 45000 });
-  await sleep(2000);
+  await sleep(3000);
 
-  // Verificar si ya estamos en antecedentes.xhtml (sesión activa)
+  // Si ya estamos en antecedentes (sesión activa), saltar
   if (page.url().includes("antecedentes.xhtml")) {
-    console.log("[Policía] ✅ Ya en antecedentes.xhtml");
+    console.log("[Policía] ✅ Ya en antecedentes.xhtml — saltando términos");
     return;
   }
 
-  // Aceptar términos: radio "Sí acepto"
-  console.log("[Policía] 📋 Aceptando términos...");
-  try {
-    await page.waitForSelector("#aceptaOption\\:0", { timeout: 10000 });
-    await page.click("#aceptaOption\\:0");
-    await sleep(1500);
-  } catch (e) {
-    console.warn("[Policía] ⚠️ Radio términos no encontrado:", e.message);
+  // Verificar si el input de cédula ya es visible (acceso directo)
+  const accesoDirecto = await page.evaluate(() => {
+    const el = document.getElementById("cedulaInput");
+    return el && el.offsetParent !== null;
+  });
+  if (accesoDirecto) {
+    console.log("[Policía] 🚀 Acceso directo — saltando términos");
+    return;
   }
 
-  // Esperar que se habilite el botón continuar
-  let btnActivo = false;
-  for (let i = 0; i < 5; i++) {
-    btnActivo = await page.evaluate(() => {
-      const btn = document.querySelector("#continuarBtn");
-      return (
-        btn &&
-        !btn.classList.contains("ui-state-disabled") &&
-        !btn.hasAttribute("disabled")
-      );
-    });
-    if (btnActivo) break;
-    await sleep(1000);
+  // Aceptar términos con reintentos
+  let exito = false;
+  for (let intento = 1; intento <= 10 && !exito; intento++) {
+    console.log(`[Policía] 📋 Términos — intento ${intento}/10`);
+    try {
+      if (intento > 1) {
+        await page.reload({ waitUntil: "networkidle2", timeout: 45000 });
+        await sleep(3000);
+      }
+
+      const radioSel = "#aceptaOption\\:0";
+      await page.waitForSelector(radioSel, { timeout: 10000 });
+      await page.click(radioSel);
+      await sleep(2000);
+
+      let btnActivo = await checkBotonContinuar(page);
+      if (!btnActivo) {
+        // Intento JS directo
+        await page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (el) el.click();
+        }, radioSel);
+        await sleep(4000);
+        btnActivo = await checkBotonContinuar(page);
+      }
+
+      if (btnActivo) {
+        console.log("[Policía] ✅ Botón Continuar activado");
+        exito = true;
+      }
+    } catch (e) {
+      console.warn(`[Policía] ⚠️ Intento ${intento} términos: ${e.message}`);
+    }
+    if (!exito && intento < 10) await sleep(2000);
   }
 
-  if (!btnActivo) throw new Error("El botón Continuar no se activó.");
+  if (!exito)
+    throw new Error("No se pudo activar el botón Continuar tras 10 intentos.");
 
-  // Click + esperar navegación
-  console.log("[Policía] ▶️ Clickando Continuar...");
-  await Promise.all([
-    page
-      .waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 })
-      .catch(() => null),
-    page.click("#continuarBtn"),
-  ]);
-
-  await sleep(1500);
-
-  if (!page.url().includes("antecedentes.xhtml")) {
-    throw new Error(
-      "No se llegó a antecedentes.xhtml. URL actual: " + page.url(),
-    );
-  }
-  console.log("[Policía] ✅ En antecedentes.xhtml");
+  // Hacer click en Continuar y esperar navegación
+  await clickContinuar(page, 3);
 }
 
-// ─── Paso 2: rellenar formulario (cédula + tipo) ───────────────────────────────
-async function rellenarFormulario(page, cedula, tipoCodigo) {
-  console.log(`[Policía] ✏️ Rellenando formulario: ${tipoCodigo} ${cedula}`);
+async function checkBotonContinuar(page) {
+  return page.evaluate(() => {
+    const btn = document.querySelector("#continuarBtn");
+    return (
+      btn &&
+      !btn.classList.contains("ui-state-disabled") &&
+      !btn.hasAttribute("disabled")
+    );
+  });
+}
 
+async function clickContinuar(page, maxReintentos) {
+  for (let i = 1; i <= maxReintentos; i++) {
+    const yaCargado = await page
+      .evaluate(
+        () =>
+          window.location.href.includes("antecedentes.xhtml") ||
+          !!document.getElementById("cedulaInput"),
+      )
+      .catch(() => false);
+    if (yaCargado) return;
+
+    console.log(`[Policía] ▶️ Click Continuar — intento ${i}/${maxReintentos}`);
+    try {
+      await Promise.all([
+        page
+          .waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 })
+          .catch(() => null),
+        page.click("#continuarBtn"),
+      ]);
+      if (page.url().includes("antecedentes.xhtml")) return;
+    } catch (_) {}
+
+    // Estrategia JS alternativa
+    if (i > 1) {
+      await page.evaluate(() => {
+        const btn = document.querySelector("#continuarBtn");
+        if (btn) btn.click();
+      });
+      await sleep(5000);
+      if (page.url().includes("antecedentes.xhtml")) return;
+    }
+    await sleep(2000);
+  }
+  throw new Error("No se llegó a antecedentes.xhtml. URL: " + page.url());
+}
+
+// ─── Verificar que estamos en antecedentes.xhtml ──────────────────────────────
+async function verificarPaginaAntecedentes(page) {
+  for (let i = 1; i <= 3; i++) {
+    try {
+      await page.waitForFunction(
+        () => window.location.href.includes("antecedentes.xhtml"),
+        { timeout: 10000 },
+      );
+      await page.waitForSelector("#cedulaInput", { timeout: 10000 });
+      console.log("[Policía] ✅ Página antecedentes confirmada");
+      return;
+    } catch (e) {
+      console.warn(`[Policía] ⚠️ Validación ${i}/3: ${e.message}`);
+      await sleep(2000);
+    }
+  }
+  throw new Error("No se pudo validar la página de antecedentes.");
+}
+
+// ─── Rellenar formulario ───────────────────────────────────────────────────────
+async function rellenarFormulario(page, cedula, tipoCodigo) {
+  console.log(`[Policía] ✏️ Formulario: tipo=${tipoCodigo} cedula=${cedula}`);
+
+  await page.setViewport({ width: 1280, height: 800 });
   await page.waitForSelector("#cedulaInput", { timeout: 10000 });
 
   // Tipo de documento
@@ -151,87 +268,99 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
   }
 
   // Número de documento
-  await page.click("#cedulaInput", { clickCount: 3 });
-  await page.type("#cedulaInput", String(cedula), { delay: 40 });
+  const inputEncontrado = await page.evaluate((num) => {
+    const inputs = [...document.querySelectorAll('input[type="text"]')];
+    const visible = inputs.find((i) => i.offsetParent !== null);
+    if (visible) {
+      visible.value = num;
+      visible.dispatchEvent(new Event("input", { bubbles: true }));
+      visible.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+    return false;
+  }, String(cedula));
+
+  if (!inputEncontrado) {
+    await page.click("#cedulaInput", { clickCount: 3 });
+    await page.type("#cedulaInput", String(cedula), { delay: 40 });
+  }
   await sleep(300);
 }
 
-// ─── Paso 3: interactuar con reCAPTCHA ────────────────────────────────────────
+// ─── Esperar que rektcaptcha resuelva el captcha ──────────────────────────────
 /**
- * Hace click en el checkbox de reCAPTCHA y espera hasta MAX_WAIT ms.
- * Retorna el token si se resolvió automáticamente, o null si hay puzzle.
+ * Hace polling del campo g-recaptcha-response hasta que tenga valor.
+ * rektcaptcha detecta el widget y lo resuelve automáticamente.
+ * Timeout máximo: 120 segundos (60 checks × 2s).
  */
-async function clickCaptchaYEsperar(page, maxWait = 8000) {
-  console.log("[Policía] 🤖 Interactuando con reCAPTCHA...");
+async function esperarCaptcha(page) {
+  console.log("[Policía] 🤖 Esperando que rektcaptcha resuelva el captcha...");
 
-  // Esperar que el iframe del captcha cargue
-  await page
-    .waitForFunction(
-      () => !!document.querySelector('iframe[src*="recaptcha"]'),
-      { timeout: 10000 },
-    )
-    .catch(() => console.warn("[Policía] ⚠️ iframe reCAPTCHA no encontrado"));
+  let desconectados = 0;
 
-  // Click en el checkbox dentro del iframe
-  const frames = page.frames();
-  const captchaFrame = frames.find((f) =>
-    f.url().includes("recaptcha/api2/anchor"),
-  );
-
-  if (captchaFrame) {
+  for (let i = 1; i <= 60; i++) {
     try {
-      await captchaFrame.waitForSelector("#recaptcha-anchor", {
-        timeout: 5000,
+      if (page.isClosed())
+        throw new Error("Página cerrada durante espera de captcha");
+
+      const resuelto = await page.evaluate(() => {
+        const el = document.getElementById("g-recaptcha-response");
+        return !!(el && el.value && el.value.trim().length > 0);
       });
-      await captchaFrame.click("#recaptcha-anchor");
-      console.log("[Policía] ✅ Click en checkbox reCAPTCHA");
+
+      if (desconectados > 0) {
+        console.log(
+          `[Policía] ✅ Contexto recuperado tras ${desconectados} errores`,
+        );
+        desconectados = 0;
+      }
+
+      if (resuelto) {
+        console.log(
+          `[Policía] ✅ Captcha resuelto por rektcaptcha (${i * 2}s)`,
+        );
+        return;
+      }
     } catch (e) {
-      console.warn("[Policía] ⚠️ No se pudo hacer click en anchor:", e.message);
+      const esDesconexion =
+        e.message.includes("detached") ||
+        e.message.includes("shutting down") ||
+        e.message.includes("Target closed") ||
+        e.message.includes("Execution context was destroyed");
+
+      if (esDesconexion) {
+        desconectados++;
+        console.warn(
+          `[Policía] ⚠️ Contexto desconectado #${desconectados} — esperando recuperación...`,
+        );
+        if (desconectados > 10) {
+          throw new Error(
+            "Browser atascado en estado desconectado — forzando reintento.",
+          );
+        }
+        await sleep(2000);
+        continue;
+      }
+      throw e;
     }
+
+    if (i % 5 === 0)
+      console.log(`[Policía] ⏳ Captcha pendiente... (${i * 2}s)`);
+    await sleep(2000);
   }
 
-  // Esperar token o puzzle — polling cada 300ms
-  const inicio = Date.now();
-  while (Date.now() - inicio < maxWait) {
-    const token = await page.evaluate(() => {
-      const el = document.querySelector('[name="g-recaptcha-response"]');
-      return el ? el.value : "";
-    });
-    if (token && token.length > 20) {
-      console.log("[Policía] ✅ Token automático obtenido");
-      return token;
-    }
-
-    // Detectar si apareció el iframe del puzzle
-    const hayPuzzle = page
-      .frames()
-      .some((f) => f.url().includes("recaptcha/api2/bframe"));
-    if (hayPuzzle) {
-      console.log(
-        "[Policía] 🧩 Puzzle detectado — requiere interacción humana",
-      );
-      return null;
-    }
-
-    await sleep(300);
-  }
-
-  // Timeout — verificar token de último momento
-  const tokenFinal = await page.evaluate(() => {
-    const el = document.querySelector('[name="g-recaptcha-response"]');
-    return el ? el.value : "";
-  });
-  return tokenFinal && tokenFinal.length > 20 ? tokenFinal : null;
+  throw new Error(
+    "Timeout: rektcaptcha no resolvió el captcha en 120 segundos.",
+  );
 }
 
-// ─── Paso 4: enviar formulario y obtener resultado ────────────────────────────
-async function enviarYObtenerResultado(page, cedula, tipoCodigo) {
+// ─── Enviar formulario y obtener resultado ────────────────────────────────────
+async function enviarFormulario(page, cedula, tipoCodigo) {
   console.log("[Policía] 🚀 Enviando formulario...");
 
-  // Buscar y hacer click en el botón de consulta
   const btnClickado = await page.evaluate(() => {
     const candidatos = [
-      ...document.querySelectorAll('button, input[type="submit"], a'),
+      ...document.querySelectorAll("button, a, input[type='submit']"),
     ];
     const btn = candidatos.find((b) => {
       const t = (b.textContent || b.value || "").toLowerCase();
@@ -247,103 +376,33 @@ async function enviarYObtenerResultado(page, cedula, tipoCodigo) {
     }
     return null;
   });
-  console.log("[Policía] 🖱️ Botón:", btnClickado);
+  console.log("[Policía] 🖱️ Botón clickado:", btnClickado);
 
-  // Esperar resultado — hasta 20s
-  await page
-    .waitForFunction(
-      () => {
-        const body = document.body?.innerText?.toUpperCase() || "";
-        return (
-          body.includes("NO TIENE ASUNTOS PENDIENTES") ||
-          body.includes("TIENE ASUNTOS PENDIENTES") ||
-          body.includes("ANTECEDENTES") ||
-          body.includes("ERROR") ||
-          body.includes("CAPTCHA")
-        );
-      },
-      { timeout: 20000 },
-    )
-    .catch(() => console.warn("[Policía] ⚠️ Timeout esperando resultado"));
-
-  await sleep(1000);
-
-  const texto = await page.evaluate(
-    () => document.body?.innerText?.toUpperCase() || "",
-  );
-  console.log("[Policía] 📄 Texto resultado (200):", texto.substring(0, 200));
-
-  // Verificar si el captcha fue rechazado
-  if (
-    texto.includes("CAPTCHA") &&
-    !texto.includes("NO TIENE ASUNTOS") &&
-    !texto.includes("TIENE ASUNTOS")
-  ) {
-    throw new Error("CAPTCHA_INVALIDO");
-  }
-
-  const tieneAntecedentes = !texto.includes("NO TIENE ASUNTOS PENDIENTES");
-  const ahora = new Date().toLocaleString("es-CO");
-  const tipoLabel = tipoCodigo.toUpperCase();
-
-  let screenshot = "";
-  try {
-    const buf = await page.screenshot({ fullPage: false });
-    screenshot = `data:image/png;base64,${buf.toString("base64")}`;
-  } catch (_) {}
-
-  return {
-    fuente: "Policía Nacional de Colombia",
-    tieneAntecedentes,
-    mensaje: tieneAntecedentes
-      ? `Al ${ahora} se verifica que ${tipoLabel} ${cedula} TIENE antecedentes judiciales.`
-      : `Al ${ahora} se verifica que ${tipoLabel} ${cedula} NO tiene antecedentes judiciales.`,
-    screenshot,
-  };
+  await sleep(5000);
 }
 
-// ─── Esperar token manualmente (polling hasta 5 minutos) ─────────────────────
-async function esperarTokenManual(page, sessionId) {
-  console.log(
-    `[Policía] ⏳ Esperando resolución manual del captcha (session: ${sessionId})...`,
-  );
-  const MAX = 5 * 60 * 1000; // 5 min
-  const inicio = Date.now();
-
-  while (Date.now() - inicio < MAX) {
-    // Verificar si la sesión fue cancelada
-    if (!sesiones.has(sessionId)) {
-      throw new Error("SESION_CANCELADA");
+// ─── Extraer resultado del DOM ────────────────────────────────────────────────
+async function extraerResultado(page) {
+  const resultado = await page.evaluate(() => {
+    const selectores = [
+      "#antecedentes",
+      "#form\\:j_idt8_content",
+      "#form\\:j_idt8",
+      "#form",
+      "body",
+    ];
+    for (const s of selectores) {
+      const el = document.querySelector(s);
+      if (el && el.textContent && el.textContent.trim().length > 100) {
+        return { encontrado: true, texto: el.textContent.trim() };
+      }
     }
-
-    const token = await page
-      .evaluate(() => {
-        const el = document.querySelector('[name="g-recaptcha-response"]');
-        return el ? el.value : "";
-      })
-      .catch(() => "");
-
-    if (token && token.length > 20) {
-      console.log(`[Policía] ✅ Token manual obtenido (${token.length} chars)`);
-      return token;
-    }
-
-    await sleep(500);
-  }
-
-  throw new Error("TIMEOUT_CAPTCHA_MANUAL");
-}
-
-// ─── Emitir evento SSE a todos los clientes de una sesión ─────────────────────
-function emitirSSE(sessionId, evento, datos) {
-  const sesion = sesiones.get(sessionId);
-  if (!sesion) return;
-  const msg = `event: ${evento}\ndata: ${JSON.stringify(datos)}\n\n`;
-  sesion.sseClients.forEach((res) => {
-    try {
-      res.write(msg);
-    } catch (_) {}
+    return { encontrado: false, texto: "" };
   });
+
+  if (!resultado.encontrado)
+    throw new Error("No se encontró texto de resultados.");
+  return resultado.texto;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -353,134 +412,104 @@ function emitirSSE(sessionId, evento, datos) {
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "CC" } = req.body;
 
-  if (!cedula)
+  if (!cedula) {
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
+  }
 
   const tipoCodigo = TIPO_MAP[tipoDocumento] || "cc";
-  const sessionId = `policia-${cedula}-${Date.now()}`;
+  const identificacion = String(cedula).replace(/[.,]/g, "");
 
-  console.log(
-    `\n=== Policía: cedula=${cedula} tipo=${tipoCodigo} session=${sessionId} ===`,
-  );
+  console.log(`\n=== Policía: cedula=${identificacion} tipo=${tipoCodigo} ===`);
 
-  let browser;
-  try {
-    // ── 1. Lanzar en headless primero ────────────────────────────────────────
-    browser = await lanzarBrowser(true);
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-    );
-    await page.setExtraHTTPHeaders({ "accept-language": "es-CO,es;q=0.9" });
+  let browser = null;
 
-    // ── 2. Términos y formulario ──────────────────────────────────────────────
-    await aceptarTerminos(page);
-    await rellenarFormulario(page, cedula, tipoCodigo);
-
-    // ── 3. Intentar captcha automático ────────────────────────────────────────
-    const tokenAuto = await clickCaptchaYEsperar(page, 8000);
-
-    if (tokenAuto) {
-      // ── 3a. Captcha resuelto solo → enviar y responder ──────────────────────
-      const resultado = await enviarYObtenerResultado(page, cedula, tipoCodigo);
-      await browser.close();
-      return res.json(resultado);
-    }
-
-    // ── 3b. Puzzle detectado — necesita resolución manual ─────────────────────
-    // Cerrar browser headless y reabrir con pantalla
-    await browser.close();
-    browser = await lanzarBrowser(false);
-    const pageVisible = await browser.newPage();
-    await pageVisible.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-    );
-
-    // Guardar sesión
-    sesiones.set(sessionId, { browser, page: pageVisible, sseClients: [] });
-
-    // Repetir flujo en browser visible
-    await aceptarTerminos(pageVisible);
-    await rellenarFormulario(pageVisible, cedula, tipoCodigo);
-    await clickCaptchaYEsperar(pageVisible, 3000); // solo para abrir el puzzle
-
-    // Responder al frontend que necesita resolución manual
-    res.json({
-      requiereCaptcha: true,
-      sessionId,
-      mensaje:
-        "Se abrió el navegador. Por favor resuelve el CAPTCHA y la consulta continuará automáticamente.",
-    });
-
-    // En background: esperar token, enviar formulario, emitir SSE
-    esperarTokenManual(pageVisible, sessionId)
-      .then(async () => {
-        console.log(
-          `[Policía] 📤 Enviando formulario tras captcha manual (${sessionId})`,
-        );
-        const resultado = await enviarYObtenerResultado(
-          pageVisible,
-          cedula,
-          tipoCodigo,
-        );
-        emitirSSE(sessionId, "resultado", resultado);
-        sesiones.delete(sessionId);
-        await browser.close().catch(() => {});
-      })
-      .catch(async (err) => {
-        console.error(`[Policía] ❌ Error tras captcha manual: ${err.message}`);
-        emitirSSE(sessionId, "error", { error: err.message });
-        sesiones.delete(sessionId);
-        await browser.close().catch(() => {});
-      });
-  } catch (error) {
-    console.error("❌ ERROR POLICÍA:", error.message);
-    if (browser) await browser.close().catch(() => {});
-    sesiones.delete(sessionId);
-    return res.status(502).json({
-      error: "Error consultando Policía",
-      detalle: error.message,
-    });
-  }
-};
-
-// ─── SSE: el frontend se suscribe para recibir el resultado cuando hay puzzle ──
-exports.captchaStatus = (req, res) => {
-  const { sessionId } = req.params;
-
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders();
-
-  // Keepalive cada 15s
-  const keepalive = setInterval(() => {
+  // Hasta 5 reintentos (igual que el servicio NestJS original)
+  for (let intento = 1; intento <= 5; intento++) {
+    let page = null;
     try {
-      res.write(": keepalive\n\n");
-    } catch (_) {
-      clearInterval(keepalive);
+      console.log(`[Policía] 🔄 Intento ${intento}/5`);
+
+      if (!browser || intento === 1) {
+        if (browser) await browser.close().catch(() => {});
+        browser = await lanzarBrowser();
+        await configurarExtension(browser);
+      }
+
+      page = await browser.newPage();
+      page.on("console", (msg) => {
+        if (msg.type() === "error" || msg.text().includes("PrimeFaces")) {
+          console.debug("[Browser]", msg.text());
+        }
+      });
+      await page.setUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+      );
+
+      // Si es reintento, recargar en vez de reabrir browser
+      if (intento > 1) {
+        console.log("[Policía] 🔁 Recargando página para reintento...");
+        await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
+      }
+
+      // ── Flujo principal ────────────────────────────────────────────────────
+      await aceptarTerminos(page);
+      await verificarPaginaAntecedentes(page);
+      await rellenarFormulario(page, identificacion, tipoCodigo);
+      await esperarCaptcha(page);
+      await enviarFormulario(page, identificacion, tipoCodigo);
+      const texto = await extraerResultado(page);
+
+      // ── Interpretar resultado ──────────────────────────────────────────────
+      const tieneAntecedentes = !texto
+        .toUpperCase()
+        .includes("NO TIENE ASUNTOS PENDIENTES");
+      const ahora = new Date().toLocaleString("es-CO");
+      const mensaje = tieneAntecedentes
+        ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${identificacion} TIENE antecedentes judiciales.`
+        : `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${identificacion} no tiene antecedentes judiciales.`;
+
+      // ── Screenshot de evidencia ────────────────────────────────────────────
+      let screenshot = null;
+      try {
+        const buffer = await page.screenshot({
+          fullPage: false,
+          fromSurface: true,
+        });
+        screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
+      } catch (_) {}
+
+      await browser.close().catch(() => {});
+
+      console.log(`[Policía] ✅ Consulta exitosa para ${identificacion}`);
+      return res.json({
+        fuente: "Policía Nacional de Colombia",
+        tieneAntecedentes,
+        mensaje,
+        screenshot,
+      });
+    } catch (e) {
+      console.error(`[Policía] ❌ Intento ${intento}/5 falló: ${e.message}`);
+      if (page && !page.isClosed()) await page.close().catch(() => {});
+
+      // Si el browser crasheó, reiniciar en el siguiente intento
+      const esCrash =
+        e.message.includes("Target closed") ||
+        e.message.includes("Session closed") ||
+        e.message.includes("Browser atascado");
+      if (esCrash && browser) {
+        await browser.close().catch(() => {});
+        browser = null;
+      }
+
+      if (intento === 5) {
+        if (browser) await browser.close().catch(() => {});
+        return res.status(502).json({
+          error: "Error consultando Policía Nacional",
+          detalle: `Falló tras 5 intentos. Último error: ${e.message}`,
+        });
+      }
+
+      await sleep(3000);
     }
-  }, 15000);
-
-  const sesion = sesiones.get(sessionId);
-  if (!sesion) {
-    res.write(
-      `event: error\ndata: ${JSON.stringify({ error: "Sesión no encontrada" })}\n\n`,
-    );
-    clearInterval(keepalive);
-    res.end();
-    return;
   }
-
-  sesion.sseClients.push(res);
-  console.log(
-    `[Policía] 📡 SSE conectado (${sessionId}) — clientes: ${sesion.sseClients.length}`,
-  );
-
-  req.on("close", () => {
-    clearInterval(keepalive);
-    const s = sesiones.get(sessionId);
-    if (s) s.sseClients = s.sseClients.filter((c) => c !== res);
-    console.log(`[Policía] 📡 SSE desconectado (${sessionId})`);
-  });
 };
