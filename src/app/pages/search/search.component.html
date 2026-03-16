@@ -698,11 +698,17 @@
         </div>
       </div>
     </div>
-
-    <!-- Aviso captcha manual en progreso -->
-    <div *ngIf="captchaManualMensaje" class="alert-captcha-manual">
-      <span class="spinner spinner-purple"></span>
-      🖥️ {{ captchaManualMensaje }}
-    </div>
   </div>
 </div>
+
+<!-- ── Modal captcha Policía Nacional ── -->
+<app-captcha-resolver
+  *ngIf="mostrarCaptchaPolicia"
+  [cedula]="cedula"
+  [sessionId]="captchaSessionId"
+  [popupUrl]="captchaPopupUrl"
+  [idType]="tipoDocumento"
+  (resuelto)="onCaptchaResuelto($event)"
+  (cancelado)="onCaptchaCancelado()"
+>
+</app-captcha-resolver>

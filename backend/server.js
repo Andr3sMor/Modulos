@@ -28,15 +28,12 @@ app.use(cors(corsOptions));
 app.use(express.json());
 
 // ─── Semáforo de concurrencia ──────────────────────────────────────────────────
-// Limita el número de instancias de Chromium/Puppeteer ejecutándose
-// simultáneamente para evitar agotamiento de memoria y recursos del servidor.
 class Semaforo {
   constructor(limite) {
     this.limite = limite;
     this.cola = [];
     this.activos = 0;
   }
-
   adquirir() {
     if (this.activos < this.limite) {
       this.activos++;
@@ -44,7 +41,6 @@ class Semaforo {
     }
     return new Promise((resolve) => this.cola.push(resolve));
   }
-
   liberar() {
     this.activos = Math.max(0, this.activos - 1);
     if (this.cola.length > 0) {
@@ -55,15 +51,8 @@ class Semaforo {
   }
 }
 
-// Solo 1 browser activo a la vez para endpoints que usan Puppeteer/Chromium
 const semaforoBrowser = new Semaforo(1);
 
-// ─── Wrappers de control ───────────────────────────────────────────────────────
-
-/**
- * Limita la concurrencia de controladores que usan Puppeteer.
- * Requests adicionales esperan en cola hasta que el slot quede libre.
- */
 function conSemaforo(controlador) {
   return async (req, res) => {
     console.log(
@@ -78,20 +67,13 @@ function conSemaforo(controlador) {
   };
 }
 
-/**
- * Agrega un timeout máximo por request.
- * Si el controlador no responde en `ms` milisegundos, devuelve 504.
- */
 function conTimeout(controlador, ms = 120000) {
   return async (req, res) => {
     let respondido = false;
-
     const timer = setTimeout(() => {
       if (!respondido && !res.headersSent) {
         respondido = true;
-        console.error(
-          `[Timeout] Request tardó más de ${ms / 1000}s — abortando`,
-        );
+        console.error(`[Timeout] Request tardó más de ${ms / 1000}s`);
         res.status(504).json({
           error: "Timeout",
           detalle: `La consulta tardó más de ${ms / 1000} segundos y fue cancelada.`,
@@ -118,9 +100,7 @@ function conTimeout(controlador, ms = 120000) {
   };
 }
 
-// ─── Rutas ─────────────────────────────────────────────────────────────────────
-
-// Rutas sin Puppeteer — sin restricción de concurrencia
+// ─── Rutas sin Puppeteer ───────────────────────────────────────────────────────
 app.post("/api/consulta-contador", jccController.consultarContador);
 app.post("/api/consulta-cedula", regController.consultarCedula);
 app.post("/api/consulta-offshore", offshoreController.consultarOffshore);
@@ -139,11 +119,16 @@ app.post(
 );
 app.post("/api/consulta-paco", pacoController.consultarPACO);
 
-// Rutas con Puppeteer — serializar con semáforo + timeout
+// ─── Rutas Policía ─────────────────────────────────────────────────────────────
+// Primera llamada y segunda llamada (con token) — con semáforo
 app.post(
   "/api/consulta-antecedentes",
   conTimeout(conSemaforo(policiaController.consultarAntecedentes), 150000),
 );
+// SSE — SIN semáforo ni timeout (es una conexión larga de escucha)
+app.get("/api/captcha-status/:sessionId", policiaController.captchaStatus);
+
+// ─── Rutas con Puppeteer ───────────────────────────────────────────────────────
 app.post(
   "/api/consulta-procuraduria",
   conTimeout(conSemaforo(procuraduriaController.consultarProcuraduria), 120000),

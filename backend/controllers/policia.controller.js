@@ -3,26 +3,23 @@
 /**
  * policia.controller.js
  *
- * Flujo con captcha resuelto por el usuario en el navegador:
- *
- *  1. POST /api/consulta-antecedentes  (sin captchaToken)
- *     → Backend navega hasta la página de la Policía con Puppeteer
+ * Flujo en Render (producción):
+ *  1. POST /api/consulta-antecedentes (sin captchaToken)
+ *     → Puppeteer navega hasta antecedentes.xhtml y llena el formulario
  *     → Detecta el reCAPTCHA
- *     → Guarda la sesión en memoria con un sessionId
- *     → Responde: { requiereCaptcha: true, sessionId: "abc123" }
+ *     → Devuelve { requiereCaptcha: true, sessionId }
  *
- *  2. El frontend muestra CaptchaResolverComponent
- *     → El usuario resuelve el captcha en su navegador
- *     → El componente obtiene el token de Google
+ *  2. Frontend abre popup → usuario tiene rektcaptcha instalada en su browser
+ *     → La extensión resuelve el captcha automáticamente
+ *     → El frontend obtiene el token desde el popup (postMessage)
  *
- *  3. POST /api/consulta-antecedentes  (con captchaToken + sessionId)
- *     → Backend recupera la sesión Puppeteer
- *     → Inyecta el token en el campo g-recaptcha-response
- *     → Envía el formulario y extrae el resultado
- *     → Responde con el resultado final
+ *  3. POST /api/consulta-antecedentes (con captchaToken + sessionId)
+ *     → Backend recupera sesión Puppeteer
+ *     → Inyecta el token, envía formulario, extrae resultado
+ *     → Devuelve resultado final
  *
- * En Render: usa puppeteer-core + @sparticuz/chromium (sin cache externo).
- * En local:  usa puppeteer-extra (con o sin extensión rektcaptcha).
+ * En Render: puppeteer-core + @sparticuz/chromium
+ * En local:  puppeteer-extra (con extensión rektcaptcha si existe)
  */
 
 const puppeteerExtra = require("puppeteer-extra");
@@ -58,26 +55,33 @@ const TIPO_MAP = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ─── Mapa de sesiones en memoria ──────────────────────────────────────────────
-// sessionId → { browser, page, cedula, tipoCodigo, creadoEn }
-// Se limpia automáticamente tras 10 minutos de inactividad.
+// ─── Sesiones en memoria ──────────────────────────────────────────────────────
+// sessionId → { browser, page, cedula, tipoCodigo, sseClients, creadoEn }
 const sesiones = new Map();
-
 const SESION_TTL_MS = 10 * 60 * 1000; // 10 minutos
 
-function limpiarSesionesVencidas() {
-  const ahora = Date.now();
-  for (const [id, sesion] of sesiones.entries()) {
-    if (ahora - sesion.creadoEn > SESION_TTL_MS) {
-      console.log(`[Policía] 🧹 Sesión expirada eliminada: ${id}`);
-      sesion.browser?.close().catch(() => {});
-      sesiones.delete(id);
+setInterval(
+  () => {
+    const ahora = Date.now();
+    for (const [id, s] of sesiones.entries()) {
+      if (ahora - s.creadoEn > SESION_TTL_MS) {
+        console.log(`[Policía] 🧹 Sesión expirada: ${id}`);
+        s.browser?.close().catch(() => {});
+        // Notificar clientes SSE que la sesión expiró
+        for (const res of s.sseClients || []) {
+          try {
+            res.write(
+              `event: error\ndata: ${JSON.stringify({ error: "Sesión expirada" })}\n\n`,
+            );
+            res.end();
+          } catch (_) {}
+        }
+        sesiones.delete(id);
+      }
     }
-  }
-}
-
-// Limpiar sesiones vencidas cada 5 minutos
-setInterval(limpiarSesionesVencidas, 5 * 60 * 1000);
+  },
+  5 * 60 * 1000,
+);
 
 // ─── Lanzar browser ────────────────────────────────────────────────────────────
 async function lanzarBrowser() {
@@ -97,6 +101,7 @@ async function lanzarBrowser() {
     });
   }
 
+  // Local
   const extensionExiste = fs.existsSync(EXTENSION_PATH);
   const args = [
     "--no-sandbox",
@@ -178,7 +183,6 @@ async function aceptarTerminos(page) {
           !btn.hasAttribute("disabled")
         );
       });
-
       if (!activo) {
         await page.evaluate((sel) => {
           const el = document.querySelector(sel);
@@ -268,36 +272,20 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
     await page.type("#cedulaInput", String(cedula), { delay: 40 });
   }
   await sleep(500);
+  console.log("[Policía] ✅ Formulario llenado — esperando token del captcha");
 }
 
-// ─── Inyectar token y enviar ───────────────────────────────────────────────────
+// ─── Inyectar token y enviar formulario ───────────────────────────────────────
 async function inyectarTokenYEnviar(page, token) {
-  console.log("[Policía] 💉 Inyectando token del captcha...");
-
+  console.log("[Policía] 💉 Inyectando token...");
   await page.evaluate((t) => {
-    // Inyectar en todos los campos g-recaptcha-response (visibles y ocultos)
     document.querySelectorAll('[name="g-recaptcha-response"]').forEach((el) => {
       el.value = t;
       el.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    // También via grecaptcha si está disponible
-    if (window.grecaptcha) {
-      try {
-        const widgetId = Object.keys(
-          window.___grecaptcha_cfg?.clients || {},
-        )[0];
-        if (widgetId !== undefined) {
-          window.grecaptcha.enterprise
-            ? window.grecaptcha.enterprise.reset(widgetId)
-            : null;
-        }
-      } catch (_) {}
-    }
   }, token);
-
   await sleep(300);
 
-  // Hacer click en el botón de consulta
   const btnClickado = await page.evaluate(() => {
     const candidatos = [
       ...document.querySelectorAll("button, a, input[type='submit']"),
@@ -317,7 +305,6 @@ async function inyectarTokenYEnviar(page, token) {
     return null;
   });
   console.log("[Policía] 🖱️ Botón clickado:", btnClickado);
-
   await sleep(5000);
 }
 
@@ -344,25 +331,34 @@ async function extraerResultado(page) {
   return resultado.texto;
 }
 
+// ─── Notificar via SSE a todos los clientes esperando ─────────────────────────
+function notificarSSE(sesion, evento, datos) {
+  const payload = `event: ${evento}\ndata: ${JSON.stringify(datos)}\n\n`;
+  for (const res of sesion.sseClients || []) {
+    try {
+      res.write(payload);
+      res.end();
+    } catch (_) {}
+  }
+  sesion.sseClients = [];
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONTROLADOR PRINCIPAL — Primera llamada (sin token)
 // ═══════════════════════════════════════════════════════════════════════════════
-
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "CC", captchaToken, sessionId } = req.body;
 
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  const tipoCodigo = TIPO_MAP[tipoDocumento] || "cc";
-  const identificacion = String(cedula).replace(/[.,]/g, "");
-
-  // ── CASO A: El frontend envía el token resuelto por el usuario ────────────
+  // ── Segunda llamada: frontend envía el token resuelto por la extensión ──────
   if (captchaToken && sessionId) {
     return exports.resolverConToken(req, res);
   }
 
-  // ── CASO B: Primera llamada — navegar hasta el captcha y pausar ───────────
+  const tipoCodigo = TIPO_MAP[tipoDocumento] || "cc";
+  const identificacion = String(cedula).replace(/[.,]/g, "");
   console.log(`\n=== Policía: cedula=${identificacion} tipo=${tipoCodigo} ===`);
 
   let browser = null;
@@ -378,27 +374,29 @@ exports.consultarAntecedentes = async (req, res) => {
     await aceptarTerminos(page);
     await rellenarFormulario(page, identificacion, tipoCodigo);
 
-    // Guardar sesión en memoria para cuando llegue el token
+    // Guardar sesión — browser y page permanecen abiertos esperando el token
     const id = uuidv4();
     sesiones.set(id, {
       browser,
       page,
       cedula: identificacion,
       tipoCodigo,
+      sseClients: [],
       creadoEn: Date.now(),
     });
-    browser = null; // no cerrar — la sesión lo mantendrá vivo
+
+    // No cerrar browser ni page — la sesión los mantiene vivos
+    browser = null;
     page = null;
 
-    console.log(
-      `[Policía] ⏸️ Sesión creada: ${id} — esperando token del usuario`,
-    );
-
+    console.log(`[Policía] ⏸️ Sesión creada: ${id}`);
     return res.json({
       requiereCaptcha: true,
       sessionId: id,
-      mensaje:
-        "El portal requiere verificación. Completa el captcha para continuar.",
+      // URL que el frontend abre en un popup para que rektcaptcha actúe
+      popupUrl:
+        "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml",
+      mensaje: "Completa el captcha en la ventana que se abrirá.",
     });
   } catch (error) {
     console.error("[Policía] ❌ Error preparando sesión:", error.message);
@@ -415,35 +413,68 @@ exports.consultarAntecedentes = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CONTROLADOR SSE — El frontend escucha aquí mientras espera el resultado
+// ═══════════════════════════════════════════════════════════════════════════════
+exports.captchaStatus = (req, res) => {
+  const { sessionId } = req.params;
+  const sesion = sesiones.get(sessionId);
+
+  if (!sesion) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    return res.end(JSON.stringify({ error: "Sesión no encontrada" }));
+  }
+
+  // Configurar SSE
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+    "Access-Control-Allow-Origin": "*",
+  });
+
+  // Keepalive cada 20s para que el cliente no cierre la conexión
+  const keepalive = setInterval(() => {
+    try {
+      res.write(": keepalive\n\n");
+    } catch (_) {
+      clearInterval(keepalive);
+    }
+  }, 20000);
+
+  res.on("close", () => {
+    clearInterval(keepalive);
+    const s = sesiones.get(sessionId);
+    if (s) s.sseClients = (s.sseClients || []).filter((c) => c !== res);
+  });
+
+  sesion.sseClients.push(res);
+  console.log(`[Policía] 📡 SSE conectado para sesión: ${sessionId}`);
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CONTROLADOR — Segunda llamada (con token del usuario)
 // ═══════════════════════════════════════════════════════════════════════════════
-
 exports.resolverConToken = async (req, res) => {
-  const { cedula, sessionId, captchaToken } = req.body;
+  const { sessionId, captchaToken } = req.body;
 
-  if (!sessionId || !captchaToken) {
+  if (!sessionId || !captchaToken)
     return res
       .status(400)
       .json({ error: "sessionId y captchaToken son requeridos." });
-  }
 
   const sesion = sesiones.get(sessionId);
   if (!sesion) {
     return res.status(410).json({
       error: "Sesión expirada o no encontrada.",
-      detalle:
-        "La sesión duró más de 10 minutos o ya fue usada. Intenta de nuevo.",
+      detalle: "Intenta de nuevo.",
     });
   }
 
-  const { browser, page, cedula: cedulaSesion, tipoCodigo } = sesion;
-  sesiones.delete(sessionId); // usar sesión una sola vez
+  const { browser, page, cedula, tipoCodigo } = sesion;
+  sesiones.delete(sessionId); // Usar sesión una sola vez
 
   try {
-    console.log(
-      `[Policía] 🔑 Resolviendo sesión ${sessionId} con token del usuario`,
-    );
-
+    console.log(`[Policía] 🔑 Resolviendo sesión ${sessionId}`);
     await inyectarTokenYEnviar(page, captchaToken);
     const texto = await extraerResultado(page);
 
@@ -452,8 +483,8 @@ exports.resolverConToken = async (req, res) => {
       .includes("NO TIENE ASUNTOS PENDIENTES");
     const ahora = new Date().toLocaleString("es-CO");
     const mensaje = tieneAntecedentes
-      ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedulaSesion} TIENE antecedentes judiciales.`
-      : `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedulaSesion} no tiene antecedentes judiciales.`;
+      ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedula} TIENE antecedentes judiciales.`
+      : `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedula} no tiene antecedentes judiciales.`;
 
     let screenshot = null;
     try {
@@ -464,21 +495,25 @@ exports.resolverConToken = async (req, res) => {
       screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
     } catch (_) {}
 
-    await browser.close().catch(() => {});
-
-    console.log(`[Policía] ✅ Consulta completada para ${cedulaSesion}`);
-    return res.json({
+    const resultado = {
       fuente: "Policía Nacional de Colombia",
       tieneAntecedentes,
       mensaje,
       screenshot,
-    });
+    };
+
+    // Notificar a clientes SSE que puedan estar escuchando
+    notificarSSE(sesion, "resultado", resultado);
+
+    await browser.close().catch(() => {});
+    console.log(`[Policía] ✅ Consulta completada para ${cedula}`);
+    return res.json(resultado);
   } catch (error) {
     console.error("[Policía] ❌ Error resolviendo con token:", error.message);
+    notificarSSE(sesion, "error", { error: error.message });
     await browser?.close().catch(() => {});
-    return res.status(502).json({
-      error: "Error al procesar el captcha",
-      detalle: error.message,
-    });
+    return res
+      .status(502)
+      .json({ error: "Error al procesar el captcha", detalle: error.message });
   }
 };

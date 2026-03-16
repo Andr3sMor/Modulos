@@ -2,11 +2,12 @@ import { Component, NgZone, ChangeDetectorRef } from "@angular/core";
 import { CommonModule } from "@angular/common";
 import { FormsModule } from "@angular/forms";
 import { ConsultaService } from "../../services/consulta.service";
+import { CaptchaResolverComponent } from "./captcha-resolver.component";
 
 @Component({
   selector: "app-search",
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, CaptchaResolverComponent],
   templateUrl: "./search.component.html",
   styleUrls: ["./search.component.css"],
 })
@@ -20,8 +21,6 @@ export class SearchComponent {
   error = "";
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
-
-  public captchaManualMensaje: string = ""; // Or the appropriate initial value
 
   supersociedadesEmpresas: any[] = [];
   supersociedadesDetalle: any | null = null;
@@ -57,6 +56,12 @@ export class SearchComponent {
   ];
 
   tipoPACO: 1 | 2 = 1;
+
+  // ── Estado del captcha de la Policía ────────────────────────────────────────
+  mostrarCaptchaPolicia = false;
+  captchaSessionId = "";
+  captchaPopupUrl = "";
+  captchaResolveRef: ((value: any) => void) | null = null;
 
   constructor(
     private consultaService: ConsultaService,
@@ -208,7 +213,7 @@ export class SearchComponent {
           });
           break;
 
-        // ── Policía — rektcaptcha resuelve automáticamente en el backend ─────
+        // ── Policía — abre popup para que rektcaptcha resuelva el captcha ────
         case "antecedentes":
           if (!this.cedula) {
             resolve();
@@ -219,6 +224,30 @@ export class SearchComponent {
             .subscribe({
               next: (res: any) =>
                 this.zone.run(() => {
+                  // Si el backend pide captcha, mostrar el resolver
+                  if (res.requiereCaptcha && res.sessionId) {
+                    this.captchaSessionId = res.sessionId;
+                    this.captchaPopupUrl = res.popupUrl || "";
+                    this.mostrarCaptchaPolicia = true;
+                    // Guardar resolve para completar la promesa cuando
+                    // el usuario resuelva el captcha
+                    this.captchaResolveRef = (resultado: any) => {
+                      this.resultados.push({
+                        tipo: "antecedentes",
+                        fuente: resultado.fuente || "Policía Nacional de Colombia",
+                        tieneAntecedentes: resultado.tieneAntecedentes,
+                        mensaje: resultado.mensaje,
+                        screenshot: resultado.screenshot || null,
+                        data: { fecha: new Date().toLocaleString() },
+                      });
+                      this.cdr.detectChanges();
+                      resolve();
+                    };
+                    this.cdr.detectChanges();
+                    // No resolvemos la promesa aún — esperamos el captcha
+                    return;
+                  }
+                  // Resultado directo (local con extensión)
                   this.resultados.push({
                     tipo: "antecedentes",
                     fuente: res.fuente || "Policía Nacional de Colombia",
@@ -524,4 +553,37 @@ export class SearchComponent {
   filtrarScore100(resultados: any[]): any[] {
     return (resultados || []).filter((o) => o.score === 100);
   }
+  // ── Captcha Policía ─────────────────────────────────────────────────────────
+  onCaptchaResuelto(resultado: any) {
+    this.mostrarCaptchaPolicia = false;
+    if (this.captchaResolveRef) {
+      this.captchaResolveRef(resultado);
+      this.captchaResolveRef = null;
+    }
+    this.captchaSessionId = "";
+    this.captchaPopupUrl = "";
+    this.cdr.detectChanges();
+  }
+
+  onCaptchaCancelado() {
+    this.mostrarCaptchaPolicia = false;
+    if (this.captchaResolveRef) {
+      // Agregar error al resultado y resolver la promesa
+      this.resultados.push({
+        tipo: "error",
+        fuente: "Policía Nacional",
+        data: {
+          vigencia: "Consulta cancelada por el usuario",
+          fecha: new Date().toLocaleString(),
+        },
+      });
+      this.captchaResolveRef(null);
+      this.captchaResolveRef = null;
+    }
+    this.captchaSessionId = "";
+    this.captchaPopupUrl = "";
+    this.cdr.detectChanges();
+  }
+
+
 }
