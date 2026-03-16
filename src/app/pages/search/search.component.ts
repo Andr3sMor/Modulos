@@ -21,6 +21,8 @@ export class SearchComponent {
   resultados: any[] = [];
   tabOffshoreActivo: { [key: string]: string } = {};
 
+  public captchaManualMensaje: string = ""; // Or the appropriate initial value
+
   supersociedadesEmpresas: any[] = [];
   supersociedadesDetalle: any | null = null;
   cargandoDetalle = false;
