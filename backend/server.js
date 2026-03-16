@@ -127,6 +127,16 @@ app.post(
 );
 // SSE — SIN semáforo ni timeout (es una conexión larga de escucha)
 app.get("/api/captcha-status/:sessionId", policiaController.captchaStatus);
+// Página bridge: popup que abre el usuario para resolver el captcha
+app.get(
+  "/api/policia-captcha-bridge/:sessionId",
+  policiaController.captchaBridge,
+);
+// Confirmación manual del captcha
+app.post(
+  "/api/policia-captcha-confirmado/:sessionId",
+  policiaController.captchaConfirmado,
+);
 
 // ─── Rutas con Puppeteer ───────────────────────────────────────────────────────
 app.post(
