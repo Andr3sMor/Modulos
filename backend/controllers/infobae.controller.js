@@ -7,7 +7,7 @@
  *   1. La noticia menciona el nombre buscado (título o resumen)
  *   2. La noticia tiene relación con corrupción, lavado de activos o terrorismo
  *
- * No usa Puppeteer — fetch + parseo de HTML/JSON embebido.
+ * Usa fetch nativo de Node 18+ (sin dependencias externas).
  */
 
 // Palabras clave de temas sensibles (filtro 2)
@@ -16,14 +16,11 @@ const PALABRAS_CLAVE = [
   "lavado de activos",
   "lavado de dinero",
   "lavado",
-  "activos ilícitos",
   "activos ilicitos",
   "testaferro",
   "testaferros",
-  "enriquecimiento ilícito",
   "enriquecimiento ilicito",
   // Corrupción
-  "corrupción",
   "corrupcion",
   "corrupto",
   "corruptos",
@@ -31,36 +28,26 @@ const PALABRAS_CLAVE = [
   "coima",
   "cohecho",
   "peculado",
-  "malversación",
   "malversacion",
   "desfalco",
-  "defraudación",
   "defraudacion",
   "fraude",
   "estafa",
-  "anticorrupción",
   "anticorrupcion",
-  "parapolítica",
   "parapolitica",
   "inhabilidad",
-  "inhabilidades",
   "sancionado",
   "sanciones disciplinarias",
-  "contraloría",
   "contraloria",
-  "procuraduría",
   "procuraduria",
   // Terrorismo y crimen organizado
   "terrorismo",
   "terrorista",
   "terroristas",
-  "financiación del terrorismo",
   "financiacion del terrorismo",
-  "narcotráfico",
   "narcotrafico",
   "narcotraficante",
   "cartel",
-  "cártel",
   "clan del golfo",
   "bacrim",
   "guerrilla",
@@ -69,12 +56,9 @@ const PALABRAS_CLAVE = [
   "auc",
   "paramilitares",
   "paramilitarismo",
-  "extorsión",
   "extorsion",
   "contrabando",
-  "tráfico de armas",
   "trafico de armas",
-  "tráfico de drogas",
   "trafico de drogas",
   // Proceso judicial relacionado
   "capturado por",
@@ -85,11 +69,8 @@ const PALABRAS_CLAVE = [
   "judicializado",
   "proceso penal",
   "investigado por",
-  "fiscalía investiga",
   "fiscalia investiga",
-  "evasión fiscal",
   "evasion fiscal",
-  "evasión de impuestos",
   "evasion de impuestos",
 ];
 
@@ -98,7 +79,7 @@ function normalizar(texto) {
   return (texto || "")
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // quitar tildes
+    .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -107,31 +88,21 @@ function normalizar(texto) {
 // Filtro 1: la noticia menciona el nombre buscado
 function mencionaNombre(titulo, resumen, nombre) {
   const textoNormalizado = normalizar(`${titulo} ${resumen}`);
-
-  // Dividir el nombre en partes (nombre y apellidos)
   const partes = normalizar(nombre)
     .split(" ")
-    .filter((p) => p.length > 2); // ignorar partículas cortas como "de", "la"
+    .filter((p) => p.length > 2);
 
   if (partes.length === 0) return false;
-
-  // Estrategia A: el texto contiene el nombre completo como substring
   if (textoNormalizado.includes(normalizar(nombre))) return true;
 
-  // Estrategia B: para nombres compuestos, verificar que al menos
-  // primer nombre + primer apellido aparezcan juntos o separados
   if (partes.length >= 2) {
-    // Verificar que al menos 2 partes del nombre aparezcan en el texto
     const partesEncontradas = partes.filter((p) =>
       textoNormalizado.includes(p),
     );
-    // Exigir que aparezcan al menos la mitad de las partes del nombre
-    // (mínimo 2) para evitar falsos positivos con apellidos comunes
     const umbral = Math.max(2, Math.ceil(partes.length / 2));
     return partesEncontradas.length >= umbral;
   }
 
-  // Nombre de una sola parte
   return textoNormalizado.includes(partes[0]);
 }
 
@@ -158,7 +129,6 @@ exports.consultarInfobae = async (req, res) => {
     const html = await fetchConReintentos(url);
     const noticias = parsearResultados(html);
 
-    // Aplicar los dos filtros en secuencia
     const conNombre = noticias.filter((n) =>
       mencionaNombre(n.titulo, n.resumen, nombreLimpio),
     );
@@ -190,7 +160,7 @@ exports.consultarInfobae = async (req, res) => {
   }
 };
 
-// ─── Fetch con reintentos y headers de browser ────────────────────────────────
+// ─── Fetch nativo (Node 18+) con reintentos ───────────────────────────────────
 async function fetchConReintentos(url, intentos = 3) {
   const headers = {
     "User-Agent":
@@ -205,8 +175,15 @@ async function fetchConReintentos(url, intentos = 3) {
 
   for (let i = 1; i <= intentos; i++) {
     try {
-      const { default: fetch } = await import("node-fetch");
-      const resp = await fetch(url, { headers, timeout: 20000 });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+      const resp = await fetch(url, {
+        headers,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
 
       if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
 
@@ -312,7 +289,7 @@ function parsearHtmlDirecto(html) {
     }
   }
 
-  // Fallback con divs de resultado
+  // Fallback con divs
   if (noticias.length === 0) {
     const divRegex =
       /class="[^"]*search-result[^"]*"[^>]*>([\s\S]*?)(?=class="[^"]*search-result|<\/section|<\/main)/gi;
@@ -325,7 +302,6 @@ function parsearHtmlDirecto(html) {
         bloque.match(
           /class="[^"]*title[^"]*"[^>]*>\s*(?:<[^>]+>)*([^<]{5,})/,
         ) || bloque.match(/<h[234][^>]*>([^<]{5,})<\/h[234]>/);
-
       const enlaceMatch = bloque.match(
         /href="(https?:\/\/(?:www\.)?infobae\.com[^"]+)"/,
       );
