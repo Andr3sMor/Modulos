@@ -137,6 +137,8 @@ app.post(
   "/api/policia-captcha-confirmado/:sessionId",
   policiaController.captchaConfirmado,
 );
+// Bridge page pregunta si la sesión ya fue resuelta
+app.get("/api/captcha-resuelto/:sessionId", policiaController.captchaResuelto);
 
 // ─── Rutas con Puppeteer ───────────────────────────────────────────────────────
 app.post(

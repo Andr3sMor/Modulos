@@ -465,85 +465,51 @@ exports.captchaBridge = (req, res) => {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0d1b2a;
-      color: #fff;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      background: #0d1b2a; color: #fff;
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
     }
     .card {
-      background: #1a2744;
-      border-radius: 16px;
-      padding: 40px 32px;
-      max-width: 480px;
-      width: 90%;
-      text-align: center;
+      background: #1a2744; border-radius: 16px; padding: 40px 32px;
+      max-width: 480px; width: 90%; text-align: center;
       box-shadow: 0 20px 60px rgba(0,0,0,0.4);
     }
-    .logo { font-size: 48px; margin-bottom: 16px; }
-    h1 { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
-    p { color: #aab; font-size: 14px; line-height: 1.6; margin-bottom: 20px; }
+    h1 { font-size: 22px; font-weight: 700; margin: 16px 0 8px; }
+    p { color: #aab; font-size: 14px; line-height: 1.6; margin-bottom: 16px; }
     .status {
-      background: #0d1b2a;
-      border-radius: 10px;
-      padding: 16px;
-      margin: 20px 0;
-      font-size: 14px;
-      color: #7df;
-      display: flex;
-      align-items: center;
-      gap: 12px;
+      background: #0d1b2a; border-radius: 10px; padding: 16px;
+      margin: 16px 0; font-size: 14px; color: #7df;
+      display: flex; align-items: center; gap: 12px;
     }
     .spinner {
-      width: 20px; height: 20px;
-      border: 2px solid #334;
-      border-top-color: #7df;
-      border-radius: 50%;
-      animation: spin 0.8s linear infinite;
-      flex-shrink: 0;
+      width: 20px; height: 20px; border: 2px solid #334;
+      border-top-color: #7df; border-radius: 50%;
+      animation: spin 0.8s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .btn {
-      display: inline-block;
-      padding: 12px 28px;
-      background: #4361ee;
-      color: white;
-      border: none;
-      border-radius: 8px;
-      font-size: 15px;
-      font-weight: 600;
-      cursor: pointer;
-      text-decoration: none;
-      transition: background 0.2s;
-      margin-top: 8px;
-    }
-    .btn:hover { background: #3451d1; }
-    .success { color: #4caf50; font-size: 40px; }
+    .success { font-size: 40px; margin: 12px 0; }
     #successMsg { display: none; }
-    #waitingMsg { display: block; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo">🛡️</div>
+    <div style="font-size:48px">🛡️</div>
     <h1>Verificación Policía Nacional</h1>
 
     <div id="waitingMsg">
       <p>
         Se abrirá la página de la Policía Nacional.<br>
-        <strong>La extensión rektcaptcha resolverá el captcha automáticamente.</strong><br>
-        Una vez resuelto, esta ventana se cerrará sola.
+        <strong>La extensión rektcaptcha resolverá el captcha automáticamente</strong>
+        y esta ventana se cerrará sola.
       </p>
       <div class="status">
         <div class="spinner"></div>
-        <span id="statusText">Abriendo portal de la Policía...</span>
+        <span id="statusText">Preparando verificación...</span>
       </div>
     </div>
 
     <div id="successMsg">
       <div class="success">✅</div>
-      <p style="color:#4caf50; margin-top:12px; font-size:16px;">
+      <p style="color:#4caf50; font-size:16px; margin-top:8px">
         ¡Captcha resuelto! Cerrando ventana...
       </p>
     </div>
@@ -551,142 +517,65 @@ exports.captchaBridge = (req, res) => {
 
   <script>
     const SESSION_ID = "${sessionId}";
-    const BACKEND = "${backendBase}";
+    const BACKEND   = "${backendBase}";
     const POLICIA_URL = "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
 
-    // 1. Abrir la página de la Policía como NUEVA ventana (no popup anidado)
-    //    La extensión rektcaptcha del usuario la detecta y resuelve el captcha
-    let policiaWin = null;
-
-    function abrirPolicia() {
-      document.getElementById("statusText").textContent = "Abriendo portal de la Policía...";
-      policiaWin = window.open(POLICIA_URL, "policia_auth", "width=900,height=700");
-      if (!policiaWin) {
+    // 1. Guardar sessionId en chrome.storage para que rektcaptcha lo lea
+    //    cuando resuelva el captcha en la página de la Policía
+    function guardarSesion() {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({
+          policiaSessionId: SESSION_ID,
+          policiaBackendUrl: BACKEND
+        }, () => {
+          document.getElementById("statusText").textContent =
+            "Abriendo portal de la Policía...";
+          abrirPolicia();
+        });
+      } else {
+        // Sin extensión: abrir directo y mostrar instrucciones
         document.getElementById("statusText").textContent =
-          "⚠️ Permite ventanas emergentes y recarga esta página.";
+          "Instala la extensión rektcaptcha para resolución automática.";
+        abrirPolicia();
+      }
+    }
+
+    // 2. Abrir la página real de la Policía
+    function abrirPolicia() {
+      const win = window.open(POLICIA_URL, "_blank");
+      if (!win) {
+        document.getElementById("statusText").textContent =
+          "⚠️ Permite ventanas emergentes e intenta de nuevo.";
         return;
       }
       document.getElementById("statusText").textContent =
-        "Esperando que resuelvas el captcha en la ventana de la Policía...";
-    }
+        "Esperando que rektcaptcha resuelva el captcha...";
 
-    // 2. Polling al backend: cuando el usuario resuelve el captcha en la página
-    //    de la Policía, el frontend (captcha-resolver.component) detecta que el
-    //    popup de la Policía fue cerrado y pide al usuario confirmación.
-    //    Pero como no podemos leer el token cross-origin, usamos otro enfoque:
-    //    Esta ventana bridge hace polling al backend preguntando si la sesión
-    //    ya fue resuelta externamente.
-
-    // 3. Escuchar mensaje de la ventana de la Policía
-    //    rektcaptcha inyecta el token en g-recaptcha-response.
-    //    Necesitamos un script en la página de la Policía para leerlo — no posible cross-origin.
-    //
-    //    SOLUCIÓN FINAL: Inyectamos un script en la ventana de la Policía
-    //    usando el contexto del opener (esta ventana).
-
-    let pollingInterval = null;
-
-    function iniciarPolling() {
-      // Intentar leer g-recaptcha-response de la ventana de la Policía cada 2s
-      pollingInterval = setInterval(() => {
+      // 3. Polling al backend para saber cuándo terminó
+      // (el backend notifica via SSE al frontend Angular)
+      // Esta ventana puede cerrarse sola una vez que el backend confirme
+      const interval = setInterval(async () => {
         try {
-          if (!policiaWin || policiaWin.closed) {
-            clearInterval(pollingInterval);
-            document.getElementById("statusText").textContent =
-              "La ventana de la Policía se cerró. ¿Ya resolviste el captcha?";
-            // Dar opción de confirmación manual
-            mostrarBotonManual();
-            return;
+          const r = await fetch(BACKEND + "/api/captcha-resuelto/" + SESSION_ID);
+          const data = await r.json();
+          if (data.resuelto) {
+            clearInterval(interval);
+            if (win && !win.closed) win.close();
+            document.getElementById("waitingMsg").style.display = "none";
+            document.getElementById("successMsg").style.display = "block";
+            setTimeout(() => window.close(), 2000);
           }
+        } catch (_) {}
+      }, 2000);
 
-          // Intentar leer el token (solo funciona mismo origen — no aplica aquí)
-          // En cambio, inyectar un observador en la ventana de la Policía
-          try {
-            const token = policiaWin.document
-              ?.querySelector('[name="g-recaptcha-response"]')
-              ?.value;
-            if (token && token.length > 20) {
-              clearInterval(pollingInterval);
-              enviarToken(token);
-            }
-          } catch (crossOriginError) {
-            // Cross-origin: no podemos leer el DOM de la Policía
-            // Usar postMessage desde la extensión si está disponible
-          }
-        } catch (e) {
-          // ignorar
-        }
-      }, 1500);
+      // Cerrar automáticamente tras 5 minutos
+      setTimeout(() => {
+        clearInterval(interval);
+        window.close();
+      }, 5 * 60 * 1000);
     }
 
-    function mostrarBotonManual() {
-      const btn = document.createElement("button");
-      btn.className = "btn";
-      btn.textContent = "✅ Ya resolví el captcha — continuar";
-      btn.onclick = () => {
-        // Sin token cross-origin, notificar al backend que intente
-        // detectar el captcha en su propia sesión Puppeteer
-        fetch(BACKEND + "/api/policia-captcha-confirmado/" + SESSION_ID, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-        })
-          .then((r) => r.json())
-          .then((data) => {
-            if (data.ok) {
-              document.getElementById("waitingMsg").style.display = "none";
-              document.getElementById("successMsg").style.display = "block";
-              setTimeout(() => window.close(), 2000);
-            } else {
-              document.getElementById("statusText").textContent =
-                "⚠️ " + (data.error || "No se detectó el captcha. Inténtalo de nuevo.");
-              mostrarBotonReintentar();
-            }
-          })
-          .catch(() => {
-            document.getElementById("statusText").textContent =
-              "⚠️ Error de conexión. Intenta de nuevo.";
-          });
-      };
-      document.querySelector(".card").appendChild(btn);
-    }
-
-    function mostrarBotonReintentar() {
-      const btn = document.createElement("button");
-      btn.className = "btn";
-      btn.style.background = "#666";
-      btn.textContent = "🔄 Volver a intentar";
-      btn.style.marginLeft = "8px";
-      btn.onclick = () => { btn.remove(); abrirPolicia(); iniciarPolling(); };
-      document.querySelector(".card").appendChild(btn);
-    }
-
-    function enviarToken(token) {
-      document.getElementById("statusText").textContent = "Captcha detectado — enviando al servidor...";
-      fetch(BACKEND + "/api/consulta-antecedentes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          cedula: "__from_session__",
-          captchaToken: token,
-          sessionId: SESSION_ID,
-        }),
-      })
-        .then(() => {
-          if (policiaWin && !policiaWin.closed) policiaWin.close();
-          document.getElementById("waitingMsg").style.display = "none";
-          document.getElementById("successMsg").style.display = "block";
-          setTimeout(() => window.close(), 2000);
-        })
-        .catch(() => {
-          document.getElementById("statusText").textContent = "⚠️ Error enviando resultado.";
-        });
-    }
-
-    // Arrancar
-    window.onload = () => {
-      abrirPolicia();
-      iniciarPolling();
-    };
+    window.onload = guardarSesion;
   </script>
 </body>
 </html>`);
@@ -711,6 +600,16 @@ exports.captchaConfirmado = async (req, res) => {
   // Por ahora, notificamos al frontend via SSE que puede proceder a pedir el token.
   notificarSSE(sesion, "captcha_listo", { sessionId });
   return res.json({ ok: true });
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENDPOINT: Bridge page pregunta si la sesión ya fue resuelta
+// ═══════════════════════════════════════════════════════════════════════════════
+exports.captchaResuelto = (req, res) => {
+  const { sessionId } = req.params;
+  // Si la sesión ya no existe fue resuelta y eliminada
+  const resuelto = !sesiones.has(sessionId);
+  res.json({ resuelto });
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
