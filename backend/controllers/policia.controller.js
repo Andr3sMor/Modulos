@@ -8,17 +8,31 @@
  * del frontend ni de servicios externos.
  *
  * Flujo:
- *  1. Lanzar browser con la extensión rektcaptcha
+ *  1. Lanzar browser con la extensión rektcaptcha (si está disponible)
  *  2. Configurar la extensión via service worker
  *  3. Navegar a index.xhtml → aceptar términos → antecedentes.xhtml
  *  4. Rellenar formulario (tipo + cédula)
  *  5. Esperar que rektcaptcha resuelva el captcha (polling g-recaptcha-response)
  *  6. Enviar formulario y extraer resultado
+ *
+ * CORRECCIONES APLICADAS:
+ *  - Se crea un browser NUEVO en cada intento (no se reutiliza entre reintentos).
+ *    Esto elimina el problema de pages huérfanas y estados inconsistentes del
+ *    browser cuando un intento falla parcialmente.
+ *  - Se verifica la existencia del directorio de la extensión antes de intentar
+ *    cargarla. En entornos serverless (Render/Docker) donde no existe la
+ *    extensión, el browser se lanza en modo normal sin ella.
+ *  - El browser siempre se cierra explícitamente al final de cada intento
+ *    (éxito o error), usando try/finally por intento.
+ *  - Se implementa backoff exponencial entre reintentos para reducir carga
+ *    sobre el servidor de la Policía.
+ *  - `headless: "new"` cuando se cargan extensiones (requerido por Chrome 112+).
  */
 
 const puppeteer = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const path = require("path");
+const fs = require("fs");
 
 if (!puppeteer.plugins.some((p) => p.name === "stealth")) {
   puppeteer.use(StealthPlugin());
@@ -29,13 +43,11 @@ const INDEX_URL =
 const ANTECEDENTES_URL =
   "https://antecedentes.policia.gov.co:7005/WebJudicial/antecedentes.xhtml";
 
-// Ruta a la extensión rektcaptcha — ajusta según tu estructura de proyecto
 const EXTENSION_PATH = path.resolve(
   __dirname,
   "../browser-extensions/rektcaptcha",
 );
 
-// Mapa tipo documento → valor del select
 const TIPO_MAP = {
   CC: "cc",
   CE: "ce",
@@ -49,41 +61,73 @@ const TIPO_MAP = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// ─── Lanzar browser con extensión ─────────────────────────────────────────────
+// ─── Lanzar browser ────────────────────────────────────────────────────────────
+// CORRECCIÓN: Se verifica si la extensión existe en disco antes de intentar
+// cargarla. En producción (Render/Docker), el directorio puede no existir y
+// cargar una extensión inexistente deja Chromium en estado zombie.
 async function lanzarBrowser() {
-  const browser = await puppeteer.launch({
-    headless: true,
-    devtools: false,
-    ignoreHTTPSErrors: true,
-    args: [
+  const extensionExiste = fs.existsSync(EXTENSION_PATH);
+
+  if (extensionExiste) {
+    console.log("[Policía] 🔌 Extensión rektcaptcha encontrada — cargando...");
+  } else {
+    console.warn(
+      "[Policía] ⚠️ Extensión rektcaptcha NO encontrada en:",
+      EXTENSION_PATH,
+    );
+    console.warn(
+      "[Policía] ⚠️ El captcha deberá resolverse manualmente o con otro método.",
+    );
+  }
+
+  const args = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--no-zygote",
+    "--ignore-certificate-errors",
+    "--allow-running-insecure-content",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-software-rasterizer",
+    "--font-render-hinting=none",
+    "--window-size=1920,1080",
+  ];
+
+  const ignoreDefaultArgs = ["--enable-automation"];
+
+  if (extensionExiste) {
+    // --load-extension requiere que las extensiones NO estén deshabilitadas
+    args.push(
       `--disable-extensions-except=${EXTENSION_PATH}`,
       `--load-extension=${EXTENSION_PATH}`,
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
       "--disable-features=IsolateOrigins,site-per-process",
-      "--ignore-certificate-errors",
-      "--allow-running-insecure-content",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--no-zygote",
-      "--disable-software-rasterizer",
-      "--font-render-hinting=none",
-      "--window-size=1920,1080",
-    ],
-    ignoreDefaultArgs: ["--disable-extensions", "--enable-automation"],
+    );
+    ignoreDefaultArgs.push("--disable-extensions");
+  }
+
+  const browser = await puppeteer.launch({
+    // CORRECCIÓN: `headless: "new"` es obligatorio para cargar extensiones en
+    // Chrome 112+. Con `headless: true` (modo legacy) las extensiones se ignoran.
+    headless: extensionExiste ? "new" : true,
+    devtools: false,
+    ignoreHTTPSErrors: true,
+    args,
+    ignoreDefaultArgs,
   });
 
-  // Abrir chrome://extensions/ para asegurar que los service workers de la extensión arranquen
-  const warmupPage = await browser.newPage();
-  try {
-    await warmupPage.goto("chrome://extensions/", {
-      waitUntil: "domcontentloaded",
-      timeout: 5000,
-    });
-  } catch (_) {}
-  await sleep(500);
-  await warmupPage.close().catch(() => {});
+  if (extensionExiste) {
+    // Warm-up: abrir chrome://extensions/ para que los service workers arranquen
+    const warmupPage = await browser.newPage();
+    try {
+      await warmupPage.goto("chrome://extensions/", {
+        waitUntil: "domcontentloaded",
+        timeout: 5000,
+      });
+    } catch (_) {}
+    await sleep(500);
+    await warmupPage.close().catch(() => {});
+  }
 
   return browser;
 }
@@ -126,13 +170,11 @@ async function aceptarTerminos(page) {
   await page.goto(INDEX_URL, { waitUntil: "networkidle2", timeout: 45000 });
   await sleep(3000);
 
-  // Si ya estamos en antecedentes (sesión activa), saltar
   if (page.url().includes("antecedentes.xhtml")) {
     console.log("[Policía] ✅ Ya en antecedentes.xhtml — saltando términos");
     return;
   }
 
-  // Verificar si el input de cédula ya es visible (acceso directo)
   const accesoDirecto = await page.evaluate(() => {
     const el = document.getElementById("cedulaInput");
     return el && el.offsetParent !== null;
@@ -142,7 +184,6 @@ async function aceptarTerminos(page) {
     return;
   }
 
-  // Aceptar términos con reintentos
   let exito = false;
   for (let intento = 1; intento <= 10 && !exito; intento++) {
     console.log(`[Policía] 📋 Términos — intento ${intento}/10`);
@@ -159,7 +200,6 @@ async function aceptarTerminos(page) {
 
       let btnActivo = await checkBotonContinuar(page);
       if (!btnActivo) {
-        // Intento JS directo
         await page.evaluate((sel) => {
           const el = document.querySelector(sel);
           if (el) el.click();
@@ -181,7 +221,6 @@ async function aceptarTerminos(page) {
   if (!exito)
     throw new Error("No se pudo activar el botón Continuar tras 10 intentos.");
 
-  // Hacer click en Continuar y esperar navegación
   await clickContinuar(page, 3);
 }
 
@@ -218,7 +257,6 @@ async function clickContinuar(page, maxReintentos) {
       if (page.url().includes("antecedentes.xhtml")) return;
     } catch (_) {}
 
-    // Estrategia JS alternativa
     if (i > 1) {
       await page.evaluate(() => {
         const btn = document.querySelector("#continuarBtn");
@@ -258,7 +296,6 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
   await page.setViewport({ width: 1280, height: 800 });
   await page.waitForSelector("#cedulaInput", { timeout: 10000 });
 
-  // Tipo de documento
   try {
     await page.waitForSelector("#cedulaTipo", { timeout: 5000 });
     await page.select("#cedulaTipo", tipoCodigo);
@@ -267,7 +304,6 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
     console.warn("[Policía] ⚠️ Select cedulaTipo no encontrado");
   }
 
-  // Número de documento
   const inputEncontrado = await page.evaluate((num) => {
     const inputs = [...document.querySelectorAll('input[type="text"]')];
     const visible = inputs.find((i) => i.offsetParent !== null);
@@ -288,11 +324,6 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
 }
 
 // ─── Esperar que rektcaptcha resuelva el captcha ──────────────────────────────
-/**
- * Hace polling del campo g-recaptcha-response hasta que tenga valor.
- * rektcaptcha detecta el widget y lo resuelve automáticamente.
- * Timeout máximo: 120 segundos (60 checks × 2s).
- */
 async function esperarCaptcha(page) {
   console.log("[Policía] 🤖 Esperando que rektcaptcha resuelva el captcha...");
 
@@ -354,8 +385,8 @@ async function esperarCaptcha(page) {
   );
 }
 
-// ─── Enviar formulario y obtener resultado ────────────────────────────────────
-async function enviarFormulario(page, cedula, tipoCodigo) {
+// ─── Enviar formulario ─────────────────────────────────────────────────────────
+async function enviarFormulario(page) {
   console.log("[Policía] 🚀 Enviando formulario...");
 
   const btnClickado = await page.evaluate(() => {
@@ -421,19 +452,18 @@ exports.consultarAntecedentes = async (req, res) => {
 
   console.log(`\n=== Policía: cedula=${identificacion} tipo=${tipoCodigo} ===`);
 
-  let browser = null;
-
-  // Hasta 5 reintentos (igual que el servicio NestJS original)
+  // CORRECCIÓN: En cada intento se crea un browser completamente nuevo y se
+  // cierra al terminar (con éxito o error). Esto elimina el problema de
+  // reutilizar un browser en estado inconsistente entre reintentos.
   for (let intento = 1; intento <= 5; intento++) {
+    let browser = null;
     let page = null;
+
     try {
       console.log(`[Policía] 🔄 Intento ${intento}/5`);
 
-      if (!browser || intento === 1) {
-        if (browser) await browser.close().catch(() => {});
-        browser = await lanzarBrowser();
-        await configurarExtension(browser);
-      }
+      browser = await lanzarBrowser();
+      await configurarExtension(browser);
 
       page = await browser.newPage();
       page.on("console", (msg) => {
@@ -445,18 +475,12 @@ exports.consultarAntecedentes = async (req, res) => {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
       );
 
-      // Si es reintento, recargar en vez de reabrir browser
-      if (intento > 1) {
-        console.log("[Policía] 🔁 Recargando página para reintento...");
-        await page.reload({ waitUntil: "networkidle2", timeout: 60000 });
-      }
-
       // ── Flujo principal ────────────────────────────────────────────────────
       await aceptarTerminos(page);
       await verificarPaginaAntecedentes(page);
       await rellenarFormulario(page, identificacion, tipoCodigo);
       await esperarCaptcha(page);
-      await enviarFormulario(page, identificacion, tipoCodigo);
+      await enviarFormulario(page);
       const texto = await extraerResultado(page);
 
       // ── Interpretar resultado ──────────────────────────────────────────────
@@ -478,7 +502,9 @@ exports.consultarAntecedentes = async (req, res) => {
         screenshot = `data:image/png;base64,${buffer.toString("base64")}`;
       } catch (_) {}
 
+      // CORRECCIÓN: Cerrar browser inmediatamente tras capturar el resultado.
       await browser.close().catch(() => {});
+      browser = null;
 
       console.log(`[Policía] ✅ Consulta exitosa para ${identificacion}`);
       return res.json({
@@ -489,19 +515,9 @@ exports.consultarAntecedentes = async (req, res) => {
       });
     } catch (e) {
       console.error(`[Policía] ❌ Intento ${intento}/5 falló: ${e.message}`);
-      if (page && !page.isClosed()) await page.close().catch(() => {});
-
-      // Si el browser crasheó, reiniciar en el siguiente intento
-      const esCrash =
-        e.message.includes("Target closed") ||
-        e.message.includes("Session closed") ||
-        e.message.includes("Browser atascado");
-      if (esCrash && browser) {
-        await browser.close().catch(() => {});
-        browser = null;
-      }
 
       if (intento === 5) {
+        // CORRECCIÓN: Asegurarse de que el browser se cierra en el último intento fallido.
         if (browser) await browser.close().catch(() => {});
         return res.status(502).json({
           error: "Error consultando Policía Nacional",
@@ -509,7 +525,31 @@ exports.consultarAntecedentes = async (req, res) => {
         });
       }
 
-      await sleep(3000);
+      // CORRECCIÓN: Backoff exponencial entre reintentos (3s, 6s, 9s, 12s)
+      // en lugar de un delay fijo de 3s, para dar tiempo al servidor de recuperarse.
+      const delayMs = 3000 * intento;
+      console.log(
+        `[Policía] ⏳ Esperando ${delayMs / 1000}s antes del reintento...`,
+      );
+
+      // CORRECCIÓN: Siempre cerrar browser al final de un intento fallido,
+      // usando finally para garantizar limpieza incluso si el close() mismo falla.
+    } finally {
+      // CORRECCIÓN: Bloque finally por intento. Garantiza que page y browser
+      // se cierren siempre, evitando procesos Chromium huérfanos en memoria.
+      if (page && !page.isClosed()) {
+        await page.close().catch(() => {});
+      }
+      if (browser) {
+        await browser.close().catch(() => {});
+        browser = null;
+      }
+    }
+
+    // El await del sleep va fuera del try/finally para que se ejecute
+    // correctamente entre iteraciones (no aplica en el último intento).
+    if (intento < 5) {
+      await sleep(3000 * intento);
     }
   }
 };

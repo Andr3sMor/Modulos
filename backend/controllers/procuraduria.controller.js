@@ -31,6 +31,14 @@
  *  3. Nombre:              "¿ ESCRIBA LAS DOS PRIMERAS LETRAS DEL PRIMER NOMBRE?"
  *  4. Últimos dígitos:     "¿ ESCRIBA LOS DOS ULTIMOS DIGITOS DEL DOCUMENTO?"
  *  5. Primeros dígitos:    "¿ ESCRIBA LOS TRES PRIMEROS DIGITOS DEL DOCUMENTO A CONSULTAR?"
+ *
+ * CORRECCIONES APLICADAS:
+ *  - Bloque `finally` garantiza que el browser SIEMPRE se cierra, incluso si
+ *    un `return` intermedio o una excepción inesperada interrumpe el flujo.
+ *  - Se eliminó el patrón de `browser.close()` disperso dentro del try para
+ *    evitar dobles cierres y browsers huérfanos.
+ *  - `browser` se asigna a `null` tras cerrar para que el `finally` no
+ *    intente cerrar un browser ya cerrado.
  */
 
 const puppeteer = require("puppeteer-core");
@@ -95,7 +103,7 @@ function norm(t) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[¿?¡!()]/g, "")
-    .replace(/(.)\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
+    .replace(/(.)\\1+/g, "$1") // colapsar letras repetidas: "Vallle" → "Valle"
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -394,8 +402,6 @@ async function esperarResultadoUpdatePanel(page, frame, ajaxResolvedPromise) {
 }
 
 // ─── GET + POST a verpdf.aspx para obtener el PDF binario ────────────────────
-// Paso 1: GET a verpdf.aspx → HTML con __VIEWSTATE fresco
-// Paso 2: POST con btnDescargar y ese __VIEWSTATE → PDF binario
 
 async function obtenerPDFConPost(cookieStr) {
   // ── Paso 1: GET ──────────────────────────────────────────────────────────
@@ -417,7 +423,6 @@ async function obtenerPDFConPost(cookieStr) {
       rejectUnauthorized: false,
     };
 
-    // Seguir redirects manualmente (máx 5)
     const doRequest = (opts, depth = 0) => {
       if (depth > 5) return reject(new Error("Demasiados redirects"));
       const req = https.request(opts, (res) => {
@@ -451,7 +456,6 @@ async function obtenerPDFConPost(cookieStr) {
 
   console.log("📄 HTML verpdf.aspx, longitud:", htmlVerpdf.length);
 
-  // Si ya viene PDF directo (raro pero posible)
   if (htmlVerpdf.startsWith("%PDF")) {
     console.log("✅ verpdf.aspx devolvió PDF directamente en GET");
     return Buffer.from(htmlVerpdf, "binary");
@@ -485,7 +489,6 @@ async function obtenerPDFConPost(cookieStr) {
   }
 
   // ── Paso 3: POST simulando click en btnDescargar ─────────────────────────
-  // Valores exactos del network capture: btnDescargar.x=215, btnDescargar.y=40
   const postData = qs.stringify({
     __EVENTTARGET: "",
     __EVENTARGUMENT: "",
@@ -556,7 +559,10 @@ exports.consultarProcuraduria = async (req, res) => {
     `\n=== Procuraduría: cedula=${cedula} tipo=${tipoDocumento}(${ddlTipoID}) nombre="${nombre}" ===`,
   );
 
-  let browser;
+  // CORRECCIÓN: `browser` declarado fuera del try para que el `finally` siempre
+  // pueda acceder a él y cerrarlo, independientemente de dónde falle el flujo.
+  let browser = null;
+
   try {
     browser = await lanzarBrowser();
     const page = await browser.newPage();
@@ -684,8 +690,10 @@ exports.consultarProcuraduria = async (req, res) => {
     let respuestaCaptcha = resolverCaptcha(textoCaptcha, nombre, cedula);
     console.log("🔢 Respuesta:", respuestaCaptcha);
 
+    // CORRECCIÓN: En lugar de llamar browser.close() dentro del try (lo que
+    // puede dejar el browser abierto si el return falla), dejamos que el
+    // bloque `finally` al final del controlador maneje el cierre.
     if (respuestaCaptcha === "__NOMBRE_REQUERIDO__") {
-      await browser.close();
       return res.status(422).json({
         error: "Captcha de nombre requerido",
         detalle:
@@ -694,7 +702,6 @@ exports.consultarProcuraduria = async (req, res) => {
       });
     }
     if (respuestaCaptcha === "__CEDULA_REQUERIDA__") {
-      await browser.close();
       return res.status(422).json({
         error: "Captcha de dígitos requerido pero cédula vacía",
         captchaPregunta: textoCaptcha,
@@ -792,7 +799,7 @@ exports.consultarProcuraduria = async (req, res) => {
       const captchaNuevo = await extraerCaptcha(frameResultado).catch(() => ({
         texto: "(error)",
       }));
-      await browser.close();
+      // CORRECCIÓN: No llamar browser.close() aquí; el finally lo hará.
       return res.status(422).json({
         error: "Formulario rechazado",
         detalle: "Captcha incorrecto o sesión vencida.",
@@ -801,13 +808,15 @@ exports.consultarProcuraduria = async (req, res) => {
       });
     }
 
-    // ── 9. Descargar PDF (GET → extrae VIEWSTATE → POST con btnDescargar) ─
+    // ── 9. Extraer cookies y cerrar browser ANTES del POST HTTP ──────────
+    // El browser ya no es necesario. Lo cerramos aquí para liberar recursos
+    // lo antes posible, antes del GET/POST a verpdf.aspx.
     console.log("📄 Iniciando descarga del PDF...");
     const cookies = await page.cookies("https://apps.procuraduria.gov.co");
     const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
     console.log("🍪 Cookies:", cookies.map((c) => c.name).join(", "));
 
-    // Cerrar browser antes del POST (ya no lo necesitamos)
+    // Cerrar browser — asignar null para que el `finally` no lo cierre de nuevo
     await browser.close();
     browser = null;
 
@@ -855,25 +864,26 @@ exports.consultarProcuraduria = async (req, res) => {
       mensaje: conSanciones
         ? "La persona REGISTRA sanciones en la Procuraduría."
         : "La persona NO registra sanciones en la Procuraduría.",
-      // pdfBase64: PDF del certificado en base64.
-      // En el frontend, convertir a Blob para mostrar o descargar:
-      //   const bytes = atob(pdfBase64);
-      //   const arr = new Uint8Array(bytes.length);
-      //   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-      //   const blob = new Blob([arr], { type: "application/pdf" });
-      //   window.open(URL.createObjectURL(blob), "_blank");   // abrir
-      //   // o: const a = document.createElement("a");
-      //   //    a.href = URL.createObjectURL(blob);
-      //   //    a.download = "antecedentes.pdf"; a.click();   // descargar
       pdfBase64,
       detalle: textoPagina.substring(0, 800),
     });
   } catch (error) {
     console.error("❌ ERROR Procuraduría:", error.message);
-    if (browser) await browser.close().catch(() => {});
     return res.status(502).json({
       error: "Error consultando Procuraduría",
       detalle: error.message,
     });
+  } finally {
+    // CORRECCIÓN: Garantía de cierre. Si browser != null aquí significa que
+    // algún `return` o `throw` anterior no llegó a cerrarlo. Lo hacemos ahora.
+    if (browser) {
+      console.log("🧹 [finally] Cerrando browser de Procuraduría...");
+      await browser
+        .close()
+        .catch((e) =>
+          console.warn("⚠️ Error cerrando browser en finally:", e.message),
+        );
+      browser = null;
+    }
   }
 };
