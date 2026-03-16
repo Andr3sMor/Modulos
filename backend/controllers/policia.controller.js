@@ -5,9 +5,9 @@
  * Flujo completo automático (sin popup, sin extensión):
  *  1. Navega y llena el formulario
  *  2. Hace clic en el checkbox del reCAPTCHA
- *  3. Espera el challenge visual (bframe) — Google siempre lo muestra en IPs de datacenter
- *  4. Dentro del bframe hace clic en el botón de audio para cambiar de modalidad
- *  5. Descarga el MP3 y lo transcribe con Wit.ai
+ *  3. Espera el bframe y a que su DOM se pueble (recaptcha.frame.Main.init es async)
+ *  4. Busca el botón de audio por múltiples selectores
+ *  5. Descarga el MP3 y transcribe con Wit.ai
  *  6. Ingresa la solución y verifica
  *  7. Si falla → fallback al popup manual
  *
@@ -306,8 +306,6 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
 }
 
 // ─── Esperar bframe con reintentos ────────────────────────────────────────────
-// En IPs de datacenter Google siempre muestra el challenge visual primero.
-// El bframe puede tardar varios segundos en aparecer tras el click en el checkbox.
 async function esperarBframe(page, timeoutMs = 20000) {
   const inicio = Date.now();
   while (Date.now() - inicio < timeoutMs) {
@@ -335,7 +333,7 @@ async function resolverCaptchaAudio(page) {
   await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 15000 });
   await sleep(1000);
 
-  // 2. Clic en el checkbox (anchor frame)
+  // 2. Clic en el checkbox
   const anchorFrame = page
     .frames()
     .find(
@@ -350,7 +348,7 @@ async function resolverCaptchaAudio(page) {
   console.log("[Policía] ☑️  Checkbox clickeado — esperando challenge...");
   await sleep(2000);
 
-  // 3. Verificar si se resolvió sin challenge (raro en datacenter, pero posible)
+  // 3. Verificar si se resolvió sin challenge
   const resueltoDirecto = await anchorFrame
     .evaluate(() => {
       const el = document.querySelector("#recaptcha-anchor");
@@ -363,56 +361,103 @@ async function resolverCaptchaAudio(page) {
     return await obtenerToken(page);
   }
 
-  // 4. Esperar el bframe del challenge (visual de imágenes)
-  console.log(
-    "[Policía] 🖼️  Challenge visual detectado — cambiando a audio...",
-  );
+  // 4. Esperar el bframe
+  console.log("[Policía] 🖼️  Esperando bframe...");
   const bFrame = await esperarBframe(page, 20000);
 
-  // DIAGNÓSTICO TEMPORAL — quitar después
-  const bFrameContent = await bFrame
-    .evaluate(() => {
-      return {
-        url: window.location.href,
-        botones: [...document.querySelectorAll("button")].map((b) => ({
-          id: b.id,
-          clase: b.className,
-          texto: b.textContent?.trim().slice(0, 50),
-          visible: b.offsetParent !== null,
-        })),
-        iframes: [...document.querySelectorAll("iframe")].map((f) =>
-          f.src?.slice(0, 100),
-        ),
-        html_snippet: document.body?.innerHTML?.slice(0, 800),
-      };
-    })
-    .catch((e) => ({ error: e.message }));
-  console.log(
-    "[Policía] 🔍 bFrame contenido:",
-    JSON.stringify(bFrameContent, null, 2),
-  );
+  // 5. Esperar a que el DOM del bframe se pueble
+  //    recaptcha.frame.Main.init() es async y tarda en renderizar el contenido real
+  console.log("[Policía] ⏳ Esperando que el bframe cargue su contenido...");
+  await bFrame
+    .waitForFunction(
+      () => {
+        const divs = document.querySelectorAll("div");
+        // Esperar a que haya al menos un div con contenido visible
+        return [...divs].some(
+          (d) => d.children.length > 0 && d.offsetHeight > 0,
+        );
+      },
+      { timeout: 15000 },
+    )
+    .catch(() => null);
+  await sleep(2000);
 
-  // 5. Detectar bloqueo inmediato
+  // 6. Log de diagnóstico del contenido real del bframe
+  const info = await bFrame
+    .evaluate(() => ({
+      botones: [...document.querySelectorAll("button")].map((b) => ({
+        id: b.id,
+        clase: b.className.slice(0, 80),
+        texto: b.textContent?.trim().slice(0, 40),
+        ariaLabel: b.getAttribute("aria-label"),
+        visible: b.offsetParent !== null,
+      })),
+      snippet: document.body?.innerHTML?.slice(0, 600),
+    }))
+    .catch(() => ({}));
+  console.log("[Policía] 🔍 bFrame poblado:", JSON.stringify(info));
+
+  // 7. Detectar bloqueo
   const bloqueado = await bFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
     .catch(() => false);
   if (bloqueado) throw new Error("Google bloqueó el captcha desde esta IP");
 
-  // 6. Dentro del challenge visual, hacer clic en el botón de audio
-  //    El botón está en la barra inferior del challenge (#recaptcha-audio-button)
-  await bFrame.waitForSelector("#recaptcha-audio-button", { timeout: 15000 });
-  await bFrame.click("#recaptcha-audio-button");
-  console.log("[Policía] 🔊 Cambiado a audio challenge");
+  // 8. Buscar el botón de audio por múltiples selectores posibles
+  const selectorAudio = await bFrame
+    .evaluate(() => {
+      const candidatos = [
+        "#recaptcha-audio-button",
+        "button[id*='audio']",
+        "button[title*='audio']",
+        "button[title*='Audio']",
+        "button[aria-label*='audio']",
+        "button[aria-label*='Audio']",
+        "button[aria-label*='sonido']",
+        "button[aria-label*='Sonido']",
+      ];
+      for (const sel of candidatos) {
+        if (document.querySelector(sel)) return sel;
+      }
+      // Último recurso: buscar por texto o aria-label que contenga audio/sonido
+      const btns = [...document.querySelectorAll("button")];
+      const audioBtn = btns.find((b) => {
+        const label = (
+          b.textContent +
+          (b.getAttribute("aria-label") || "") +
+          (b.getAttribute("title") || "")
+        ).toLowerCase();
+        return label.includes("audio") || label.includes("sonido");
+      });
+      if (audioBtn) {
+        if (audioBtn.id) return `#${audioBtn.id}`;
+        if (audioBtn.className)
+          return `button.${audioBtn.className.trim().split(" ")[0]}`;
+      }
+      return null;
+    })
+    .catch(() => null);
+
+  if (!selectorAudio) {
+    throw new Error(
+      "Botón de audio no encontrado en el bframe — ver log 🔍 para diagnóstico",
+    );
+  }
+
+  console.log(
+    `[Policía] 🔊 Botón audio encontrado: ${selectorAudio} — cambiando a audio...`,
+  );
+  await bFrame.click(selectorAudio);
   await sleep(2000);
 
-  // 7. Volver a verificar bloqueo (Google puede mostrar el doscaptcha tras pedir audio)
+  // 9. Verificar bloqueo tras pedir audio
   const bloqueadoTras = await bFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
     .catch(() => false);
   if (bloqueadoTras)
     throw new Error("Google bloqueó el audio challenge desde esta IP");
 
-  // 8. Esperar que aparezca el elemento de audio
+  // 10. Esperar URL del audio
   let audioUrl = null;
   for (let i = 0; i < 15; i++) {
     audioUrl = await bFrame
@@ -428,16 +473,21 @@ async function resolverCaptchaAudio(page) {
 
   console.log("[Policía] 🎵 Audio URL obtenida — transcribiendo...");
 
-  // 9. Descargar el audio desde el contexto del browser (evita restricciones CORS)
-  const audioArray = await page.evaluate(async (url) => {
-    const resp = await fetch(url, { credentials: "omit" });
-    const buf = await resp.arrayBuffer();
-    return Array.from(new Uint8Array(buf));
-  }, audioUrl);
+  // 11. Descargar audio desde el contexto del browser
+  const audioArray = await page
+    .evaluate(async (url) => {
+      const resp = await fetch(url, { credentials: "omit" });
+      const buf = await resp.arrayBuffer();
+      return Array.from(new Uint8Array(buf));
+    }, audioUrl)
+    .catch(() => null);
+
+  if (!audioArray || audioArray.length === 0)
+    throw new Error("No se pudo descargar el audio del captcha");
 
   const buffer = Buffer.from(audioArray);
 
-  // 10. Enviar a Wit.ai para transcripción
+  // 12. Enviar a Wit.ai
   console.log("[Policía] 📤 Enviando audio a Wit.ai...");
   const witResponse = await fetch("https://api.wit.ai/speech?v=20240304", {
     method: "POST",
@@ -463,18 +513,18 @@ async function resolverCaptchaAudio(page) {
 
   console.log(`[Policía] 💬 Solución: "${solucion}"`);
 
-  // 11. Ingresar la solución
+  // 13. Ingresar solución
   await bFrame.waitForSelector("#audio-response", { timeout: 5000 });
   await bFrame.click("#audio-response");
   await bFrame.type("#audio-response", solucion, { delay: 50 });
   await sleep(300);
 
-  // 12. Verificar
+  // 14. Verificar
   await bFrame.click("#recaptcha-verify-button");
   console.log("[Policía] ✔️  Verify enviado — esperando validación...");
   await sleep(3000);
 
-  // 13. Comprobar si la respuesta fue incorrecta
+  // 15. Comprobar si la respuesta fue incorrecta
   const incorrecto = await bFrame
     .evaluate(() => {
       const err = document.querySelector(".rc-audiochallenge-error-message");
@@ -483,7 +533,7 @@ async function resolverCaptchaAudio(page) {
     .catch(() => false);
   if (incorrecto) throw new Error("Solución de audio incorrecta según Google");
 
-  // 14. Obtener el token final
+  // 16. Obtener token final
   return await obtenerToken(page);
 }
 
