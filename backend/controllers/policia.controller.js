@@ -2,17 +2,14 @@
 /**
  * policia.controller.js
  *
- * Flujo completo automático (sin popup, sin extensión, sin intervención del usuario):
- *  1. POST /api/consulta-antecedentes
- *     → Puppeteer navega, acepta términos, llena formulario
- *     → Detecta el iframe del captcha reCAPTCHA
- *     → Hace clic en el botón de audio challenge
- *     → Descarga el audio MP3 del challenge
- *     → Envía el audio a Wit.ai Speech API
- *     → Obtiene la transcripción como solución
- *     → Ingresa la solución en el campo de texto
- *     → Envía el formulario
- *     → Extrae y devuelve el resultado
+ * Flujo completo automático (sin popup, sin extensión):
+ *  1. Navega y llena el formulario
+ *  2. Hace clic en el checkbox del reCAPTCHA
+ *  3. Espera el challenge visual (bframe) — Google siempre lo muestra en IPs de datacenter
+ *  4. Dentro del bframe hace clic en el botón de audio para cambiar de modalidad
+ *  5. Descarga el MP3 y lo transcribe con Wit.ai
+ *  6. Ingresa la solución y verifica
+ *  7. Si falla → fallback al popup manual
  *
  * Requiere variable de entorno: WIT_AI_API_KEY
  */
@@ -308,18 +305,37 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
   console.log("[Policía] ✅ Formulario llenado — resolviendo captcha...");
 }
 
+// ─── Esperar bframe con reintentos ────────────────────────────────────────────
+// En IPs de datacenter Google siempre muestra el challenge visual primero.
+// El bframe puede tardar varios segundos en aparecer tras el click en el checkbox.
+async function esperarBframe(page, timeoutMs = 20000) {
+  const inicio = Date.now();
+  while (Date.now() - inicio < timeoutMs) {
+    const bFrame = page
+      .frames()
+      .find(
+        (f) =>
+          f.url().includes("recaptcha/api2/bframe") ||
+          f.url().includes("recaptcha/enterprise/bframe"),
+      );
+    if (bFrame) return bFrame;
+    await sleep(500);
+  }
+  throw new Error("bframe del captcha no apareció en " + timeoutMs + "ms");
+}
+
 // ─── Resolver captcha por audio con Wit.ai ────────────────────────────────────
 async function resolverCaptchaAudio(page) {
   const apiKey = process.env.WIT_AI_API_KEY;
   if (!apiKey) throw new Error("WIT_AI_API_KEY no configurada");
 
-  console.log("[Policía] 🎧 Iniciando resolución de captcha por audio...");
+  console.log("[Policía] 🎧 Resolviendo captcha por audio...");
 
-  // 1. Esperar a que el iframe del captcha esté presente
+  // 1. Esperar iframe anchor
   await page.waitForSelector('iframe[src*="recaptcha"]', { timeout: 15000 });
-  await sleep(1500);
+  await sleep(1000);
 
-  // 2. Hacer clic en el checkbox del captcha (iframe anchor)
+  // 2. Clic en el checkbox (anchor frame)
   const anchorFrame = page
     .frames()
     .find(
@@ -327,84 +343,78 @@ async function resolverCaptchaAudio(page) {
         f.url().includes("recaptcha/api2/anchor") ||
         f.url().includes("recaptcha/enterprise/anchor"),
     );
-
-  if (!anchorFrame)
-    throw new Error("No se encontró el iframe anchor del captcha");
+  if (!anchorFrame) throw new Error("iframe anchor del captcha no encontrado");
 
   await anchorFrame.waitForSelector("#recaptcha-anchor", { timeout: 10000 });
   await anchorFrame.click("#recaptcha-anchor");
-  console.log("[Policía] ☑️  Checkbox del captcha clickeado");
+  console.log("[Policía] ☑️  Checkbox clickeado — esperando challenge...");
   await sleep(2000);
 
-  // 3. Verificar si ya se resolvió solo (sin challenge visual)
+  // 3. Verificar si se resolvió sin challenge (raro en datacenter, pero posible)
   const resueltoDirecto = await anchorFrame
     .evaluate(() => {
-      const anchor = document.querySelector("#recaptcha-anchor");
-      return anchor && anchor.getAttribute("aria-checked") === "true";
+      const el = document.querySelector("#recaptcha-anchor");
+      return el && el.getAttribute("aria-checked") === "true";
     })
     .catch(() => false);
 
   if (resueltoDirecto) {
-    console.log("[Policía] ✅ Captcha resuelto directamente (sin challenge)");
+    console.log("[Policía] ✅ Captcha resuelto sin challenge");
     return await obtenerToken(page);
   }
 
-  // 4. Buscar el iframe del challenge (bframe)
-  let bFrame = null;
-  for (let i = 0; i < 10; i++) {
-    bFrame = page
-      .frames()
-      .find(
-        (f) =>
-          f.url().includes("recaptcha/api2/bframe") ||
-          f.url().includes("recaptcha/enterprise/bframe"),
-      );
-    if (bFrame) break;
-    await sleep(1000);
-  }
-  if (!bFrame) throw new Error("No apareció el iframe bframe del captcha");
+  // 4. Esperar el bframe del challenge (visual de imágenes)
+  console.log(
+    "[Policía] 🖼️  Challenge visual detectado — cambiando a audio...",
+  );
+  const bFrame = await esperarBframe(page, 20000);
 
-  // 5. Hacer clic en el botón de audio challenge
-  await bFrame.waitForSelector("#recaptcha-audio-button", { timeout: 10000 });
-  await bFrame.click("#recaptcha-audio-button");
-  console.log("[Policía] 🔊 Botón de audio clickeado");
-  await sleep(2000);
-
-  // 6. Detectar bloqueo de Google
+  // 5. Detectar bloqueo inmediato
   const bloqueado = await bFrame
     .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
     .catch(() => false);
-  if (bloqueado)
-    throw new Error(
-      "Google bloqueó los intentos de audio captcha — intenta más tarde",
-    );
+  if (bloqueado) throw new Error("Google bloqueó el captcha desde esta IP");
 
-  // 7. Obtener la URL del audio MP3
+  // 6. Dentro del challenge visual, hacer clic en el botón de audio
+  //    El botón está en la barra inferior del challenge (#recaptcha-audio-button)
+  await bFrame.waitForSelector("#recaptcha-audio-button", { timeout: 15000 });
+  await bFrame.click("#recaptcha-audio-button");
+  console.log("[Policía] 🔊 Cambiado a audio challenge");
+  await sleep(2000);
+
+  // 7. Volver a verificar bloqueo (Google puede mostrar el doscaptcha tras pedir audio)
+  const bloqueadoTras = await bFrame
+    .evaluate(() => !!document.querySelector(".rc-doscaptcha-body"))
+    .catch(() => false);
+  if (bloqueadoTras)
+    throw new Error("Google bloqueó el audio challenge desde esta IP");
+
+  // 8. Esperar que aparezca el elemento de audio
   let audioUrl = null;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 15; i++) {
     audioUrl = await bFrame
       .evaluate(() => {
         const audio = document.querySelector("audio#audio-source");
-        return audio ? audio.src : null;
+        return audio && audio.src ? audio.src : null;
       })
       .catch(() => null);
     if (audioUrl) break;
     await sleep(1000);
   }
-  if (!audioUrl) throw new Error("No se encontró la URL del audio del captcha");
+  if (!audioUrl) throw new Error("URL del audio del captcha no encontrada");
 
-  console.log("[Policía] 🎵 Audio URL obtenida");
+  console.log("[Policía] 🎵 Audio URL obtenida — transcribiendo...");
 
-  // 8. Descargar el audio como buffer desde el contexto del browser
-  const audioBuffer = await page.evaluate(async (url) => {
-    const resp = await fetch(url);
+  // 9. Descargar el audio desde el contexto del browser (evita restricciones CORS)
+  const audioArray = await page.evaluate(async (url) => {
+    const resp = await fetch(url, { credentials: "omit" });
     const buf = await resp.arrayBuffer();
     return Array.from(new Uint8Array(buf));
   }, audioUrl);
 
-  const buffer = Buffer.from(audioBuffer);
+  const buffer = Buffer.from(audioArray);
 
-  // 9. Enviar el audio a Wit.ai para transcripción
+  // 10. Enviar a Wit.ai para transcripción
   console.log("[Policía] 📤 Enviando audio a Wit.ai...");
   const witResponse = await fetch("https://api.wit.ai/speech?v=20240304", {
     method: "POST",
@@ -416,47 +426,45 @@ async function resolverCaptchaAudio(page) {
   });
 
   if (!witResponse.ok) {
-    const errorText = await witResponse.text().catch(() => "");
-    throw new Error(`Wit.ai error ${witResponse.status}: ${errorText}`);
+    const err = await witResponse.text().catch(() => "");
+    throw new Error(`Wit.ai error ${witResponse.status}: ${err}`);
   }
 
   const rawText = await witResponse.text();
-  // Wit.ai puede devolver múltiples JSON separados por \r\n — tomar el último
+  // Wit.ai devuelve múltiples JSON separados por \r\n — tomar el último
   const lastLine = rawText.split("\r\n").filter(Boolean).at(-1);
   const witData = JSON.parse(lastLine);
   const solucion = witData?.text?.trim();
 
-  if (!solucion)
-    throw new Error("Wit.ai no pudo transcribir el audio del captcha");
+  if (!solucion) throw new Error("Wit.ai no pudo transcribir el audio");
 
-  console.log(`[Policía] 💬 Solución obtenida: "${solucion}"`);
+  console.log(`[Policía] 💬 Solución: "${solucion}"`);
 
-  // 10. Ingresar la solución en el campo de texto del challenge
+  // 11. Ingresar la solución
   await bFrame.waitForSelector("#audio-response", { timeout: 5000 });
   await bFrame.click("#audio-response");
   await bFrame.type("#audio-response", solucion, { delay: 50 });
-  await sleep(500);
+  await sleep(300);
 
-  // 11. Hacer clic en Verify
+  // 12. Verificar
   await bFrame.click("#recaptcha-verify-button");
-  console.log("[Policía] ✔️  Verify clickeado — esperando validación...");
+  console.log("[Policía] ✔️  Verify enviado — esperando validación...");
   await sleep(3000);
 
-  // 12. Verificar si la solución fue incorrecta
+  // 13. Comprobar si la respuesta fue incorrecta
   const incorrecto = await bFrame
     .evaluate(() => {
       const err = document.querySelector(".rc-audiochallenge-error-message");
       return err && err.offsetParent !== null;
     })
     .catch(() => false);
+  if (incorrecto) throw new Error("Solución de audio incorrecta según Google");
 
-  if (incorrecto) throw new Error("La solución de audio fue incorrecta");
-
-  // 13. Obtener el token final
+  // 14. Obtener el token final
   return await obtenerToken(page);
 }
 
-// ─── Obtener g-recaptcha-response del DOM ─────────────────────────────────────
+// ─── Obtener g-recaptcha-response ─────────────────────────────────────────────
 async function obtenerToken(page) {
   let token = null;
   for (let i = 0; i < 15; i++) {
@@ -470,9 +478,7 @@ async function obtenerToken(page) {
     await sleep(1000);
   }
   if (!token)
-    throw new Error(
-      "No se obtuvo el token de reCAPTCHA tras resolver el audio",
-    );
+    throw new Error("Token reCAPTCHA no obtenido tras la verificación");
   console.log("[Policía] 🎟️  Token reCAPTCHA obtenido");
   return token;
 }
@@ -529,7 +535,6 @@ async function extraerResultado(page) {
     }
     return { encontrado: false, texto: "" };
   });
-
   if (!resultado.encontrado)
     throw new Error("No se encontró texto de resultados.");
   return resultado.texto;
@@ -548,7 +553,7 @@ function notificarSSE(sesion, evento, datos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONTROLADOR PRINCIPAL — Todo automático, sin popup, sin intervención
+// CONTROLADOR PRINCIPAL
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.consultarAntecedentes = async (req, res) => {
   const { cedula, tipoDocumento = "CC", captchaToken, sessionId } = req.body;
@@ -556,7 +561,6 @@ exports.consultarAntecedentes = async (req, res) => {
   if (!cedula)
     return res.status(400).json({ error: "El campo 'cedula' es requerido." });
 
-  // Compatibilidad: si el frontend manda token + sessionId (flujo de fallback)
   if (captchaToken && sessionId) {
     return exports.resolverConToken(req, res);
   }
@@ -579,7 +583,7 @@ exports.consultarAntecedentes = async (req, res) => {
     await aceptarTerminos(page);
     await rellenarFormulario(page, identificacion, tipoCodigo);
 
-    // ── Resolver captcha automáticamente con Wit.ai ───────────────────────────
+    // ── Intentar resolver automáticamente ────────────────────────────────────
     let token;
     try {
       token = await resolverCaptchaAudio(page);
@@ -590,7 +594,6 @@ exports.consultarAntecedentes = async (req, res) => {
         "— activando fallback manual",
       );
 
-      // Fallback: guardar sesión y devolver popup para resolución manual
       const id = uuidv4();
       sesiones.set(id, {
         browser,
@@ -616,14 +619,13 @@ exports.consultarAntecedentes = async (req, res) => {
       });
     }
 
-    // ── Inyectar token, enviar formulario y extraer resultado ─────────────────
+    // ── Enviar formulario y extraer resultado ─────────────────────────────────
     await inyectarTokenYEnviar(page, token);
     const texto = await extraerResultado(page);
 
     const tieneAntecedentes = !texto
       .toUpperCase()
       .includes("NO TIENE ASUNTOS PENDIENTES");
-
     const ahora = new Date().toLocaleString("es-CO");
     const mensaje = tieneAntecedentes
       ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${identificacion} TIENE antecedentes judiciales.`
@@ -659,7 +661,7 @@ exports.consultarAntecedentes = async (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// PÁGINA BRIDGE — Fallback manual si el audio falla
+// PÁGINA BRIDGE — Fallback manual
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaBridge = (req, res) => {
   const { sessionId } = req.params;
@@ -755,7 +757,8 @@ exports.captchaBridge = (req, res) => {
         document.getElementById("statusText").textContent = "⚠️ Permite ventanas emergentes e intenta de nuevo.";
         return;
       }
-      document.getElementById("statusText").textContent = "Esperando que rektcaptcha resuelva el captcha...";
+      document.getElementById("statusText").textContent =
+        "Esperando que rektcaptcha resuelva el captcha...";
       const interval = setInterval(async () => {
         try {
           const r = await fetch(BACKEND + "/api/captcha-resuelto/" + SESSION_ID);
@@ -779,7 +782,7 @@ exports.captchaBridge = (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Endpoints de soporte (SSE, bridge callbacks, fallback manual)
+// Endpoints de soporte
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaConfirmado = async (req, res) => {
   const { sessionId } = req.params;
