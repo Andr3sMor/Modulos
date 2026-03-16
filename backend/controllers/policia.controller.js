@@ -1,5 +1,4 @@
 "use strict";
-
 /**
  * policia.controller.js
  *
@@ -19,19 +18,12 @@
  *     → Notifica via SSE con el resultado final
  *     → Frontend cierra popup y muestra resultado
  *
- * NOTA: El popup abre la página REAL de la Policía. La extensión rektcaptcha
- * resuelve el captcha en el browser del usuario. El backend tiene su propia
- * sesión Puppeteer en la misma URL. El token que resuelve el usuario en el
- * popup NO se transfiere al backend — el backend espera a que la MISMA sesión
- * de Puppeteer tenga el captcha resuelto (no funciona así).
- *
- * SOLUCIÓN REAL: El popup que abre el frontend apunta a una URL del propio
- * backend (/api/policia-captcha-page/:sessionId) que sirve la página de la
- * Policía embebida con un script de monitoreo. Al resolverse el captcha en ese
- * contexto, el script lo detecta y notifica al backend que a su vez notifica
- * al frontend via SSE.
+ * NOTA: En servidor local (Windows/Mac/Linux con escritorio) la extensión
+ * rektcaptcha corre directamente en el Puppeteer del backend — no necesita
+ * popup ni intervención del usuario. En Linux sin escritorio se usa Xvfb
+ * como display virtual para que Chrome pueda cargar la extensión.
+ * En Render se mantiene el flujo de popup con la extensión del usuario.
  */
-
 const puppeteerExtra = require("puppeteer-extra");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
 const puppeteerCore = require("puppeteer-core");
@@ -46,12 +38,10 @@ if (!puppeteerExtra.plugins.some((p) => p.name === "stealth")) {
 
 const INDEX_URL =
   "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
-
 const EXTENSION_PATH = path.resolve(
   __dirname,
   "../browser-extensions/rektcaptcha",
 );
-
 const TIPO_MAP = {
   CC: "cc",
   CE: "ce",
@@ -92,10 +82,64 @@ setInterval(
   5 * 60 * 1000,
 );
 
+// ─── Xvfb helper ──────────────────────────────────────────────────────────────
+// Inicia un display virtual en Linux cuando no hay pantalla real disponible.
+// Es idempotente: solo arranca una vez por proceso y se limpia al salir.
+let xvfbInstance = null;
+
+async function asegurarDisplay() {
+  // Windows y macOS tienen display nativo — no se necesita Xvfb
+  if (process.platform !== "linux") return;
+
+  // Ya hay un DISPLAY configurado (escritorio real o variable de entorno)
+  if (process.env.DISPLAY) return;
+
+  // Xvfb ya fue iniciado en esta ejecución
+  if (xvfbInstance) return;
+
+  let Xvfb;
+  try {
+    Xvfb = require("xvfb");
+  } catch (_) {
+    console.warn(
+      "[Policía] ⚠️  Paquete 'xvfb' no instalado. " +
+        "Ejecuta: npm install xvfb   y   apt-get install -y xvfb",
+    );
+    throw new Error("Xvfb no disponible — instala el paquete 'xvfb'");
+  }
+
+  xvfbInstance = new Xvfb({
+    displayNum: 99,
+    silent: true,
+    xvfb_args: ["-screen", "0", "1920x1080x24", "-ac"],
+  });
+
+  await new Promise((resolve, reject) => {
+    xvfbInstance.start((err) => (err ? reject(err) : resolve()));
+  });
+
+  process.env.DISPLAY = ":99";
+  console.log("[Policía] 🖥️  Xvfb iniciado en DISPLAY=:99");
+
+  // Limpiar al terminar el proceso
+  process.once("exit", () => xvfbInstance?.stop());
+  process.once("SIGINT", () => {
+    xvfbInstance?.stop();
+    process.exit(0);
+  });
+  process.once("SIGTERM", () => {
+    xvfbInstance?.stop();
+    process.exit(0);
+  });
+}
+
 // ─── Lanzar browser ────────────────────────────────────────────────────────────
 async function lanzarBrowser() {
+  // ── Render.com: usa @sparticuz/chromium sin extensión ─────────────────────
   if (process.env.RENDER) {
-    console.log("[Policía] 🌐 Render — usando @sparticuz/chromium");
+    console.log(
+      "[Policía] 🌐 Render — usando @sparticuz/chromium (sin extensión)",
+    );
     return puppeteerCore.launch({
       args: [
         ...chromium.args,
@@ -110,7 +154,9 @@ async function lanzarBrowser() {
     });
   }
 
+  // ── Local / servidor propio ────────────────────────────────────────────────
   const extensionExiste = fs.existsSync(EXTENSION_PATH);
+
   const args = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -122,9 +168,12 @@ async function lanzarBrowser() {
     "--disable-blink-features=AutomationControlled",
     "--window-size=1920,1080",
   ];
+
   const ignoreDefaultArgs = ["--enable-automation"];
 
   if (extensionExiste) {
+    // Garantizar que haya display disponible (real o virtual via Xvfb)
+    await asegurarDisplay();
     console.log("[Policía] 🔌 Local + extensión rektcaptcha");
     args.push(
       `--disable-extensions-except=${EXTENSION_PATH}`,
@@ -132,10 +181,12 @@ async function lanzarBrowser() {
     );
     ignoreDefaultArgs.push("--disable-extensions");
   } else {
-    console.log("[Policía] 💻 Local sin extensión");
+    console.log("[Policía] 💻 Local sin extensión — headless puro");
   }
 
   const browser = await puppeteerExtra.launch({
+    // Con extensión necesita headless:false (display real o Xvfb)
+    // Sin extensión puede correr headless normal
     headless: extensionExiste ? false : true,
     ignoreHTTPSErrors: true,
     args,
@@ -191,6 +242,7 @@ async function aceptarTerminos(page) {
           !btn.hasAttribute("disabled")
         );
       });
+
       if (!activo) {
         await page.evaluate((sel) => {
           const el = document.querySelector(sel);
@@ -206,6 +258,7 @@ async function aceptarTerminos(page) {
           );
         });
       }
+
       if (activo) exito = true;
     } catch (e) {
       console.warn(`[Policía] ⚠️ Términos intento ${i}: ${e.message}`);
@@ -245,6 +298,7 @@ async function aceptarTerminos(page) {
     }
     await sleep(2000);
   }
+
   throw new Error("No se llegó a antecedentes.xhtml. URL: " + page.url());
 }
 
@@ -279,14 +333,12 @@ async function rellenarFormulario(page, cedula, tipoCodigo) {
     await page.click("#cedulaInput", { clickCount: 3 });
     await page.type("#cedulaInput", String(cedula), { delay: 40 });
   }
+
   await sleep(500);
   console.log("[Policía] ✅ Formulario llenado — esperando token del captcha");
 }
 
-// ─── Esperar token en la sesión Puppeteer ─────────────────────────────────────
-// El usuario resolvió el captcha en su popup. El backend recibe el token
-// via POST /api/consulta-antecedentes con captchaToken + sessionId,
-// y este método es llamado desde resolverConToken().
+// ─── Inyectar token y enviar formulario ───────────────────────────────────────
 async function inyectarTokenYEnviar(page, token) {
   console.log("[Policía] 💉 Inyectando token...");
   await page.evaluate((t) => {
@@ -315,6 +367,7 @@ async function inyectarTokenYEnviar(page, token) {
     }
     return null;
   });
+
   console.log("[Policía] 🖱️ Botón clickado:", btnClickado);
   await sleep(5000);
 }
@@ -337,6 +390,7 @@ async function extraerResultado(page) {
     }
     return { encontrado: false, texto: "" };
   });
+
   if (!resultado.encontrado)
     throw new Error("No se encontró texto de resultados.");
   return resultado.texto;
@@ -369,6 +423,7 @@ exports.consultarAntecedentes = async (req, res) => {
 
   const tipoCodigo = TIPO_MAP[tipoDocumento] || "cc";
   const identificacion = String(cedula).replace(/[.,]/g, "");
+
   console.log(`\n=== Policía: cedula=${identificacion} tipo=${tipoCodigo} ===`);
 
   let browser = null;
@@ -398,9 +453,9 @@ exports.consultarAntecedentes = async (req, res) => {
 
     console.log(`[Policía] ⏸️ Sesión creada: ${id}`);
 
-    // popupUrl apunta a la página bridge del propio backend
     const backendBase =
       process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
+
     return res.json({
       requiereCaptcha: true,
       sessionId: id,
@@ -409,12 +464,10 @@ exports.consultarAntecedentes = async (req, res) => {
     });
   } catch (error) {
     console.error("[Policía] ❌ Error preparando sesión:", error.message);
-    return res
-      .status(502)
-      .json({
-        error: "Error consultando Policía Nacional",
-        detalle: error.message,
-      });
+    return res.status(502).json({
+      error: "Error consultando Policía Nacional",
+      detalle: error.message,
+    });
   } finally {
     if (page && !page.isClosed()) await page.close().catch(() => {});
     if (browser) await browser.close().catch(() => {});
@@ -423,7 +476,7 @@ exports.consultarAntecedentes = async (req, res) => {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PÁGINA BRIDGE — Sirve una página HTML que redirige a la Policía e inyecta
-// un script que captura el token resuelto por rektcaptcha y lo envía al backend
+// un script de monitoreo que captura el token y lo envía al backend
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaBridge = (req, res) => {
   const { sessionId } = req.params;
@@ -438,22 +491,6 @@ exports.captchaBridge = (req, res) => {
 
   const backendBase =
     process.env.BACKEND_URL || "https://modulos-backend.onrender.com";
-
-  // Esta página se abre en el popup del usuario.
-  // Redirige inmediatamente a la Policía e inyecta un script via Service Worker
-  // que no funciona cross-origin. En cambio, usamos un polling desde esta página
-  // que verifica con el backend si ya recibió el token.
-  //
-  // FLUJO REAL:
-  // 1. Esta página carga y redirige al usuario a la Policía con JS
-  // 2. La extensión rektcaptcha resuelve el captcha en la página de la Policía
-  // 3. Pero no podemos capturar el token cross-origin desde aquí
-  //
-  // POR ESO: Abrimos la Policía directamente como popup, y usamos un
-  // segundo script en esta misma página (antes del redirect) que hace polling
-  // al backend para saber cuándo el usuario resolvió el captcha.
-  // El usuario cierra el popup manualmente tras resolver — o mejor:
-  // mostramos instrucciones claras.
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(`<!DOCTYPE html>
@@ -494,7 +531,6 @@ exports.captchaBridge = (req, res) => {
   <div class="card">
     <div style="font-size:48px">🛡️</div>
     <h1>Verificación Policía Nacional</h1>
-
     <div id="waitingMsg">
       <p>
         Se abrirá la página de la Policía Nacional.<br>
@@ -506,7 +542,6 @@ exports.captchaBridge = (req, res) => {
         <span id="statusText">Preparando verificación...</span>
       </div>
     </div>
-
     <div id="successMsg">
       <div class="success">✅</div>
       <p style="color:#4caf50; font-size:16px; margin-top:8px">
@@ -514,14 +549,11 @@ exports.captchaBridge = (req, res) => {
       </p>
     </div>
   </div>
-
   <script>
     const SESSION_ID = "${sessionId}";
     const BACKEND   = "${backendBase}";
     const POLICIA_URL = "https://antecedentes.policia.gov.co:7005/WebJudicial/index.xhtml";
 
-    // 1. Guardar sessionId en chrome.storage para que rektcaptcha lo lea
-    //    cuando resuelva el captcha en la página de la Policía
     function guardarSesion() {
       if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({
@@ -533,14 +565,12 @@ exports.captchaBridge = (req, res) => {
           abrirPolicia();
         });
       } else {
-        // Sin extensión: abrir directo y mostrar instrucciones
         document.getElementById("statusText").textContent =
           "Instala la extensión rektcaptcha para resolución automática.";
         abrirPolicia();
       }
     }
 
-    // 2. Abrir la página real de la Policía
     function abrirPolicia() {
       const win = window.open(POLICIA_URL, "_blank");
       if (!win) {
@@ -551,9 +581,6 @@ exports.captchaBridge = (req, res) => {
       document.getElementById("statusText").textContent =
         "Esperando que rektcaptcha resuelva el captcha...";
 
-      // 3. Polling al backend para saber cuándo terminó
-      // (el backend notifica via SSE al frontend Angular)
-      // Esta ventana puede cerrarse sola una vez que el backend confirme
       const interval = setInterval(async () => {
         try {
           const r = await fetch(BACKEND + "/api/captcha-resuelto/" + SESSION_ID);
@@ -568,7 +595,6 @@ exports.captchaBridge = (req, res) => {
         } catch (_) {}
       }, 2000);
 
-      // Cerrar automáticamente tras 5 minutos
       setTimeout(() => {
         clearInterval(interval);
         window.close();
@@ -582,8 +608,7 @@ exports.captchaBridge = (req, res) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ENDPOINT: El backend intenta detectar el captcha en su sesión Puppeteer
-// Llamado cuando el usuario confirma manualmente que ya resolvió el captcha
+// ENDPOINT: Notifica al frontend via SSE que puede pedir el token
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaConfirmado = async (req, res) => {
   const { sessionId } = req.params;
@@ -593,11 +618,6 @@ exports.captchaConfirmado = async (req, res) => {
     return res.json({ ok: false, error: "Sesión expirada" });
   }
 
-  // El captcha fue resuelto en el browser del USUARIO, no en Puppeteer.
-  // Puppeteer tiene su propia instancia en el servidor.
-  // Lo que podemos hacer: esperar a que el usuario envíe el token via SSE
-  // o confiar en que el frontend lo envíe via POST normal.
-  // Por ahora, notificamos al frontend via SSE que puede proceder a pedir el token.
   notificarSSE(sesion, "captcha_listo", { sessionId });
   return res.json({ ok: true });
 };
@@ -607,7 +627,6 @@ exports.captchaConfirmado = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 exports.captchaResuelto = (req, res) => {
   const { sessionId } = req.params;
-  // Si la sesión ya no existe fue resuelta y eliminada
   const resuelto = !sesiones.has(sessionId);
   res.json({ resuelto });
 };
@@ -678,6 +697,7 @@ exports.resolverConToken = async (req, res) => {
     const tieneAntecedentes = !texto
       .toUpperCase()
       .includes("NO TIENE ASUNTOS PENDIENTES");
+
     const ahora = new Date().toLocaleString("es-CO");
     const mensaje = tieneAntecedentes
       ? `Al ${ahora} se verifica que ${tipoCodigo.toUpperCase()} ${cedula} TIENE antecedentes judiciales.`
@@ -698,6 +718,7 @@ exports.resolverConToken = async (req, res) => {
       mensaje,
       screenshot,
     };
+
     notificarSSE(sesion, "resultado", resultado);
     await browser.close().catch(() => {});
     console.log(`[Policía] ✅ Consulta completada para ${cedula}`);
@@ -706,8 +727,9 @@ exports.resolverConToken = async (req, res) => {
     console.error("[Policía] ❌ Error resolviendo con token:", error.message);
     notificarSSE(sesion, "error", { error: error.message });
     await browser?.close().catch(() => {});
-    return res
-      .status(502)
-      .json({ error: "Error al procesar el captcha", detalle: error.message });
+    return res.status(502).json({
+      error: "Error al procesar el captcha",
+      detalle: error.message,
+    });
   }
 };
