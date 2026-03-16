@@ -704,10 +704,8 @@
 <!-- ── Modal captcha Policía Nacional ── -->
 <app-captcha-resolver
   *ngIf="mostrarCaptchaPolicia"
-  [cedula]="cedula"
   [sessionId]="captchaSessionId"
   [popupUrl]="captchaPopupUrl"
-  [idType]="tipoDocumento"
   (resuelto)="onCaptchaResuelto($event)"
   (cancelado)="onCaptchaCancelado()"
 >
