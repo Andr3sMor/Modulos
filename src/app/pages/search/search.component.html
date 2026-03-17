@@ -741,7 +741,7 @@
               <!-- Contratos por año -->
               <div
                 *ngIf="
-                  r.contratoPorAno && (r.contratoPorAno | keyvalue).length > 0
+                  r.contratoPorAno && (r.contratoPorAno | keyvalue)?.length
                 "
                 class="paco-anios"
               >
