@@ -292,6 +292,20 @@
             >
               🏢 {{ r.totalRegistros }} empresa(s) encontrada(s)
             </span>
+            <!-- PACO -->
+            <span
+              *ngIf="r.tipo === 'paco'"
+              [class]="
+                r.totalContratos > 0
+                  ? 'status-badge badge-neutral'
+                  : 'status-badge badge-success'
+              "
+              >{{
+                r.totalContratos > 0
+                  ? "📄 " + r.totalContratos + " contrato(s) encontrado(s)"
+                  : "✅ Sin contratos registrados"
+              }}</span
+            >
             <!-- Infobae -->
             <span
               *ngIf="r.tipo === 'infobae'"
@@ -677,6 +691,140 @@
                       class="rama-screenshot-img"
                     />
                   </div>
+                </div>
+              </div>
+            </ng-container>
+          </div>
+
+          <!-- ══ PACO — Contratos SECOP II ═════════════════════════ -->
+          <div *ngIf="r.tipo === 'paco'" class="paco-informe">
+            <!-- Sin contratos -->
+            <div *ngIf="r.totalContratos === 0" class="sin-resultados">
+              ✅ No se encontraron contratos registrados en SECOP II para esta
+              identificación.
+            </div>
+
+            <!-- Con contratos -->
+            <ng-container *ngIf="r.totalContratos > 0">
+              <!-- Resumen estadístico -->
+              <div class="paco-resumen">
+                <div class="paco-stat">
+                  <span class="paco-stat-label">Total contratos</span>
+                  <span class="paco-stat-valor">{{ r.totalContratos }}</span>
+                </div>
+                <div class="paco-stat">
+                  <span class="paco-stat-label">Valor total</span>
+                  <span class="paco-stat-valor paco-valor-total">
+                    ${{ r.totalValor | number: "1.0-0" }}
+                  </span>
+                </div>
+                <div class="paco-stat" *ngIf="r.departamentos?.length > 0">
+                  <span class="paco-stat-label">Departamentos</span>
+                  <span class="paco-stat-valor">{{
+                    r.departamentos.length
+                  }}</span>
+                </div>
+                <div class="paco-stat" *ngIf="r.portalUrl">
+                  <span class="paco-stat-label">Portal</span>
+                  <span class="paco-stat-valor">
+                    <a
+                      [href]="r.portalUrl"
+                      target="_blank"
+                      class="paco-portal-link"
+                    >
+                      Ver en SECOP II →
+                    </a>
+                  </span>
+                </div>
+              </div>
+
+              <!-- Contratos por año -->
+              <div
+                *ngIf="
+                  r.contratoPorAno && (r.contratoPorAno | keyvalue).length > 0
+                "
+                class="paco-anios"
+              >
+                <div class="paco-anios-titulo">Contratos por año</div>
+                <div class="paco-anios-lista">
+                  <div
+                    *ngFor="let entry of r.contratoPorAno | keyvalue"
+                    class="paco-anio-item"
+                  >
+                    <span class="paco-anio-label">{{ entry.key }}</span>
+                    <span class="paco-anio-valor">{{ entry.value }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Entidades contratantes -->
+              <div *ngIf="r.entidades?.length > 0" class="paco-entidades">
+                <div class="paco-seccion-titulo">Entidades contratantes</div>
+                <div class="paco-entidades-lista">
+                  <div
+                    *ngFor="let ent of r.entidades.slice(0, 5)"
+                    class="paco-entidad-item"
+                  >
+                    <span class="paco-entidad-nombre">{{
+                      ent.nombre || ent
+                    }}</span>
+                    <span *ngIf="ent.total" class="paco-entidad-total">
+                      {{ ent.total }} contrato{{ ent.total !== 1 ? "s" : "" }}
+                    </span>
+                  </div>
+                  <div
+                    *ngIf="r.entidades.length > 5"
+                    class="paco-entidades-mas"
+                  >
+                    +{{ r.entidades.length - 5 }} entidad{{
+                      r.entidades.length - 5 !== 1 ? "es" : ""
+                    }}
+                    más
+                  </div>
+                </div>
+              </div>
+
+              <!-- Tabla de contratos recientes -->
+              <div *ngIf="r.contratos?.length > 0" class="paco-tabla-wrapper">
+                <div class="paco-seccion-titulo">Contratos recientes</div>
+                <table class="paco-tabla">
+                  <thead>
+                    <tr>
+                      <th>Objeto</th>
+                      <th>Entidad</th>
+                      <th>Valor</th>
+                      <th>Fecha</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr *ngFor="let c of r.contratos.slice(0, 10)">
+                      <td class="paco-objeto">
+                        {{ c.objeto || c.descripcion || "—" }}
+                      </td>
+                      <td class="paco-entidad">
+                        {{ c.entidad || c.entidadContratante || "—" }}
+                      </td>
+                      <td class="paco-valor">
+                        {{ c.valor ? "$" + (c.valor | number: "1.0-0") : "—" }}
+                      </td>
+                      <td class="paco-fecha">
+                        {{ c.fecha || c.fechaSuscripcion || "—" }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div *ngIf="r.contratos.length > 10" class="paco-footer">
+                  <a
+                    *ngIf="r.portalUrl"
+                    [href]="r.portalUrl"
+                    target="_blank"
+                    class="paco-portal-link"
+                  >
+                    Ver los {{ r.totalContratos }} contratos en SECOP II →
+                  </a>
+                  <span *ngIf="!r.portalUrl" class="paco-mas-info">
+                    Mostrando 10 de {{ r.totalContratos }} contratos totales.
+                  </span>
                 </div>
               </div>
             </ng-container>

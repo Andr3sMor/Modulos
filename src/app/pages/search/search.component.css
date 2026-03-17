@@ -827,35 +827,150 @@ select.field-input { cursor: pointer; }
   background: #f3f4f6;
   color: #374151;
 }
+
 /* ══ PACO ══════════════════════════════════════════════════════ */
+
+.paco-informe {
+  margin-top: 12px;
+}
+
 .paco-resumen {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
   margin-bottom: 16px;
 }
 
 .paco-stat {
   background: #f8f9fa;
+  border: 1px solid #f3f4f6;
   border-radius: 8px;
   padding: 10px 16px;
-  min-width: 130px;
+  min-width: 120px;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .paco-stat-label {
-  font-size: 11px;
-  color: #6b7280;
+  font-size: 0.72rem;
+  color: #9ca3af;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.04em;
+  font-weight: 600;
 }
 
 .paco-stat-valor {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 0.95rem;
+  font-weight: 700;
   color: #111827;
+}
+
+.paco-valor-total {
+  color: #059669;
+}
+
+.paco-portal-link {
+  font-size: 0.82rem;
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.paco-portal-link:hover {
+  text-decoration: underline;
+}
+
+.paco-seccion-titulo {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #374151;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.paco-anios {
+  margin-bottom: 16px;
+}
+
+.paco-anios-titulo {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #374151;
+  margin-bottom: 8px;
+}
+
+.paco-anios-lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.paco-anio-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 20px;
+  padding: 4px 12px;
+}
+
+.paco-anio-label {
+  font-size: 0.78rem;
+  color: #1e40af;
+  font-weight: 600;
+}
+
+.paco-anio-valor {
+  font-size: 0.78rem;
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.paco-entidades {
+  margin-bottom: 16px;
+}
+
+.paco-entidades-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.paco-entidad-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f9fafb;
+  border-radius: 6px;
+  border: 1px solid #f3f4f6;
+  gap: 12px;
+}
+
+.paco-entidad-nombre {
+  font-size: 0.84rem;
+  color: #1f2937;
+  font-weight: 500;
+  flex: 1;
+}
+
+.paco-entidad-total {
+  font-size: 0.75rem;
+  color: #6b7280;
+  white-space: nowrap;
+  background: #e5e7eb;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.paco-entidades-mas {
+  font-size: 0.78rem;
+  color: #9ca3af;
+  padding: 4px 12px;
+  text-align: center;
 }
 
 .paco-tabla-wrapper {
@@ -866,32 +981,47 @@ select.field-input { cursor: pointer; }
 .paco-tabla {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 0.82rem;
 }
 
 .paco-tabla th {
   text-align: left;
   padding: 8px 10px;
-  font-weight: 500;
+  font-weight: 600;
   color: #6b7280;
-  border-bottom: 1px solid #e5e7eb;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 2px solid #e5e7eb;
   white-space: nowrap;
 }
 
 .paco-tabla td {
-  padding: 8px 10px;
+  padding: 9px 10px;
   border-bottom: 1px solid #f3f4f6;
   vertical-align: top;
+  color: #374151;
 }
 
 .paco-tabla tr:last-child td { border-bottom: none; }
 
-.paco-objeto  { max-width: 280px; font-size: 12px; color: #374151; }
-.paco-entidad { max-width: 180px; font-size: 12px; color: #374151; }
-.paco-valor   { white-space: nowrap; font-weight: 500; color: #059669; }
-.paco-fecha   { white-space: nowrap; font-size: 12px; color: #6b7280; }
+.paco-tabla tr:hover td { background: #f9fafb; }
 
-.paco-footer { margin-top: 8px; }
+.paco-objeto  { max-width: 280px; font-size: 0.8rem; }
+.paco-entidad { max-width: 180px; font-size: 0.8rem; color: #6b7280; }
+.paco-valor   { white-space: nowrap; font-weight: 600; color: #059669; }
+.paco-fecha   { white-space: nowrap; font-size: 0.78rem; color: #9ca3af; }
+
+.paco-footer {
+  margin-top: 10px;
+  text-align: center;
+}
+
+.paco-mas-info {
+  font-size: 0.78rem;
+  color: #9ca3af;
+}
+
 /* ── Selector Tipo Persona ── */
 .tipo-persona-row {
   display: flex;
