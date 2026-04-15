@@ -56,6 +56,8 @@ export class VerificacionComponent {
     { key: 'rut', label: 'RUT', icon: '📑', desc: 'Registro Único Tributario' },
   ];
 
+  private apiUrl = 'https://modulos-backend.onrender.com';
+
   constructor(private http: HttpClient) {}
 
   onFileChange(event: Event, key: string) {
@@ -100,7 +102,7 @@ export class VerificacionComponent {
       if (file) formData.append(key, file);
     }
 
-    this.http.post<any>('/api/analizar-documentos', formData).subscribe({
+    this.http.post<any>(`${this.apiUrl}/api/analizar-documentos`, formData).subscribe({
       next: (res) => {
         this.resumen = res.resumen;
         this.resultados = res.resultados;
