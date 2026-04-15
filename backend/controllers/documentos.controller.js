@@ -89,7 +89,24 @@ const MIME_IMAGENES = {
 
 async function extraerTextoPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
-  const data = await pdfParse(buffer);
+
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('TIMEOUT_PDF')), 20000)
+  );
+
+  let data;
+  try {
+    data = await Promise.race([
+      pdfParse(buffer, { max: 10 }),
+      timeout
+    ]);
+  } catch (err) {
+    if (err.message === 'TIMEOUT_PDF') {
+      throw new Error('El PDF tardó demasiado en procesarse. Puede ser un PDF escaneado o protegido. Por favor suba una foto/imagen del documento.');
+    }
+    throw err;
+  }
+
   return data.text?.trim() || '';
 }
 
