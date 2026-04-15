@@ -31,12 +31,12 @@
             <label [for]="'file-' + doc.key" class="upload-label">
               <span class="upload-icon">📎</span>
               <span>Haga clic para subir</span>
-              <span class="upload-hint">JPG, PNG, PDF · Máx 10MB</span>
+              <span class="upload-hint">JPG, PNG, WebP · Máx 10MB</span>
             </label>
             <input
               [id]="'file-' + doc.key"
               type="file"
-              accept="image/*,application/pdf"
+              accept="image/jpeg,image/png,image/webp"
               class="file-input"
               (change)="onFileChange($event, doc.key)"
             />

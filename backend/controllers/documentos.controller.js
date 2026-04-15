@@ -78,9 +78,33 @@ Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin 
 Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`
 };
 
-async function analizarDocumentoConGroq(base64Image, tipoDocumento, mimeType) {
+const MIME_SOPORTADOS = {
+  'image/jpeg': 'image/jpeg',
+  'image/jpg':  'image/jpeg',
+  'image/png':  'image/png',
+  'image/webp': 'image/webp',
+  'image/gif':  'image/gif',
+};
+
+async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const prompt = PROMPTS[tipoDocumento];
   if (!prompt) throw new Error(`Tipo de documento desconocido: ${tipoDocumento}`);
+
+  const mimeNormalizado = MIME_SOPORTADOS[mimeType?.toLowerCase()];
+  if (!mimeNormalizado) {
+    throw new Error(`Formato no soportado: ${mimeType}. Solo se aceptan imágenes JPG, PNG o WebP. Los PDF no son compatibles con el análisis de visión.`);
+  }
+
+  if (!fs.existsSync(filePath)) {
+    throw new Error('No se pudo leer el archivo subido.');
+  }
+
+  const fileBuffer = fs.readFileSync(filePath);
+  if (fileBuffer.length === 0) {
+    throw new Error('El archivo está vacío.');
+  }
+
+  const base64Image = fileBuffer.toString('base64');
 
   const completion = await groq.chat.completions.create({
     model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -91,7 +115,7 @@ async function analizarDocumentoConGroq(base64Image, tipoDocumento, mimeType) {
           {
             type: 'image_url',
             image_url: {
-              url: `data:${mimeType};base64,${base64Image}`
+              url: `data:${mimeNormalizado};base64,${base64Image}`
             }
           },
           {
@@ -133,9 +157,7 @@ exports.analizarDocumentos = async (req, res) => {
       promesas.push(
         (async () => {
           try {
-            const base64 = fs.readFileSync(file.path).toString('base64');
-            const mimeType = file.mimetype;
-            const datos = await analizarDocumentoConGroq(base64, tipoDocumento, mimeType);
+            const datos = await analizarDocumentoConGroq(file.path, tipoDocumento, file.mimetype);
             resultados[campo] = { ok: true, datos };
           } catch (err) {
             console.error(`❌ Error analizando ${campo}:`, err.message);
