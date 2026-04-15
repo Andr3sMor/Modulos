@@ -1,13 +1,24 @@
 import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { HttpClient } from '@angular/common/http';
 
-interface DocumentoVerificado {
-  tipo: string;
-  numero: string;
-  estado: 'valido' | 'invalido' | 'pendiente';
-  fechaVerificacion: string;
-  observaciones: string;
+interface ResumenDocumentos {
+  nombre: string | null;
+  razon_social: string | null;
+  representantes_legales: string[];
+  beneficiarios_finales: string[];
+  codigo_rut: string | null;
+  descripcion_actividad: string | null;
+  nit: string | null;
+  inconsistencias_cruzadas: string[];
+  documentos_analizados: string[];
+}
+
+interface ResultadoDocumento {
+  ok: boolean;
+  datos?: any;
+  error?: string;
 }
 
 @Component({
@@ -18,53 +29,135 @@ interface DocumentoVerificado {
   styleUrls: ['./verificacion.component.css'],
 })
 export class VerificacionComponent {
-  tipoDocumento: string = 'cedula';
-  numeroDocumento: string = '';
-  nombreTitular: string = '';
+  archivos: { [key: string]: File | null } = {
+    camara_comercio: null,
+    dof: null,
+    cedula: null,
+    rut: null,
+  };
+
+  previews: { [key: string]: string | null } = {
+    camara_comercio: null,
+    dof: null,
+    cedula: null,
+    rut: null,
+  };
+
   cargando = false;
   error = '';
-  resultado: DocumentoVerificado | null = null;
+  resumen: ResumenDocumentos | null = null;
+  resultados: { [key: string]: ResultadoDocumento } | null = null;
+  tabActiva = 'resumen';
 
-  tiposDocumento = [
-    { value: 'cedula', label: 'Cédula de Ciudadanía' },
-    { value: 'pasaporte', label: 'Pasaporte' },
-    { value: 'cedula_extranjeria', label: 'Cédula de Extranjería' },
-    { value: 'nit', label: 'NIT' },
-    { value: 'tarjeta_identidad', label: 'Tarjeta de Identidad' },
+  documentosConfig = [
+    { key: 'camara_comercio', label: 'Cámara de Comercio', icon: '🏢', desc: 'Certificado de existencia y representación' },
+    { key: 'dof', label: 'DOF', icon: '📋', desc: 'Documento de origen / Beneficiarios finales' },
+    { key: 'cedula', label: 'Cédula', icon: '🪪', desc: 'Cédula de ciudadanía del representante' },
+    { key: 'rut', label: 'RUT', icon: '📑', desc: 'Registro Único Tributario' },
   ];
 
-  verificarDocumento() {
-    if (!this.numeroDocumento.trim()) {
-      this.error = 'Por favor ingrese el número de documento.';
+  constructor(private http: HttpClient) {}
+
+  onFileChange(event: Event, key: string) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0] || null;
+    this.archivos[key] = file;
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (e) => { this.previews[key] = e.target?.result as string; };
+      reader.readAsDataURL(file);
+    } else {
+      this.previews[key] = null;
+    }
+  }
+
+  eliminarArchivo(key: string) {
+    this.archivos[key] = null;
+    this.previews[key] = null;
+  }
+
+  get hayAlgunArchivo(): boolean {
+    return Object.values(this.archivos).some(f => f !== null);
+  }
+
+  get conteoArchivos(): number {
+    return Object.values(this.archivos).filter(f => f !== null).length;
+  }
+
+  analizar() {
+    if (!this.hayAlgunArchivo) {
+      this.error = 'Por favor suba al menos un documento para analizar.';
       return;
     }
 
     this.cargando = true;
     this.error = '';
-    this.resultado = null;
+    this.resumen = null;
+    this.resultados = null;
 
-    setTimeout(() => {
-      const esValido = this.numeroDocumento.length >= 6;
+    const formData = new FormData();
+    for (const [key, file] of Object.entries(this.archivos)) {
+      if (file) formData.append(key, file);
+    }
 
-      this.resultado = {
-        tipo: this.tiposDocumento.find(t => t.value === this.tipoDocumento)?.label || this.tipoDocumento,
-        numero: this.numeroDocumento,
-        estado: esValido ? 'valido' : 'invalido',
-        fechaVerificacion: new Date().toLocaleString('es-CO'),
-        observaciones: esValido
-          ? 'El documento cumple con el formato requerido y está registrado en las bases de datos.'
-          : 'El número ingresado no cumple con el formato mínimo requerido.',
-      };
-
-      this.cargando = false;
-    }, 1200);
+    this.http.post<any>('/api/analizar-documentos', formData).subscribe({
+      next: (res) => {
+        this.resumen = res.resumen;
+        this.resultados = res.resultados;
+        this.tabActiva = 'resumen';
+        this.cargando = false;
+      },
+      error: (err) => {
+        this.error = err.error?.error || 'Error al analizar los documentos. Intente de nuevo.';
+        this.cargando = false;
+      }
+    });
   }
 
   limpiar() {
-    this.numeroDocumento = '';
-    this.nombreTitular = '';
-    this.resultado = null;
+    this.archivos = { camara_comercio: null, dof: null, cedula: null, rut: null };
+    this.previews = { camara_comercio: null, dof: null, cedula: null, rut: null };
+    this.resumen = null;
+    this.resultados = null;
     this.error = '';
-    this.tipoDocumento = 'cedula';
+  }
+
+  getNombreDoc(key: string): string {
+    return this.documentosConfig.find(d => d.key === key)?.label || key;
+  }
+
+  getDocKeys(): string[] {
+    return this.resultados ? Object.keys(this.resultados) : [];
+  }
+
+  getDatosDoc(key: string): { campo: string; valor: any }[] {
+    const datos = this.resultados?.[key]?.datos;
+    if (!datos) return [];
+    const excluir = ['inconsistencias', 'confianza'];
+    return Object.entries(datos)
+      .filter(([k]) => !excluir.includes(k) && datos[k] !== null && datos[k] !== undefined)
+      .map(([k, v]) => ({ campo: this.formatearCampo(k), valor: v }));
+  }
+
+  formatearCampo(key: string): string {
+    return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  getConfianza(key: string): number {
+    return parseInt(this.resultados?.[key]?.datos?.confianza) || 0;
+  }
+
+  getInconsistenciasDoc(key: string): string[] {
+    return this.resultados?.[key]?.datos?.inconsistencias || [];
+  }
+
+  hayInconsistencias(): boolean {
+    const cruzadas = (this.resumen?.inconsistencias_cruzadas?.length || 0) > 0;
+    const enDocs = this.getDocKeys().some(k => this.getInconsistenciasDoc(k).length > 0);
+    return cruzadas || enDocs;
+  }
+
+  isArray(val: any): boolean {
+    return Array.isArray(val);
   }
 }

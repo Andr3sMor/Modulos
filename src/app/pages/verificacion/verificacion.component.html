@@ -1,107 +1,220 @@
 <div class="page-wrapper">
   <div class="main-card">
 
+    <!-- Header -->
     <div class="card-header">
-      <h1 class="card-title">Verificación de Documentos</h1>
+      <h1 class="card-title">Verificación de Documentos con IA</h1>
       <p class="card-subtitle">
-        Valide la autenticidad y estado de documentos de identidad en las bases de datos oficiales.
+        Suba los documentos para que la IA extraiga y cruce la información detectando inconsistencias automáticamente.
       </p>
     </div>
 
-    <div class="form-section">
-      <h2 class="section-title">Datos del Documento</h2>
+    <!-- Upload zone -->
+    <div class="upload-section">
+      <div class="docs-grid">
+        <div *ngFor="let doc of documentosConfig" class="doc-upload-card" [class.uploaded]="archivos[doc.key]">
+          <div class="doc-card-header">
+            <span class="doc-icon">{{ doc.icon }}</span>
+            <div class="doc-info">
+              <span class="doc-label">{{ doc.label }}</span>
+              <span class="doc-desc">{{ doc.desc }}</span>
+            </div>
+            <span *ngIf="archivos[doc.key]" class="check-badge">✔</span>
+          </div>
 
-      <div class="fields-row">
-        <div class="field-group">
-          <label class="field-label">Tipo de Documento</label>
-          <select class="field-input" [(ngModel)]="tipoDocumento">
-            <option *ngFor="let tipo of tiposDocumento" [value]="tipo.value">
-              {{ tipo.label }}
-            </option>
-          </select>
-        </div>
+          <div class="preview-area" *ngIf="previews[doc.key]">
+            <img [src]="previews[doc.key]" alt="Preview" class="preview-img" />
+            <button class="btn-remove" (click)="eliminarArchivo(doc.key)">✕ Quitar</button>
+          </div>
 
-        <div class="field-group">
-          <label class="field-label">Número de Documento</label>
-          <input
-            type="text"
-            class="field-input"
-            [(ngModel)]="numeroDocumento"
-            placeholder="Ej: 1234567890"
-            (keyup.enter)="verificarDocumento()"
-          />
+          <div class="upload-placeholder" *ngIf="!previews[doc.key]">
+            <label [for]="'file-' + doc.key" class="upload-label">
+              <span class="upload-icon">📎</span>
+              <span>Haga clic para subir</span>
+              <span class="upload-hint">JPG, PNG, PDF · Máx 10MB</span>
+            </label>
+            <input
+              [id]="'file-' + doc.key"
+              type="file"
+              accept="image/*,application/pdf"
+              class="file-input"
+              (change)="onFileChange($event, doc.key)"
+            />
+          </div>
         </div>
       </div>
 
-      <div class="field-group" style="margin-bottom: 20px;">
-        <label class="field-label">Nombre del Titular <span class="field-hint">(opcional)</span></label>
-        <input
-          type="text"
-          class="field-input"
-          [(ngModel)]="nombreTitular"
-          placeholder="Ej: Juan Pérez"
-        />
-      </div>
-
+      <!-- Actions -->
       <div class="actions-row">
-        <button class="btn-verificar" (click)="verificarDocumento()" [disabled]="cargando">
-          <span *ngIf="!cargando">✔ Verificar Documento</span>
-          <span *ngIf="cargando" class="loading-text">
-            <span class="spinner"></span> Verificando...
-          </span>
+        <div class="counter-badge" *ngIf="conteoArchivos > 0">
+          {{ conteoArchivos }} documento{{ conteoArchivos > 1 ? 's' : '' }} cargado{{ conteoArchivos > 1 ? 's' : '' }}
+        </div>
+        <button class="btn-analizar" (click)="analizar()" [disabled]="cargando || !hayAlgunArchivo">
+          <ng-container *ngIf="!cargando">
+            🤖 Analizar con IA
+          </ng-container>
+          <ng-container *ngIf="cargando">
+            <span class="spinner"></span> Analizando documentos...
+          </ng-container>
         </button>
-        <button class="btn-limpiar" (click)="limpiar()" [disabled]="cargando">
-          Limpiar
-        </button>
+        <button class="btn-limpiar" (click)="limpiar()" [disabled]="cargando">Limpiar todo</button>
       </div>
     </div>
 
-    <div *ngIf="error" class="alert-error">
-      ⚠️ {{ error }}
-    </div>
+    <!-- Error -->
+    <div *ngIf="error" class="alert-error">⚠️ {{ error }}</div>
 
-    <div *ngIf="resultado" class="results-section">
-      <h2 class="section-title">Resultado de Verificación</h2>
+    <!-- Resultados -->
+    <div *ngIf="resumen" class="results-section">
 
-      <div class="result-card" [ngClass]="{
-        'result-valido': resultado.estado === 'valido',
-        'result-invalido': resultado.estado === 'invalido'
-      }">
-        <div class="result-header">
-          <div class="result-header-left">
-            <span class="doc-type-badge">{{ resultado.tipo }}</span>
+      <!-- Tabs -->
+      <div class="tabs-bar">
+        <button class="tab-btn" [class.tab-activo]="tabActiva === 'resumen'" (click)="tabActiva = 'resumen'">
+          📊 Resumen Consolidado
+        </button>
+        <button
+          *ngFor="let key of getDocKeys()"
+          class="tab-btn"
+          [class.tab-activo]="tabActiva === key"
+          (click)="tabActiva = key"
+        >
+          {{ getNombreDoc(key) }}
+          <span *ngIf="!resultados![key].ok" class="tab-error-badge">!</span>
+        </button>
+        <button
+          *ngIf="hayInconsistencias()"
+          class="tab-btn tab-alerta"
+          [class.tab-activo]="tabActiva === 'inconsistencias'"
+          (click)="tabActiva = 'inconsistencias'"
+        >
+          ⚠️ Inconsistencias
+        </button>
+      </div>
+
+      <!-- TAB: Resumen -->
+      <div *ngIf="tabActiva === 'resumen'" class="tab-content">
+        <div class="resumen-grid">
+
+          <div class="resumen-item" *ngIf="resumen.nombre">
+            <span class="resumen-label">👤 Nombre</span>
+            <span class="resumen-valor">{{ resumen.nombre }}</span>
           </div>
-          <span class="estado-badge" [ngClass]="{
-            'badge-valido': resultado.estado === 'valido',
-            'badge-invalido': resultado.estado === 'invalido'
-          }">
-            {{ resultado.estado === 'valido' ? '✔ Válido' : '✖ Inválido' }}
-          </span>
+
+          <div class="resumen-item" *ngIf="resumen.razon_social">
+            <span class="resumen-label">🏢 Razón Social</span>
+            <span class="resumen-valor">{{ resumen.razon_social }}</span>
+          </div>
+
+          <div class="resumen-item" *ngIf="resumen.nit">
+            <span class="resumen-label">🔢 NIT</span>
+            <span class="resumen-valor">{{ resumen.nit }}</span>
+          </div>
+
+          <div class="resumen-item" *ngIf="resumen.codigo_rut">
+            <span class="resumen-label">📋 Código CIIU (RUT)</span>
+            <span class="resumen-valor mono">{{ resumen.codigo_rut }}</span>
+            <span class="resumen-sub" *ngIf="resumen.descripcion_actividad">{{ resumen.descripcion_actividad }}</span>
+          </div>
+
+          <div class="resumen-item full-width" *ngIf="resumen.representantes_legales?.length">
+            <span class="resumen-label">⚖️ Representantes Legales</span>
+            <ul class="resumen-lista">
+              <li *ngFor="let r of resumen.representantes_legales">{{ r }}</li>
+            </ul>
+          </div>
+
+          <div class="resumen-item full-width" *ngIf="resumen.beneficiarios_finales?.length">
+            <span class="resumen-label">💼 Beneficiarios Finales</span>
+            <ul class="resumen-lista">
+              <li *ngFor="let b of resumen.beneficiarios_finales">{{ b }}</li>
+            </ul>
+          </div>
+
+          <div class="resumen-item full-width">
+            <span class="resumen-label">✅ Documentos Analizados</span>
+            <div class="docs-analizados">
+              <span *ngFor="let d of resumen.documentos_analizados" class="doc-badge">{{ getNombreDoc(d) }}</span>
+            </div>
+          </div>
+
         </div>
 
-        <div class="result-body">
-          <div class="result-grid">
-            <div class="result-dato">
-              <span class="dato-label">Número de Documento</span>
-              <span class="dato-valor">{{ resultado.numero }}</span>
-            </div>
-            <div class="result-dato">
-              <span class="dato-label">Estado</span>
-              <span class="dato-valor">{{ resultado.estado === 'valido' ? 'Documento Válido' : 'Documento Inválido' }}</span>
-            </div>
-            <div class="result-dato">
-              <span class="dato-label">Fecha de Verificación</span>
-              <span class="dato-valor">{{ resultado.fechaVerificacion }}</span>
-            </div>
+        <div *ngIf="resumen.inconsistencias_cruzadas?.length" class="inconsistencias-alert">
+          <div class="incon-header">⚠️ Se detectaron inconsistencias entre documentos</div>
+          <ul>
+            <li *ngFor="let inc of resumen.inconsistencias_cruzadas">{{ inc }}</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- TAB: Documento individual -->
+      <div *ngFor="let key of getDocKeys()">
+        <div *ngIf="tabActiva === key" class="tab-content">
+
+          <!-- Error al procesar -->
+          <div *ngIf="!resultados![key].ok" class="alert-error">
+            ❌ No se pudo analizar este documento: {{ resultados![key].error }}
           </div>
 
-          <div class="observaciones">
-            <span class="dato-label">Observaciones</span>
-            <p class="observaciones-texto">{{ resultado.observaciones }}</p>
+          <!-- Datos extraídos -->
+          <div *ngIf="resultados![key].ok">
+
+            <div class="confianza-bar-wrap">
+              <span class="confianza-label">Confianza de lectura: {{ getConfianza(key) }}%</span>
+              <div class="confianza-bar">
+                <div class="confianza-fill" [style.width.%]="getConfianza(key)"
+                     [class.alta]="getConfianza(key) >= 80"
+                     [class.media]="getConfianza(key) >= 50 && getConfianza(key) < 80"
+                     [class.baja]="getConfianza(key) < 50">
+                </div>
+              </div>
+            </div>
+
+            <div class="datos-grid">
+              <div *ngFor="let item of getDatosDoc(key)" class="dato-item"
+                   [class.full-width]="isArray(item.valor) || (item.valor + '').length > 60">
+                <span class="dato-label">{{ item.campo }}</span>
+                <ng-container *ngIf="!isArray(item.valor)">
+                  <span class="dato-valor">{{ item.valor }}</span>
+                </ng-container>
+                <ng-container *ngIf="isArray(item.valor)">
+                  <ul class="dato-lista">
+                    <li *ngFor="let v of item.valor">{{ v }}</li>
+                  </ul>
+                </ng-container>
+              </div>
+            </div>
+
+            <div *ngIf="getInconsistenciasDoc(key).length" class="inconsistencias-doc">
+              <div class="incon-header-sm">⚠️ Observaciones del documento</div>
+              <ul>
+                <li *ngFor="let inc of getInconsistenciasDoc(key)">{{ inc }}</li>
+              </ul>
+            </div>
+
           </div>
         </div>
       </div>
-    </div>
 
+      <!-- TAB: Inconsistencias -->
+      <div *ngIf="tabActiva === 'inconsistencias'" class="tab-content">
+        <div *ngIf="resumen.inconsistencias_cruzadas?.length" class="inconsistencias-alert">
+          <div class="incon-header">❌ Inconsistencias entre documentos</div>
+          <ul>
+            <li *ngFor="let inc of resumen.inconsistencias_cruzadas">{{ inc }}</li>
+          </ul>
+        </div>
+
+        <div *ngFor="let key of getDocKeys()">
+          <div *ngIf="getInconsistenciasDoc(key).length" class="inconsistencias-doc" style="margin-bottom:12px;">
+            <div class="incon-header-sm">📄 {{ getNombreDoc(key) }}</div>
+            <ul>
+              <li *ngFor="let inc of getInconsistenciasDoc(key)">{{ inc }}</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+    </div>
   </div>
 </div>

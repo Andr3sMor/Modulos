@@ -1,6 +1,18 @@
 const express = require("express");
 const cors = require("cors");
+const multer = require("multer");
+const path = require("path");
+const os = require("os");
 const app = express();
+
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    cb(null, allowed.includes(file.mimetype));
+  }
+});
 
 const jccController = require("./controllers/jcc.controller");
 const regController = require("./controllers/registraduria.controller");
@@ -13,6 +25,7 @@ const contraloriaController = require("./controllers/contraloria.controller");
 const supersociedadesController = require("./controllers/supersociedades.controller");
 const pacoController = require("./controllers/paco.controller");
 const infobaeController = require("./controllers/infobae.controller");
+const documentosController = require("./controllers/documentos.controller");
 
 const corsOptions = {
   origin: [
@@ -151,5 +164,15 @@ app.post(
   conTimeout(conSemaforo(ramaJudicialController.consultarRamaJudicial), 90000),
 );
 app.post("/api/consulta-infobae", infobaeController.consultarInfobae);
+app.post(
+  "/api/analizar-documentos",
+  upload.fields([
+    { name: 'camara_comercio', maxCount: 1 },
+    { name: 'dof', maxCount: 1 },
+    { name: 'cedula', maxCount: 1 },
+    { name: 'rut', maxCount: 1 },
+  ]),
+  documentosController.analizarDocumentos
+);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));
