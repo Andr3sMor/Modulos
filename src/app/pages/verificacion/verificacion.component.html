@@ -1,0 +1,107 @@
+<div class="page-wrapper">
+  <div class="main-card">
+
+    <div class="card-header">
+      <h1 class="card-title">Verificación de Documentos</h1>
+      <p class="card-subtitle">
+        Valide la autenticidad y estado de documentos de identidad en las bases de datos oficiales.
+      </p>
+    </div>
+
+    <div class="form-section">
+      <h2 class="section-title">Datos del Documento</h2>
+
+      <div class="fields-row">
+        <div class="field-group">
+          <label class="field-label">Tipo de Documento</label>
+          <select class="field-input" [(ngModel)]="tipoDocumento">
+            <option *ngFor="let tipo of tiposDocumento" [value]="tipo.value">
+              {{ tipo.label }}
+            </option>
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label">Número de Documento</label>
+          <input
+            type="text"
+            class="field-input"
+            [(ngModel)]="numeroDocumento"
+            placeholder="Ej: 1234567890"
+            (keyup.enter)="verificarDocumento()"
+          />
+        </div>
+      </div>
+
+      <div class="field-group" style="margin-bottom: 20px;">
+        <label class="field-label">Nombre del Titular <span class="field-hint">(opcional)</span></label>
+        <input
+          type="text"
+          class="field-input"
+          [(ngModel)]="nombreTitular"
+          placeholder="Ej: Juan Pérez"
+        />
+      </div>
+
+      <div class="actions-row">
+        <button class="btn-verificar" (click)="verificarDocumento()" [disabled]="cargando">
+          <span *ngIf="!cargando">✔ Verificar Documento</span>
+          <span *ngIf="cargando" class="loading-text">
+            <span class="spinner"></span> Verificando...
+          </span>
+        </button>
+        <button class="btn-limpiar" (click)="limpiar()" [disabled]="cargando">
+          Limpiar
+        </button>
+      </div>
+    </div>
+
+    <div *ngIf="error" class="alert-error">
+      ⚠️ {{ error }}
+    </div>
+
+    <div *ngIf="resultado" class="results-section">
+      <h2 class="section-title">Resultado de Verificación</h2>
+
+      <div class="result-card" [ngClass]="{
+        'result-valido': resultado.estado === 'valido',
+        'result-invalido': resultado.estado === 'invalido'
+      }">
+        <div class="result-header">
+          <div class="result-header-left">
+            <span class="doc-type-badge">{{ resultado.tipo }}</span>
+          </div>
+          <span class="estado-badge" [ngClass]="{
+            'badge-valido': resultado.estado === 'valido',
+            'badge-invalido': resultado.estado === 'invalido'
+          }">
+            {{ resultado.estado === 'valido' ? '✔ Válido' : '✖ Inválido' }}
+          </span>
+        </div>
+
+        <div class="result-body">
+          <div class="result-grid">
+            <div class="result-dato">
+              <span class="dato-label">Número de Documento</span>
+              <span class="dato-valor">{{ resultado.numero }}</span>
+            </div>
+            <div class="result-dato">
+              <span class="dato-label">Estado</span>
+              <span class="dato-valor">{{ resultado.estado === 'valido' ? 'Documento Válido' : 'Documento Inválido' }}</span>
+            </div>
+            <div class="result-dato">
+              <span class="dato-label">Fecha de Verificación</span>
+              <span class="dato-valor">{{ resultado.fechaVerificacion }}</span>
+            </div>
+          </div>
+
+          <div class="observaciones">
+            <span class="dato-label">Observaciones</span>
+            <p class="observaciones-texto">{{ resultado.observaciones }}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>

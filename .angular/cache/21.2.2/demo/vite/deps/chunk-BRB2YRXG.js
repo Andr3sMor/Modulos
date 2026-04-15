@@ -2,7 +2,7 @@ import {
   PlatformLocation,
   XhrFactory,
   parseCookieValue
-} from "./chunk-X7YVLUOW.js";
+} from "./chunk-U5PZ7NX5.js";
 import {
   APP_BOOTSTRAP_LISTENER,
   ApplicationRef,
@@ -15,39 +15,41 @@ import {
   Injector,
   NgModule,
   NgZone,
-  Observable,
   PendingTasks,
   ResourceImpl,
   RuntimeError,
   TracingService,
   TransferState,
-  __objRest,
-  __spreadProps,
-  __spreadValues,
   assertInInjectionContext,
   computed,
-  concatMap,
   encapsulateResourceError,
-  filter,
-  finalize,
   formatRuntimeError,
   inject,
   linkedSignal,
   makeEnvironmentProviders,
   makeStateKey,
-  map,
-  of,
   performanceMarkFeature,
   runInInjectionContext,
   setClassMetadata,
   signal,
-  switchMap,
   truncateMiddle,
   ɵɵdefineInjectable,
   ɵɵdefineInjector,
   ɵɵdefineNgModule,
   ɵɵinject
-} from "./chunk-3K472KDK.js";
+} from "./chunk-S6V62GTH.js";
+import {
+  Observable,
+  __objRest,
+  __spreadProps,
+  __spreadValues,
+  concatMap,
+  filter,
+  finalize,
+  map,
+  of,
+  switchMap
+} from "./chunk-PJVWDKLX.js";
 
 // node_modules/@angular/common/fesm2022/_module-chunk.mjs
 var HttpHeaders = class _HttpHeaders {
@@ -2070,151 +2072,6 @@ var HttpClientJsonpModule = class _HttpClientJsonpModule {
 })();
 
 // node_modules/@angular/common/fesm2022/http.mjs
-var httpResource = (() => {
-  const jsonFn = makeHttpResourceFn("json");
-  jsonFn.arrayBuffer = makeHttpResourceFn("arraybuffer");
-  jsonFn.blob = makeHttpResourceFn("blob");
-  jsonFn.text = makeHttpResourceFn("text");
-  return jsonFn;
-})();
-function makeHttpResourceFn(responseType) {
-  return function httpResource2(request, options) {
-    if (ngDevMode && !options?.injector) {
-      assertInInjectionContext(httpResource2);
-    }
-    const injector = options?.injector ?? inject(Injector);
-    return new HttpResourceImpl(injector, () => normalizeRequest(request, responseType), options?.defaultValue, options?.debugName, options?.parse, options?.equal);
-  };
-}
-function normalizeRequest(request, responseType) {
-  let unwrappedRequest = typeof request === "function" ? request() : request;
-  if (unwrappedRequest === void 0) {
-    return void 0;
-  } else if (typeof unwrappedRequest === "string") {
-    unwrappedRequest = {
-      url: unwrappedRequest
-    };
-  }
-  const headers = unwrappedRequest.headers instanceof HttpHeaders ? unwrappedRequest.headers : new HttpHeaders(unwrappedRequest.headers);
-  const params = unwrappedRequest.params instanceof HttpParams ? unwrappedRequest.params : new HttpParams({
-    fromObject: unwrappedRequest.params
-  });
-  return new HttpRequest(unwrappedRequest.method ?? "GET", unwrappedRequest.url, unwrappedRequest.body ?? null, {
-    headers,
-    params,
-    reportProgress: unwrappedRequest.reportProgress,
-    withCredentials: unwrappedRequest.withCredentials,
-    keepalive: unwrappedRequest.keepalive,
-    cache: unwrappedRequest.cache,
-    priority: unwrappedRequest.priority,
-    mode: unwrappedRequest.mode,
-    redirect: unwrappedRequest.redirect,
-    responseType,
-    context: unwrappedRequest.context,
-    transferCache: unwrappedRequest.transferCache,
-    credentials: unwrappedRequest.credentials,
-    referrer: unwrappedRequest.referrer,
-    referrerPolicy: unwrappedRequest.referrerPolicy,
-    integrity: unwrappedRequest.integrity,
-    timeout: unwrappedRequest.timeout
-  });
-}
-var HttpResourceImpl = class extends ResourceImpl {
-  client;
-  _headers = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
-    debugName: "_headers"
-  } : {}), {
-    source: this.extRequest,
-    computation: () => void 0
-  }));
-  _progress = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
-    debugName: "_progress"
-  } : {}), {
-    source: this.extRequest,
-    computation: () => void 0
-  }));
-  _statusCode = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
-    debugName: "_statusCode"
-  } : {}), {
-    source: this.extRequest,
-    computation: () => void 0
-  }));
-  headers = computed(() => this.status() === "resolved" || this.status() === "error" ? this._headers() : void 0, ...ngDevMode ? [{
-    debugName: "headers"
-  }] : []);
-  progress = this._progress.asReadonly();
-  statusCode = this._statusCode.asReadonly();
-  constructor(injector, request, defaultValue, debugName, parse, equal) {
-    super(request, ({
-      params: request2,
-      abortSignal
-    }) => {
-      let sub;
-      const onAbort = () => sub.unsubscribe();
-      abortSignal.addEventListener("abort", onAbort);
-      const stream = signal({
-        value: void 0
-      }, ...ngDevMode ? [{
-        debugName: "stream"
-      }] : []);
-      let resolve;
-      const promise = new Promise((r) => resolve = r);
-      const send = (value) => {
-        stream.set(value);
-        resolve?.(stream);
-        resolve = void 0;
-      };
-      sub = this.client.request(request2).subscribe({
-        next: (event) => {
-          switch (event.type) {
-            case HttpEventType.Response:
-              this._headers.set(event.headers);
-              this._statusCode.set(event.status);
-              try {
-                send({
-                  value: parse ? parse(event.body) : event.body
-                });
-              } catch (error) {
-                send({
-                  error: encapsulateResourceError(error)
-                });
-              }
-              break;
-            case HttpEventType.DownloadProgress:
-              this._progress.set(event);
-              break;
-          }
-        },
-        error: (error) => {
-          if (error instanceof HttpErrorResponse) {
-            this._headers.set(error.headers);
-            this._statusCode.set(error.status);
-          }
-          send({
-            error
-          });
-          abortSignal.removeEventListener("abort", onAbort);
-        },
-        complete: () => {
-          if (resolve) {
-            send({
-              error: new RuntimeError(991, ngDevMode && "Resource completed before producing a value")
-            });
-          }
-          abortSignal.removeEventListener("abort", onAbort);
-        }
-      });
-      return promise;
-    }, defaultValue, equal, debugName, injector);
-    this.client = injector.get(HttpClient);
-  }
-  set(value) {
-    super.set(value);
-    this._headers.set(void 0);
-    this._progress.set(void 0);
-    this._statusCode.set(void 0);
-  }
-};
 var HTTP_TRANSFER_CACHE_ORIGIN_MAP = new InjectionToken(typeof ngDevMode !== "undefined" && ngDevMode ? "HTTP_TRANSFER_CACHE_ORIGIN_MAP" : "");
 var BODY = "b";
 var HEADERS = "h";
@@ -2224,8 +2081,8 @@ var REQ_URL = "u";
 var RESPONSE_TYPE = "rt";
 var CACHE_OPTIONS = new InjectionToken(typeof ngDevMode !== "undefined" && ngDevMode ? "HTTP_TRANSFER_STATE_CACHE_OPTIONS" : "");
 var ALLOWED_METHODS = ["GET", "HEAD"];
-function transferCacheInterceptorFn(req, next) {
-  const _a = inject(CACHE_OPTIONS), {
+function shouldCacheRequest(req, options) {
+  const _a = options, {
     isCacheActive
   } = _a, globalOptions = __objRest(_a, [
     "isCacheActive"
@@ -2235,22 +2092,34 @@ function transferCacheInterceptorFn(req, next) {
     method: requestMethod
   } = req;
   if (!isCacheActive || requestOptions === false || requestMethod === "POST" && !globalOptions.includePostRequests && !requestOptions || requestMethod !== "POST" && !ALLOWED_METHODS.includes(requestMethod) || !globalOptions.includeRequestsWithAuthHeaders && hasAuthHeaders(req) || globalOptions.filter?.(req) === false) {
-    return next(req);
+    return false;
   }
-  const transferState = inject(TransferState);
-  const originMap = inject(HTTP_TRANSFER_CACHE_ORIGIN_MAP, {
-    optional: true
-  });
+  return true;
+}
+function getHeadersToInclude(options, requestOptions) {
+  const {
+    includeHeaders: globalHeaders
+  } = options;
+  let headersToInclude = globalHeaders;
+  if (typeof requestOptions === "object" && requestOptions.includeHeaders) {
+    headersToInclude = requestOptions.includeHeaders;
+  }
+  return headersToInclude;
+}
+function retrieveStateFromCache(req, options, transferState, originMap) {
+  const {
+    transferCache: requestOptions
+  } = req;
+  if (!shouldCacheRequest(req, options)) {
+    return null;
+  }
   if (originMap) {
     throw new RuntimeError(2803, ngDevMode && "Angular detected that the `HTTP_TRANSFER_CACHE_ORIGIN_MAP` token is configured and present in the client side code. Please ensure that this token is only provided in the server code of the application.");
   }
   const requestUrl = false ? mapRequestOriginUrl(req.url, originMap) : req.url;
   const storeKey = makeCacheKey(req, requestUrl);
   const response = transferState.get(storeKey, null);
-  let headersToInclude = globalOptions.includeHeaders;
-  if (typeof requestOptions === "object" && requestOptions.includeHeaders) {
-    headersToInclude = requestOptions.includeHeaders;
-  }
+  const headersToInclude = getHeadersToInclude(options, requestOptions);
   if (response) {
     const {
       [BODY]: undecodedBody,
@@ -2273,13 +2142,34 @@ function transferCacheInterceptorFn(req, next) {
     if (typeof ngDevMode === "undefined" || ngDevMode) {
       headers = appendMissingHeadersDetection(req.url, headers, headersToInclude ?? []);
     }
-    return of(new HttpResponse({
+    return new HttpResponse({
       body,
       headers,
       status,
       statusText,
       url
-    }));
+    });
+  }
+  return null;
+}
+function transferCacheInterceptorFn(req, next) {
+  const options = inject(CACHE_OPTIONS);
+  const transferState = inject(TransferState);
+  const originMap = inject(HTTP_TRANSFER_CACHE_ORIGIN_MAP, {
+    optional: true
+  });
+  const cachedResponse = retrieveStateFromCache(req, options, transferState, originMap);
+  if (cachedResponse) {
+    return of(cachedResponse);
+  }
+  const {
+    transferCache: requestOptions
+  } = req;
+  const headersToInclude = getHeadersToInclude(options, requestOptions);
+  const requestUrl = false ? mapRequestOriginUrl(req.url, originMap) : req.url;
+  const storeKey = makeCacheKey(req, requestUrl);
+  if (!shouldCacheRequest(req, options)) {
+    return next(req);
   }
   const event$ = next(req);
   if (false) {
@@ -2382,6 +2272,179 @@ function appendMissingHeadersDetection(url, headers, headersToInclude) {
     }
   });
 }
+var httpResource = (() => {
+  const jsonFn = makeHttpResourceFn("json");
+  jsonFn.arrayBuffer = makeHttpResourceFn("arraybuffer");
+  jsonFn.blob = makeHttpResourceFn("blob");
+  jsonFn.text = makeHttpResourceFn("text");
+  return jsonFn;
+})();
+function makeHttpResourceFn(responseType) {
+  return function httpResource2(request, options) {
+    if (ngDevMode && !options?.injector) {
+      assertInInjectionContext(httpResource2);
+    }
+    const injector = options?.injector ?? inject(Injector);
+    const cacheOptions = injector.get(CACHE_OPTIONS, null, {
+      optional: true
+    });
+    const transferState = injector.get(TransferState, null, {
+      optional: true
+    });
+    const originMap = injector.get(HTTP_TRANSFER_CACHE_ORIGIN_MAP, null, {
+      optional: true
+    });
+    const getInitialStream = (req) => {
+      if (cacheOptions && transferState && req) {
+        const cachedResponse = retrieveStateFromCache(req, cacheOptions, transferState, originMap);
+        if (cachedResponse) {
+          try {
+            const body = cachedResponse.body;
+            const parsed = options?.parse ? options.parse(body) : body;
+            return signal({
+              value: parsed
+            });
+          } catch (e) {
+            if (typeof ngDevMode === "undefined" || ngDevMode) {
+              console.warn(`Angular detected an error while parsing the cached response for the httpResource at \`${req.url}\`. The resource will fall back to its default value and try again asynchronously.`, e);
+            }
+          }
+        }
+      }
+      return void 0;
+    };
+    return new HttpResourceImpl(injector, () => normalizeRequest(request, responseType), options?.defaultValue, options?.debugName, options?.parse, options?.equal, getInitialStream);
+  };
+}
+function normalizeRequest(request, responseType) {
+  let unwrappedRequest = typeof request === "function" ? request() : request;
+  if (unwrappedRequest === void 0) {
+    return void 0;
+  } else if (typeof unwrappedRequest === "string") {
+    unwrappedRequest = {
+      url: unwrappedRequest
+    };
+  }
+  const headers = unwrappedRequest.headers instanceof HttpHeaders ? unwrappedRequest.headers : new HttpHeaders(unwrappedRequest.headers);
+  const params = unwrappedRequest.params instanceof HttpParams ? unwrappedRequest.params : new HttpParams({
+    fromObject: unwrappedRequest.params
+  });
+  return new HttpRequest(unwrappedRequest.method ?? "GET", unwrappedRequest.url, unwrappedRequest.body ?? null, {
+    headers,
+    params,
+    reportProgress: unwrappedRequest.reportProgress,
+    withCredentials: unwrappedRequest.withCredentials,
+    keepalive: unwrappedRequest.keepalive,
+    cache: unwrappedRequest.cache,
+    priority: unwrappedRequest.priority,
+    mode: unwrappedRequest.mode,
+    redirect: unwrappedRequest.redirect,
+    responseType,
+    context: unwrappedRequest.context,
+    transferCache: unwrappedRequest.transferCache,
+    credentials: unwrappedRequest.credentials,
+    referrer: unwrappedRequest.referrer,
+    referrerPolicy: unwrappedRequest.referrerPolicy,
+    integrity: unwrappedRequest.integrity,
+    timeout: unwrappedRequest.timeout
+  });
+}
+var HttpResourceImpl = class extends ResourceImpl {
+  client;
+  _headers = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_headers"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  _progress = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_progress"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  _statusCode = linkedSignal(__spreadProps(__spreadValues({}, ngDevMode ? {
+    debugName: "_statusCode"
+  } : {}), {
+    source: this.extRequest,
+    computation: () => void 0
+  }));
+  headers = computed(() => this.status() === "resolved" || this.status() === "error" ? this._headers() : void 0, ...ngDevMode ? [{
+    debugName: "headers"
+  }] : []);
+  progress = this._progress.asReadonly();
+  statusCode = this._statusCode.asReadonly();
+  constructor(injector, request, defaultValue, debugName, parse, equal, getInitialStream) {
+    super(request, ({
+      params: request2,
+      abortSignal
+    }) => {
+      let sub;
+      const onAbort = () => sub.unsubscribe();
+      abortSignal.addEventListener("abort", onAbort);
+      const stream = signal({
+        value: void 0
+      }, ...ngDevMode ? [{
+        debugName: "stream"
+      }] : []);
+      let resolve;
+      const promise = new Promise((r) => resolve = r);
+      const send = (value) => {
+        stream.set(value);
+        resolve?.(stream);
+        resolve = void 0;
+      };
+      sub = this.client.request(request2).subscribe({
+        next: (event) => {
+          switch (event.type) {
+            case HttpEventType.Response:
+              this._headers.set(event.headers);
+              this._statusCode.set(event.status);
+              try {
+                send({
+                  value: parse ? parse(event.body) : event.body
+                });
+              } catch (error) {
+                send({
+                  error: encapsulateResourceError(error)
+                });
+              }
+              break;
+            case HttpEventType.DownloadProgress:
+              this._progress.set(event);
+              break;
+          }
+        },
+        error: (error) => {
+          if (error instanceof HttpErrorResponse) {
+            this._headers.set(error.headers);
+            this._statusCode.set(error.status);
+          }
+          send({
+            error
+          });
+          abortSignal.removeEventListener("abort", onAbort);
+        },
+        complete: () => {
+          if (resolve) {
+            send({
+              error: new RuntimeError(991, ngDevMode && "Resource completed before producing a value")
+            });
+          }
+          abortSignal.removeEventListener("abort", onAbort);
+        }
+      });
+      return promise;
+    }, defaultValue, equal, debugName, injector, getInitialStream);
+    this.client = injector.get(HttpClient);
+  }
+  set(value) {
+    super.set(value);
+    this._headers.set(void 0);
+    this._progress.set(void 0);
+    this._statusCode.set(void 0);
+  }
+};
 
 export {
   HttpHeaders,
@@ -2420,8 +2483,8 @@ export {
   HttpClientXsrfModule,
   HttpClientModule,
   HttpClientJsonpModule,
-  httpResource,
   HTTP_TRANSFER_CACHE_ORIGIN_MAP,
-  withHttpTransferCache
+  withHttpTransferCache,
+  httpResource
 };
-//# sourceMappingURL=chunk-6RLSRVKR.js.map
+//# sourceMappingURL=chunk-BRB2YRXG.js.map
