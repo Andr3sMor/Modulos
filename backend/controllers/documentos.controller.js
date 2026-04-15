@@ -1,5 +1,6 @@
 const Groq = require('groq-sdk');
 const fs = require('fs');
+const pdfParse = require('pdf-parse');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -78,7 +79,7 @@ Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin 
 Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`
 };
 
-const MIME_SOPORTADOS = {
+const MIME_IMAGENES = {
   'image/jpeg': 'image/jpeg',
   'image/jpg':  'image/jpeg',
   'image/png':  'image/png',
@@ -86,14 +87,15 @@ const MIME_SOPORTADOS = {
   'image/gif':  'image/gif',
 };
 
+async function extraerTextoPdf(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const data = await pdfParse(buffer);
+  return data.text?.trim() || '';
+}
+
 async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const prompt = PROMPTS[tipoDocumento];
   if (!prompt) throw new Error(`Tipo de documento desconocido: ${tipoDocumento}`);
-
-  const mimeNormalizado = MIME_SOPORTADOS[mimeType?.toLowerCase()];
-  if (!mimeNormalizado) {
-    throw new Error(`Formato no soportado: ${mimeType}. Solo se aceptan imágenes JPG, PNG o WebP. Los PDF no son compatibles con el análisis de visión.`);
-  }
 
   if (!fs.existsSync(filePath)) {
     throw new Error('No se pudo leer el archivo subido.');
@@ -104,30 +106,69 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
     throw new Error('El archivo está vacío.');
   }
 
-  const base64Image = fileBuffer.toString('base64');
+  const mime = mimeType?.toLowerCase();
+  let completion;
 
-  const completion = await groq.chat.completions.create({
-    model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image_url',
-            image_url: {
-              url: `data:${mimeNormalizado};base64,${base64Image}`
-            }
-          },
-          {
-            type: 'text',
-            text: prompt
-          }
-        ]
-      }
-    ],
-    temperature: 0.1,
-    max_tokens: 2048
-  });
+  if (mime === 'application/pdf') {
+    console.log(`📄 Extrayendo texto del PDF: ${tipoDocumento}`);
+    const textoPdf = await extraerTextoPdf(filePath);
+
+    if (!textoPdf || textoPdf.length < 20) {
+      throw new Error('No se pudo extraer texto del PDF. Puede ser un PDF escaneado (imagen). Por favor suba una foto clara del documento.');
+    }
+
+    const promptTexto = prompt.replace(
+      'Analiza esta imagen de',
+      'Analiza el siguiente texto extraído de'
+    ).replace(
+      'Eres un experto en documentos legales colombianos. Analiza esta imagen de',
+      'Eres un experto en documentos legales colombianos. Analiza el siguiente texto de'
+    ).replace(
+      'Eres un experto en documentos de identidad colombianos. Analiza esta imagen de',
+      'Eres un experto en documentos de identidad colombianos. Analiza el siguiente texto de'
+    ).replace(
+      'Eres un experto en documentos tributarios colombianos. Analiza esta imagen de',
+      'Eres un experto en documentos tributarios colombianos. Analiza el siguiente texto de'
+    );
+
+    completion = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'user',
+          content: `${promptTexto}\n\nTEXTO DEL DOCUMENTO:\n${textoPdf}`
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2048
+    });
+
+  } else if (MIME_IMAGENES[mime]) {
+    console.log(`🖼️ Analizando imagen: ${tipoDocumento}`);
+    const base64Image = fileBuffer.toString('base64');
+    const mimeParaGroq = MIME_IMAGENES[mime];
+
+    completion = await groq.chat.completions.create({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image_url',
+              image_url: { url: `data:${mimeParaGroq};base64,${base64Image}` }
+            },
+            { type: 'text', text: prompt }
+          ]
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 2048
+    });
+
+  } else {
+    throw new Error(`Formato no soportado: ${mimeType}. Use PDF, JPG o PNG.`);
+  }
 
   const rawContent = completion.choices[0]?.message?.content || '{}';
   

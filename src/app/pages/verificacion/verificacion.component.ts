@@ -65,12 +65,24 @@ export class VerificacionComponent {
     const file = input.files?.[0] || null;
     this.archivos[key] = file;
     if (file) {
-      const reader = new FileReader();
-      reader.onload = (e) => { this.previews[key] = e.target?.result as string; };
-      reader.readAsDataURL(file);
+      if (file.type === 'application/pdf') {
+        this.previews[key] = 'PDF';
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => { this.previews[key] = e.target?.result as string; };
+        reader.readAsDataURL(file);
+      }
     } else {
       this.previews[key] = null;
     }
+  }
+
+  isPdf(key: string): boolean {
+    return this.archivos[key]?.type === 'application/pdf';
+  }
+
+  getFileName(key: string): string {
+    return this.archivos[key]?.name || '';
   }
 
   eliminarArchivo(key: string) {

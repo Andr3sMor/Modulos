@@ -9,11 +9,11 @@ const upload = multer({
   dest: os.tmpdir(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
-    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'application/pdf'];
     if (allowed.includes(file.mimetype.toLowerCase())) {
       cb(null, true);
     } else {
-      cb(new Error(`Formato no soportado: ${file.mimetype}. Use JPG, PNG o WebP.`));
+      cb(new Error(`Formato no soportado: ${file.mimetype}. Use PDF, JPG o PNG.`));
     }
   }
 });

@@ -23,7 +23,16 @@
           </div>
 
           <div class="preview-area" *ngIf="previews[doc.key]">
-            <img [src]="previews[doc.key]" alt="Preview" class="preview-img" />
+            <ng-container *ngIf="isPdf(doc.key)">
+              <div class="pdf-preview">
+                <span class="pdf-icon">📄</span>
+                <span class="pdf-nombre">{{ getFileName(doc.key) }}</span>
+                <span class="pdf-badge">PDF listo para analizar</span>
+              </div>
+            </ng-container>
+            <ng-container *ngIf="!isPdf(doc.key)">
+              <img [src]="previews[doc.key]" alt="Preview" class="preview-img" />
+            </ng-container>
             <button class="btn-remove" (click)="eliminarArchivo(doc.key)">✕ Quitar</button>
           </div>
 
@@ -31,12 +40,12 @@
             <label [for]="'file-' + doc.key" class="upload-label">
               <span class="upload-icon">📎</span>
               <span>Haga clic para subir</span>
-              <span class="upload-hint">JPG, PNG, WebP · Máx 10MB</span>
+              <span class="upload-hint">PDF, JPG, PNG · Máx 10MB</span>
             </label>
             <input
               [id]="'file-' + doc.key"
               type="file"
-              accept="image/jpeg,image/png,image/webp"
+              accept="application/pdf,image/jpeg,image/png,image/webp"
               class="file-input"
               (change)="onFileChange($event, doc.key)"
             />
