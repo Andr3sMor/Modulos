@@ -4,81 +4,198 @@ const pdfParse = require('pdf-parse');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
+// ─── PROMPTS ────────────────────────────────────────────────────────────────────
 const PROMPTS = {
-  camara_comercio: `Eres un experto en documentos legales colombianos. Analiza esta imagen de una Cámara de Comercio y extrae EXACTAMENTE la siguiente información en formato JSON:
+
+  camara_comercio: `Eres un experto en documentos legales colombianos especializado en debida diligencia y listas restrictivas.
+Analiza este documento de Cámara de Comercio y extrae TODA la información disponible en formato JSON estricto:
 {
-  "razon_social": "nombre completo de la empresa",
-  "nit": "número de NIT con dígito verificador",
-  "tipo_sociedad": "tipo de sociedad (SAS, LTDA, etc)",
-  "representantes_legales": ["nombre completo del representante 1", "nombre completo del representante 2"],
-  "fecha_matricula": "fecha de matrícula",
+  "razon_social": "nombre completo de la empresa tal como aparece registrado",
+  "nombre_comercial": "nombre comercial si es diferente a la razón social",
+  "sigla": "sigla de la empresa si aparece",
+  "nit": "número de NIT con dígito verificador, formato: 000000000-0",
+  "tipo_sociedad": "tipo exacto de sociedad (SAS, LTDA, SA, EU, SCA, etc)",
+  "numero_matricula": "número de matrícula mercantil",
+  "fecha_matricula": "fecha de constitución o primera matrícula",
   "fecha_renovacion": "fecha de última renovación",
-  "domicilio": "ciudad/municipio",
-  "objeto_social": "descripción breve del objeto social",
-  "capital_suscrito": "valor del capital suscrito",
-  "estado": "estado de la matrícula (activa/cancelada)",
-  "inconsistencias": ["lista de posibles inconsistencias o campos ilegibles"],
-  "confianza": "porcentaje de confianza en la extracción (0-100)"
+  "fecha_vigencia": "fecha hasta la cual está vigente la matrícula",
+  "estado_matricula": "ACTIVA o CANCELADA o SUSPENDIDA",
+  "domicilio": "ciudad y departamento del domicilio principal",
+  "direccion": "dirección completa de la sede principal",
+  "municipio_registro": "municipio donde está registrada la Cámara de Comercio",
+  "objeto_social": "descripción completa del objeto social",
+  "actividad_economica_ciiu": "código CIIU principal",
+  "capital_autorizado": "valor del capital autorizado en pesos",
+  "capital_suscrito": "valor del capital suscrito en pesos",
+  "capital_pagado": "valor del capital pagado en pesos",
+  "representantes_legales": [
+    {
+      "nombre": "nombre completo del representante",
+      "documento": "número de cédula o NIT si aparece",
+      "cargo": "cargo exacto (Representante Legal, Gerente, Presidente, etc)",
+      "limitaciones": "limitaciones de representación si aplica"
+    }
+  ],
+  "junta_directiva": [
+    {
+      "nombre": "nombre completo del miembro",
+      "cargo": "Principal o Suplente",
+      "documento": "cédula si aparece"
+    }
+  ],
+  "revisor_fiscal": {
+    "nombre": "nombre completo",
+    "documento": "cédula o tarjeta profesional",
+    "firma_auditora": "nombre de la firma si aplica"
+  },
+  "socios_o_accionistas": [
+    {
+      "nombre": "nombre completo o razón social",
+      "documento": "cédula o NIT",
+      "porcentaje": "porcentaje de participación si aparece",
+      "tipo": "natural o juridica"
+    }
+  ],
+  "reformas_estatutarias": ["descripción de reformas relevantes con fecha si aparecen"],
+  "sucursales_o_establecimientos": [
+    {
+      "nombre": "nombre del establecimiento",
+      "direccion": "dirección",
+      "municipio": "municipio"
+    }
+  ],
+  "inscripciones_especiales": ["actos inscritos relevantes (embargos, medidas cautelares, liquidaciones, etc)"],
+  "fecha_documento": "fecha de expedición del certificado",
+  "entidad_expide": "nombre de la Cámara de Comercio que expide",
+  "inconsistencias": ["posibles inconsistencias, campos ilegibles o alertas relevantes"],
+  "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`,
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
-  dof: `Eres un experto en documentos legales colombianos. Analiza esta imagen de un Documento de Origen/DOF y extrae EXACTAMENTE la siguiente información en formato JSON:
+  dof: `Eres un experto en debida diligencia y documentos de beneficiarios finales colombianos.
+Analiza este Documento de Beneficiarios Finales (DOF / Formato 160) y extrae TODA la información en formato JSON estricto:
 {
-  "nombre_titular": "nombre completo del titular",
-  "documento_identidad": "número de documento",
-  "tipo_documento": "tipo de documento",
-  "cargo": "cargo o función",
-  "entidad": "entidad que expide",
-  "fecha_expedicion": "fecha de expedición del documento",
-  "fecha_vencimiento": "fecha de vencimiento si aplica",
-  "beneficiarios_finales": ["nombre y % participación de beneficiario 1", "nombre y % participación de beneficiario 2"],
-  "inconsistencias": ["lista de posibles inconsistencias o campos ilegibles"],
-  "confianza": "porcentaje de confianza en la extracción (0-100)"
+  "tipo_formulario": "DOF o Formato 160 o Reporte de Beneficiarios Finales",
+  "entidad_reportante": "nombre o razón social de la entidad que reporta",
+  "nit_reportante": "NIT de la entidad reportante",
+  "fecha_reporte": "fecha de presentación del reporte",
+  "periodo_reportado": "período al que corresponde el reporte",
+  "beneficiarios_finales": [
+    {
+      "nombre_completo": "nombre completo del beneficiario",
+      "tipo_persona": "natural o juridica",
+      "tipo_documento": "CC, CE, NIT, Pasaporte, etc",
+      "numero_documento": "número de documento sin puntos ni espacios",
+      "fecha_nacimiento": "fecha de nacimiento si aplica",
+      "nacionalidad": "nacionalidad o país de origen",
+      "pais_residencia": "país de residencia",
+      "porcentaje_participacion": "porcentaje de participación directa o indirecta",
+      "tipo_control": "directo o indirecto o por cargo",
+      "cargo_o_condicion": "cargo si es por posición (Representante Legal, etc)",
+      "pep": "SI o NO — si es Persona Expuesta Políticamente",
+      "cargo_pep": "cargo público si es PEP",
+      "cadena_control": "descripción de la cadena de control si es indirecto"
+    }
+  ],
+  "estructura_corporativa": "descripción de la estructura de propiedad si se puede inferir",
+  "vehiculos_interpuestos": ["nombre de personas jurídicas intermedias en la cadena de control"],
+  "declaracion_veracidad": "SI o NO — si el documento tiene declaración firmada de veracidad",
+  "firmante": {
+    "nombre": "nombre del firmante de la declaración",
+    "cargo": "cargo del firmante",
+    "documento": "cédula del firmante"
+  },
+  "fecha_documento": "fecha de expedición del documento",
+  "inconsistencias": ["posibles inconsistencias, campos ilegibles o alertas relevantes"],
+  "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`,
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
-  cedula: `Eres un experto en documentos de identidad colombianos. Analiza esta imagen de una Cédula de Ciudadanía y extrae EXACTAMENTE la siguiente información en formato JSON:
+  cedula: `Eres un experto en documentos de identidad colombianos y detección de documentos alterados.
+Analiza esta Cédula de Ciudadanía y extrae TODA la información disponible en formato JSON estricto:
 {
-  "nombre_completo": "nombre completo tal como aparece en el documento",
+  "nombre_completo": "nombre completo en el orden exacto que aparece en el documento",
   "primer_apellido": "primer apellido",
   "segundo_apellido": "segundo apellido o null",
   "primer_nombre": "primer nombre",
   "segundo_nombre": "segundo nombre o null",
-  "numero_cedula": "número de cédula sin puntos ni espacios",
-  "fecha_nacimiento": "fecha de nacimiento",
-  "lugar_nacimiento": "ciudad y departamento de nacimiento",
-  "fecha_expedicion": "fecha de expedición",
-  "lugar_expedicion": "lugar de expedición",
+  "numero_cedula": "número de cédula sin puntos, comas ni espacios",
+  "fecha_nacimiento": "fecha de nacimiento en formato DD/MM/AAAA",
+  "lugar_nacimiento": "municipio y departamento de nacimiento",
+  "fecha_expedicion": "fecha de expedición en formato DD/MM/AAAA",
+  "lugar_expedicion": "municipio y departamento de expedición",
   "sexo": "M o F",
-  "grupo_sanguineo": "grupo sanguíneo y RH si visible",
-  "inconsistencias": ["lista de posibles inconsistencias, campos ilegibles o señales de alteración"],
-  "confianza": "porcentaje de confianza en la extracción (0-100)"
+  "grupo_sanguineo": "grupo sanguíneo (A, B, O, AB) y factor RH (+ o -) si es visible",
+  "estatura": "estatura en metros si aparece en documentos viejos",
+  "huella_dactilar_visible": "SI o NO — si hay huella en el documento",
+  "tipo_cedula": "física o digital o amarilla o nueva o laminada",
+  "codigo_barras_visible": "SI o NO",
+  "chip_visible": "SI o NO — si tiene chip integrado",
+  "senales_alteracion": [
+    "descripción de cualquier señal de posible falsificación, raspados, cambios de fuente, alineaciones incorrectas, colores anómalos, etc"
+  ],
+  "calidad_imagen": "buena o regular o mala",
+  "cara_visible": "ambas o solo_frente o solo_reverso",
+  "inconsistencias": ["posibles inconsistencias entre campos o datos sospechosos"],
+  "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`,
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
-  rut: `Eres un experto en documentos tributarios colombianos. Analiza esta imagen de un RUT (Registro Único Tributario) y extrae EXACTAMENTE la siguiente información en formato JSON:
+  rut: `Eres un experto en documentos tributarios colombianos de la DIAN.
+Analiza este RUT (Registro Único Tributario) y extrae TODA la información disponible en formato JSON estricto:
 {
-  "nit": "número de NIT con dígito verificador",
-  "razon_social": "razón social o nombre del contribuyente",
-  "nombre_comercial": "nombre comercial si aplica",
-  "tipo_contribuyente": "natural o jurídica",
-  "codigo_actividad_economica": "código CIIU principal",
-  "descripcion_actividad": "descripción de la actividad económica principal",
-  "responsabilidades": ["lista de responsabilidades tributarias (códigos)"],
-  "fecha_inscripcion": "fecha de inscripción en el RUT",
+  "nit": "número de NIT con dígito verificador, formato: 000000000-0",
+  "razon_social": "razón social o nombre completo del contribuyente exactamente como aparece",
+  "nombre_comercial": "nombre comercial si es diferente",
+  "primer_apellido": "primer apellido si es persona natural",
+  "segundo_apellido": "segundo apellido si aplica",
+  "primer_nombre": "primer nombre si es persona natural",
+  "otros_nombres": "otros nombres si aplica",
+  "tipo_contribuyente": "natural o juridica",
+  "tipo_documento": "CC, NIT, CE, Pasaporte, etc",
+  "numero_documento": "número de documento del contribuyente (sin dígito verificador para personas)",
+  "fecha_nacimiento": "fecha de nacimiento si es persona natural",
+  "pais_nacimiento": "país de nacimiento si aparece",
+  "lugar_nacimiento": "municipio de nacimiento si aparece",
+  "sexo": "M o F si aplica",
+  "actividades_economicas": [
+    {
+      "codigo_ciiu": "código CIIU",
+      "descripcion": "descripción de la actividad",
+      "principal": "SI o NO"
+    }
+  ],
+  "responsabilidades_tributarias": [
+    {
+      "codigo": "código de responsabilidad (ej: 05, 11, 42)",
+      "descripcion": "descripción si es visible"
+    }
+  ],
+  "regimen_tributario": "SIMPLE o ORDINARIO o ESPECIAL",
+  "gran_contribuyente": "SI o NO",
+  "autoretenedor": "SI o NO",
+  "agente_retencion": "SI o NO",
+  "fecha_inscripcion_rut": "fecha de inscripción en el RUT",
   "fecha_actualizacion": "fecha de última actualización",
-  "direccion": "dirección fiscal completa",
-  "municipio": "municipio",
-  "departamento": "departamento",
-  "telefono": "teléfono de contacto",
-  "email": "correo electrónico si visible",
-  "estado": "estado del RUT (activo/suspendido/cancelado)",
-  "inconsistencias": ["lista de posibles inconsistencias o campos ilegibles"],
-  "confianza": "porcentaje de confianza en la extracción (0-100)"
+  "direccion_fiscal": "dirección completa de la dirección fiscal",
+  "municipio_fiscal": "municipio de la dirección fiscal",
+  "departamento_fiscal": "departamento de la dirección fiscal",
+  "codigo_postal": "código postal si aparece",
+  "telefono": "número(s) de teléfono",
+  "email": "correo electrónico si es visible",
+  "estado_rut": "ACTIVO o SUSPENDIDO o CANCELADO",
+  "numero_formulario": "número del formulario RUT si aparece",
+  "inconsistencias": ["posibles inconsistencias o alertas relevantes"],
+  "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Responde SOLO con el JSON, sin explicaciones adicionales.`
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`
 };
 
+// ─── MIME types soportados ──────────────────────────────────────────────────────
 const MIME_IMAGENES = {
   'image/jpeg': 'image/jpeg',
   'image/jpg':  'image/jpeg',
@@ -87,13 +204,12 @@ const MIME_IMAGENES = {
   'image/gif':  'image/gif',
 };
 
+// ─── Extracción de texto de PDF ─────────────────────────────────────────────────
 async function extraerTextoPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
-
   const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error('TIMEOUT_PDF')), 20000)
   );
-
   let data;
   try {
     data = await Promise.race([
@@ -106,22 +222,26 @@ async function extraerTextoPdf(filePath) {
     }
     throw err;
   }
-
   return data.text?.trim() || '';
 }
 
+// ─── Adaptación del prompt para texto (PDF) ─────────────────────────────────────
+function adaptarPromptParaTexto(prompt) {
+  return prompt
+    .replace(/Analiza esta (imagen de una?|Cédula de Ciudadanía y extrae)/g,
+      (m) => m.includes('Cédula') ? 'Analiza el siguiente texto extraído de una Cédula de Ciudadanía y extrae' : 'Analiza el siguiente texto extraído de')
+    .replace(/Analiza este (documento de|Documento de|RUT \()/g,
+      (_, p1) => `Analiza el siguiente texto extraído de este ${p1}`);
+}
+
+// ─── Llamada principal a Groq ────────────────────────────────────────────────────
 async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const prompt = PROMPTS[tipoDocumento];
   if (!prompt) throw new Error(`Tipo de documento desconocido: ${tipoDocumento}`);
 
-  if (!fs.existsSync(filePath)) {
-    throw new Error('No se pudo leer el archivo subido.');
-  }
-
+  if (!fs.existsSync(filePath)) throw new Error('No se pudo leer el archivo subido.');
   const fileBuffer = fs.readFileSync(filePath);
-  if (fileBuffer.length === 0) {
-    throw new Error('El archivo está vacío.');
-  }
+  if (fileBuffer.length === 0) throw new Error('El archivo está vacío.');
 
   const mime = mimeType?.toLowerCase();
   let completion;
@@ -131,56 +251,34 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
     const textoPdf = await extraerTextoPdf(filePath);
 
     if (!textoPdf || textoPdf.length < 20) {
-      throw new Error('No se pudo extraer texto del PDF. Puede ser un PDF escaneado (imagen). Por favor suba una foto clara del documento.');
+      throw new Error('No se pudo extraer texto del PDF. Puede ser un PDF escaneado. Por favor suba una foto clara del documento.');
     }
-
-    const promptTexto = prompt.replace(
-      'Analiza esta imagen de',
-      'Analiza el siguiente texto extraído de'
-    ).replace(
-      'Eres un experto en documentos legales colombianos. Analiza esta imagen de',
-      'Eres un experto en documentos legales colombianos. Analiza el siguiente texto de'
-    ).replace(
-      'Eres un experto en documentos de identidad colombianos. Analiza esta imagen de',
-      'Eres un experto en documentos de identidad colombianos. Analiza el siguiente texto de'
-    ).replace(
-      'Eres un experto en documentos tributarios colombianos. Analiza esta imagen de',
-      'Eres un experto en documentos tributarios colombianos. Analiza el siguiente texto de'
-    );
 
     completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
-      messages: [
-        {
-          role: 'user',
-          content: `${promptTexto}\n\nTEXTO DEL DOCUMENTO:\n${textoPdf}`
-        }
-      ],
+      messages: [{
+        role: 'user',
+        content: `${adaptarPromptParaTexto(prompt)}\n\nTEXTO DEL DOCUMENTO:\n${textoPdf}`
+      }],
       temperature: 0.1,
-      max_tokens: 2048
+      max_tokens: 4096
     });
 
   } else if (MIME_IMAGENES[mime]) {
     console.log(`🖼️ Analizando imagen: ${tipoDocumento}`);
     const base64Image = fileBuffer.toString('base64');
-    const mimeParaGroq = MIME_IMAGENES[mime];
 
     completion = await groq.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'image_url',
-              image_url: { url: `data:${mimeParaGroq};base64,${base64Image}` }
-            },
-            { type: 'text', text: prompt }
-          ]
-        }
-      ],
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:${MIME_IMAGENES[mime]};base64,${base64Image}` } },
+          { type: 'text', text: prompt }
+        ]
+      }],
       temperature: 0.1,
-      max_tokens: 2048
+      max_tokens: 4096
     });
 
   } else {
@@ -188,14 +286,12 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   }
 
   const rawContent = completion.choices[0]?.message?.content || '{}';
-  
-  // Extraer JSON de la respuesta
   const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('La IA no devolvió un JSON válido');
-  
   return JSON.parse(jsonMatch[0]);
 }
 
+// ─── Handler principal ───────────────────────────────────────────────────────────
 exports.analizarDocumentos = async (req, res) => {
   try {
     const archivos = req.files;
@@ -210,18 +306,16 @@ exports.analizarDocumentos = async (req, res) => {
 
     for (const [campo, fileArray] of Object.entries(archivos)) {
       const file = Array.isArray(fileArray) ? fileArray[0] : fileArray;
-      const tipoDocumento = campo; // camara_comercio, dof, cedula, rut
 
       promesas.push(
         (async () => {
           try {
-            const datos = await analizarDocumentoConGroq(file.path, tipoDocumento, file.mimetype);
+            const datos = await analizarDocumentoConGroq(file.path, campo, file.mimetype);
             resultados[campo] = { ok: true, datos };
           } catch (err) {
             console.error(`❌ Error analizando ${campo}:`, err.message);
             resultados[campo] = { ok: false, error: err.message };
           } finally {
-            // Eliminar archivo temporal
             try { fs.unlinkSync(file.path); } catch {}
           }
         })()
@@ -230,78 +324,291 @@ exports.analizarDocumentos = async (req, res) => {
 
     await Promise.all(promesas);
 
-    // Generar resumen consolidado
     const resumen = generarResumen(resultados);
-
     res.json({ resultados, resumen });
+
   } catch (error) {
-    console.error('❌ Error general en análisis de documentos:', error.message);
+    console.error('❌ Error general:', error.message);
     res.status(500).json({ error: 'Error al procesar los documentos', detalle: error.message });
   }
 };
 
+// ─── Resumen consolidado para listas restrictivas ────────────────────────────────
 function generarResumen(resultados) {
-  const cedula = resultados.cedula?.datos;
-  const camara = resultados.camara_comercio?.datos;
-  const rut = resultados.rut?.datos;
-  const dof = resultados.dof?.datos;
+  const cedula  = resultados.cedula?.ok  ? resultados.cedula.datos  : null;
+  const camara  = resultados.camara_comercio?.ok ? resultados.camara_comercio.datos : null;
+  const rut     = resultados.rut?.ok     ? resultados.rut.datos     : null;
+  const dof     = resultados.dof?.ok     ? resultados.dof.datos     : null;
 
-  // Nombre: preferir cédula
-  let nombre = null;
-  if (cedula?.nombre_completo) nombre = cedula.nombre_completo;
-  else if (dof?.nombre_titular) nombre = dof.nombre_titular;
+  // ── Identidad de la persona natural ──────────────────────────────────────────
+  const persona_natural = (() => {
+    // Nombre: cédula > RUT > DOF
+    const nombre_completo =
+      cedula?.nombre_completo ||
+      (rut?.tipo_contribuyente === 'natural'
+        ? [rut.primer_nombre, rut.otros_nombres, rut.primer_apellido, rut.segundo_apellido].filter(Boolean).join(' ')
+        : null) ||
+      dof?.beneficiarios_finales?.find(b => b.tipo_persona === 'natural')?.nombre_completo ||
+      null;
 
-  // Razón social: cámara o RUT
-  let razon_social = camara?.razon_social || rut?.razon_social || null;
+    const numero_cedula =
+      cedula?.numero_cedula ||
+      (rut?.tipo_contribuyente === 'natural' ? rut.numero_documento : null) ||
+      null;
 
-  // Representantes legales: cámara de comercio
-  let representantes_legales = camara?.representantes_legales || [];
+    if (!nombre_completo && !numero_cedula) return null;
 
-  // Beneficiario final: DOF
-  let beneficiarios_finales = dof?.beneficiarios_finales || [];
+    return {
+      nombre_completo,
+      primer_apellido:  cedula?.primer_apellido  || rut?.primer_apellido  || null,
+      segundo_apellido: cedula?.segundo_apellido || rut?.segundo_apellido || null,
+      primer_nombre:    cedula?.primer_nombre    || rut?.primer_nombre    || null,
+      segundo_nombre:   cedula?.segundo_nombre   || rut?.otros_nombres    || null,
+      numero_cedula,
+      fecha_nacimiento: cedula?.fecha_nacimiento || rut?.fecha_nacimiento || null,
+      lugar_nacimiento: cedula?.lugar_nacimiento || rut?.lugar_nacimiento || null,
+      fecha_expedicion_cedula: cedula?.fecha_expedicion || null,
+      lugar_expedicion_cedula: cedula?.lugar_expedicion || null,
+      sexo:             cedula?.sexo || rut?.sexo || null,
+      grupo_sanguineo:  cedula?.grupo_sanguineo || null,
+      // PEP se detecta si aparece en DOF o si el cargo en cámara sugiere función pública
+      es_pep: dof?.beneficiarios_finales?.some(b => b.pep === 'SI') || null,
+      cargo_pep: dof?.beneficiarios_finales?.find(b => b.pep === 'SI')?.cargo_pep || null,
+      es_representante_legal: camara?.representantes_legales?.some(r =>
+        r.nombre && cedula?.nombre_completo &&
+        sonNombresSimilares(r.nombre, cedula.nombre_completo)
+      ) || null,
+      cargo_en_empresa: camara?.representantes_legales?.find(r =>
+        r.nombre && cedula?.nombre_completo &&
+        sonNombresSimilares(r.nombre, cedula.nombre_completo)
+      )?.cargo || null,
+    };
+  })();
 
-  // Código RUT
-  let codigo_rut = rut?.codigo_actividad_economica || null;
-  let descripcion_actividad = rut?.descripcion_actividad || null;
-  let nit = rut?.nit || camara?.nit || null;
+  // ── Identidad de la empresa ───────────────────────────────────────────────────
+  const empresa = (() => {
+    const razon_social = camara?.razon_social || rut?.razon_social || null;
+    const nit = normalizar_nit(camara?.nit || rut?.nit);
 
-  // Inconsistencias cruzadas entre documentos
-  const inconsistencias_cruzadas = [];
+    if (!razon_social && !nit) return null;
 
-  // Verificar que NIT de cámara y RUT coincidan
-  if (camara?.nit && rut?.nit && camara.nit !== rut.nit) {
-    inconsistencias_cruzadas.push(`⚠️ El NIT en la Cámara de Comercio (${camara.nit}) no coincide con el del RUT (${rut.nit})`);
-  }
+    return {
+      razon_social,
+      nombre_comercial: camara?.nombre_comercial || rut?.nombre_comercial || null,
+      sigla:            camara?.sigla || null,
+      nit,
+      tipo_sociedad:    camara?.tipo_sociedad || null,
+      numero_matricula: camara?.numero_matricula || null,
+      estado_matricula: camara?.estado_matricula || null,
+      fecha_matricula:  camara?.fecha_matricula || null,
+      fecha_renovacion: camara?.fecha_renovacion || null,
+      domicilio:        camara?.domicilio || rut?.municipio_fiscal || null,
+      direccion:        camara?.direccion || rut?.direccion_fiscal || null,
+      actividad_principal_ciiu: camara?.actividad_economica_ciiu ||
+        rut?.actividades_economicas?.find(a => a.principal === 'SI')?.codigo_ciiu || null,
+      descripcion_actividad:
+        rut?.actividades_economicas?.find(a => a.principal === 'SI')?.descripcion || null,
+      todas_actividades_ciiu: rut?.actividades_economicas || [],
+      responsabilidades_tributarias: rut?.responsabilidades_tributarias || [],
+      regimen_tributario: rut?.regimen_tributario || null,
+      gran_contribuyente: rut?.gran_contribuyente || null,
+      estado_rut:       rut?.estado_rut || null,
+      capital_suscrito: camara?.capital_suscrito || null,
+      capital_pagado:   camara?.capital_pagado   || null,
+    };
+  })();
 
-  // Verificar que razón social sea consistente
-  if (camara?.razon_social && rut?.razon_social) {
-    const norm = (s) => s?.toLowerCase().trim().replace(/\s+/g, ' ');
-    if (norm(camara.razon_social) !== norm(rut.razon_social)) {
-      inconsistencias_cruzadas.push(`⚠️ La razón social difiere entre Cámara de Comercio ("${camara.razon_social}") y RUT ("${rut.razon_social}")`);
-    }
-  }
+  // ── Personas vinculadas a la empresa (para buscar en listas) ─────────────────
+  const personas_vinculadas = (() => {
+    const mapa = new Map(); // key: nombre normalizado
 
-  // Verificar representante vs cédula
-  if (cedula?.nombre_completo && camara?.representantes_legales?.length > 0) {
-    const nombreCedula = cedula.nombre_completo.toLowerCase().trim();
-    const coincide = camara.representantes_legales.some(r =>
-      r.toLowerCase().includes(nombreCedula.split(' ')[0]) ||
-      nombreCedula.includes(r.toLowerCase().split(' ')[0])
+    const agregar = (nombre, doc, rol, fuente) => {
+      if (!nombre) return;
+      const key = nombre.toLowerCase().trim();
+      if (!mapa.has(key)) mapa.set(key, { nombre, documento: doc || null, roles: [], fuentes: [] });
+      const entry = mapa.get(key);
+      if (rol && !entry.roles.includes(rol)) entry.roles.push(rol);
+      if (fuente && !entry.fuentes.includes(fuente)) entry.fuentes.push(fuente);
+      if (doc && !entry.documento) entry.documento = doc;
+    };
+
+    // Representantes legales (cámara)
+    (camara?.representantes_legales || []).forEach(r =>
+      agregar(r.nombre, r.documento, r.cargo || 'Representante Legal', 'Cámara de Comercio')
     );
-    if (!coincide) {
-      inconsistencias_cruzadas.push(`⚠️ El titular de la cédula ("${cedula.nombre_completo}") no aparece como representante legal en la Cámara de Comercio`);
-    }
+
+    // Junta directiva (cámara)
+    (camara?.junta_directiva || []).forEach(j =>
+      agregar(j.nombre, j.documento, `Junta: ${j.cargo || 'Miembro'}`, 'Cámara de Comercio')
+    );
+
+    // Revisor fiscal
+    if (camara?.revisor_fiscal?.nombre)
+      agregar(camara.revisor_fiscal.nombre, camara.revisor_fiscal.documento, 'Revisor Fiscal', 'Cámara de Comercio');
+
+    // Socios/accionistas (cámara)
+    (camara?.socios_o_accionistas || []).forEach(s =>
+      agregar(s.nombre, s.documento, `Socio ${s.porcentaje ? s.porcentaje + '%' : ''}`.trim(), 'Cámara de Comercio')
+    );
+
+    // Beneficiarios finales (DOF)
+    (dof?.beneficiarios_finales || []).forEach(b => {
+      const rol = b.tipo_control
+        ? `Beneficiario Final (${b.porcentaje_participacion || '?'}% - ${b.tipo_control})`
+        : 'Beneficiario Final';
+      agregar(b.nombre_completo, b.numero_documento, rol, 'DOF');
+      if (b.pep === 'SI' && b.nombre_completo) {
+        const entry = mapa.get(b.nombre_completo.toLowerCase().trim());
+        if (entry) { entry.es_pep = true; entry.cargo_pep = b.cargo_pep || null; }
+      }
+    });
+
+    // Titular de la cédula
+    if (cedula?.nombre_completo)
+      agregar(cedula.nombre_completo, cedula.numero_cedula, 'Titular Cédula', 'Cédula');
+
+    return Array.from(mapa.values());
+  })();
+
+  // ── Datos para búsqueda en listas restrictivas ───────────────────────────────
+  const datos_busqueda = {
+    // Identificadores únicos a buscar
+    cedulas_a_buscar: [
+      ...new Set([
+        cedula?.numero_cedula,
+        ...(personas_vinculadas.map(p => p.documento).filter(Boolean)),
+      ].filter(Boolean))
+    ],
+    nits_a_buscar: [
+      ...new Set([
+        normalizar_nit(camara?.nit),
+        normalizar_nit(rut?.nit),
+        ...(camara?.socios_o_accionistas || [])
+          .filter(s => s.tipo === 'juridica')
+          .map(s => s.documento)
+          .filter(Boolean),
+        ...(dof?.vehiculos_interpuestos || []),
+      ].filter(Boolean))
+    ],
+    nombres_a_buscar: [
+      ...new Set(personas_vinculadas.map(p => p.nombre).filter(Boolean))
+    ],
+    razones_sociales_a_buscar: [
+      ...new Set([
+        camara?.razon_social,
+        rut?.razon_social,
+        camara?.nombre_comercial,
+        ...(camara?.socios_o_accionistas || [])
+          .filter(s => s.tipo === 'juridica')
+          .map(s => s.nombre)
+          .filter(Boolean),
+      ].filter(Boolean))
+    ],
+  };
+
+  // ── Alertas e inconsistencias cruzadas ────────────────────────────────────────
+  const alertas = [];
+
+  // NIT inconsistente
+  if (camara?.nit && rut?.nit && normalizar_nit(camara.nit) !== normalizar_nit(rut.nit))
+    alertas.push({ nivel: 'CRITICO', mensaje: `NIT difiere: Cámara (${camara.nit}) vs RUT (${rut.nit})` });
+
+  // Razón social inconsistente
+  if (camara?.razon_social && rut?.razon_social &&
+    normalizar_texto(camara.razon_social) !== normalizar_texto(rut.razon_social))
+    alertas.push({ nivel: 'MEDIO', mensaje: `Razón social difiere: Cámara ("${camara.razon_social}") vs RUT ("${rut.razon_social}")` });
+
+  // Titular cédula no es representante
+  if (cedula?.nombre_completo && camara?.representantes_legales?.length > 0) {
+    const estaEnCamara = camara.representantes_legales.some(r =>
+      sonNombresSimilares(r.nombre, cedula.nombre_completo)
+    );
+    if (!estaEnCamara)
+      alertas.push({ nivel: 'MEDIO', mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no aparece como representante legal en la Cámara de Comercio` });
   }
+
+  // Titular cédula no está en DOF
+  if (cedula?.nombre_completo && dof?.beneficiarios_finales?.length > 0) {
+    const estaEnDof = dof.beneficiarios_finales.some(b =>
+      sonNombresSimilares(b.nombre_completo, cedula.nombre_completo)
+    );
+    if (!estaEnDof)
+      alertas.push({ nivel: 'INFO', mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no figura como beneficiario final en el DOF` });
+  }
+
+  // NIT de cédula (número de documento) vs NIT del RUT si es persona natural
+  if (cedula?.numero_cedula && rut?.tipo_contribuyente === 'natural' && rut?.numero_documento) {
+    if (cedula.numero_cedula.replace(/\D/g, '') !== rut.numero_documento.replace(/\D/g, ''))
+      alertas.push({ nivel: 'CRITICO', mensaje: `Número de cédula difiere: Cédula (${cedula.numero_cedula}) vs RUT (${rut.numero_documento})` });
+  }
+
+  // Matrícula vencida
+  if (camara?.estado_matricula && camara.estado_matricula !== 'ACTIVA')
+    alertas.push({ nivel: 'CRITICO', mensaje: `Matrícula mercantil en estado: ${camara.estado_matricula}` });
+
+  // RUT suspendido o cancelado
+  if (rut?.estado_rut && rut.estado_rut !== 'ACTIVO')
+    alertas.push({ nivel: 'CRITICO', mensaje: `RUT en estado: ${rut.estado_rut}` });
+
+  // Señales de alteración en cédula
+  if (cedula?.senales_alteracion?.length > 0)
+    alertas.push({ nivel: 'CRITICO', mensaje: `Señales de posible alteración en la cédula: ${cedula.senales_alteracion.join(' / ')}` });
+
+  // PEP detectado
+  const peps = personas_vinculadas.filter(p => p.es_pep);
+  if (peps.length > 0)
+    alertas.push({ nivel: 'ALTO', mensaje: `PEP detectado(s): ${peps.map(p => `${p.nombre} (${p.cargo_pep || 'cargo no especificado'})`).join(', ')}` });
+
+  // Inconsistencias reportadas por la IA en cada doc
+  [
+    { doc: cedula,  fuente: 'Cédula' },
+    { doc: camara,  fuente: 'Cámara de Comercio' },
+    { doc: rut,     fuente: 'RUT' },
+    { doc: dof,     fuente: 'DOF' },
+  ].forEach(({ doc, fuente }) => {
+    (doc?.inconsistencias || []).forEach(inc =>
+      alertas.push({ nivel: 'INFO', mensaje: `[${fuente}] ${inc}` })
+    );
+  });
 
   return {
-    nombre,
-    razon_social,
-    representantes_legales,
-    beneficiarios_finales,
-    codigo_rut,
-    descripcion_actividad,
-    nit,
-    inconsistencias_cruzadas,
-    documentos_analizados: Object.keys(resultados).filter(k => resultados[k].ok)
+    persona_natural,
+    empresa,
+    personas_vinculadas,
+    datos_busqueda,
+    alertas,
+    documentos_analizados: Object.keys(resultados).filter(k => resultados[k].ok),
+    documentos_con_error:  Object.keys(resultados).filter(k => !resultados[k].ok),
+    confianza_promedio: (() => {
+      const vals = Object.values(resultados)
+        .filter(r => r.ok && typeof r.datos?.confianza === 'number')
+        .map(r => r.datos.confianza);
+      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+    })(),
   };
+}
+
+// ─── Utilidades ──────────────────────────────────────────────────────────────────
+function normalizar_nit(nit) {
+  if (!nit) return null;
+  return nit.toString().replace(/[^0-9\-]/g, '').trim();
+}
+
+function normalizar_texto(str) {
+  if (!str) return '';
+  return str.toLowerCase().trim()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quitar tildes
+    .replace(/\s+/g, ' ');
+}
+
+function sonNombresSimilares(a, b) {
+  if (!a || !b) return false;
+  const na = normalizar_texto(a);
+  const nb = normalizar_texto(b);
+  if (na === nb) return true;
+  // Verificar si al menos 2 palabras significativas coinciden
+  const palabrasA = na.split(' ').filter(p => p.length > 2);
+  const palabrasB = nb.split(' ').filter(p => p.length > 2);
+  const coincidencias = palabrasA.filter(p => palabrasB.includes(p));
+  return coincidencias.length >= 2;
 }
