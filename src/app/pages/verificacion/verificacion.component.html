@@ -288,7 +288,7 @@
                    [class.full-width]="isArray(item.valor) || (item.valor + '').length > 60">
                 <span class="dato-label">{{ item.campo }}</span>
                 <ng-container *ngIf="!isArray(item.valor)">
-                  <span class="dato-valor">{{ item.valor }}</span>
+                  <span class="dato-valor">{{ formatearValorDisplay(item.valor) }}</span>
                 </ng-container>
                 <ng-container *ngIf="isArray(item.valor)">
                   <ul class="dato-lista">
@@ -298,8 +298,16 @@
               </div>
             </div>
 
+            <!-- Observaciones clave de la IA -->
+            <div *ngIf="getObservaciones(key).length" class="observaciones-ia">
+              <div class="obs-titulo">💡 Resumen IA — Puntos clave a tener en cuenta</div>
+              <ul>
+                <li *ngFor="let obs of getObservaciones(key)">{{ obs }}</li>
+              </ul>
+            </div>
+
             <div *ngIf="getInconsistenciasDoc(key).length" class="inconsistencias-doc">
-              <div class="incon-header-sm">⚠️ Observaciones del documento</div>
+              <div class="incon-header-sm">⚠️ Inconsistencias detectadas</div>
               <ul>
                 <li *ngFor="let inc of getInconsistenciasDoc(key)">{{ inc }}</li>
               </ul>

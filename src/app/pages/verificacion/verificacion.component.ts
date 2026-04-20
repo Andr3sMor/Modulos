@@ -3,6 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
 import { lastValueFrom } from 'rxjs';
+import { timeout } from 'rxjs/operators';
 
 interface PersonaNatural {
   nombre_completo: string | null;
@@ -183,11 +184,14 @@ export class VerificacionComponent {
           this.http.post<{ ok: boolean; campo: string; datos?: any; error?: string }>(
             `${this.apiUrl}/api/analizar-documento`,
             formData
-          )
+          ).pipe(timeout(55000))
         );
         this.resultados[key] = { ok: res.ok, datos: res.datos, error: res.error };
       } catch (err: any) {
-        this.resultados[key] = { ok: false, error: err.error?.error || 'Error de conexión' };
+        const msg = err.name === 'TimeoutError'
+          ? 'El servidor tardó demasiado. Intente con una imagen en lugar de PDF.'
+          : (err.error?.error || err.message || 'Error de conexión');
+        this.resultados[key] = { ok: false, error: msg };
       }
     }
 
@@ -245,6 +249,21 @@ export class VerificacionComponent {
         .join(' — ');
     }
     return String(v);
+  }
+
+  formatearValorDisplay(v: any): string {
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      return Object.entries(v)
+        .filter(([, val]) => val !== null && val !== undefined && val !== '')
+        .map(([k, val]) => `${this.formatearCampo(k)}: ${val}`)
+        .join(' · ');
+    }
+    return String(v);
+  }
+
+  getObservaciones(key: string): string[] {
+    return this.resultados[key]?.datos?.observaciones_clave || [];
   }
 
   getConfianza(key: string): number {

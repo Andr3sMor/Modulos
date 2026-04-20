@@ -68,9 +68,10 @@ Analiza este documento de Cámara de Comercio y extrae TODA la información disp
   "fecha_documento": "fecha de expedición del certificado",
   "entidad_expide": "nombre de la Cámara de Comercio que expide",
   "inconsistencias": ["posibles inconsistencias, campos ilegibles o alertas relevantes"],
+  "observaciones_clave": ["observación importante para el analista 1", "observación importante 2"],
   "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100. En observaciones_clave incluye 2-4 puntos relevantes para debida diligencia (vencimientos, estados, señales de alerta, datos relevantes del objeto social, etc).
 Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
   dof: `Eres un experto en debida diligencia y documentos de beneficiarios finales colombianos.
@@ -108,9 +109,10 @@ Analiza este Documento de Beneficiarios Finales (DOF / Formato 160) y extrae TOD
   },
   "fecha_documento": "fecha de expedición del documento",
   "inconsistencias": ["posibles inconsistencias, campos ilegibles o alertas relevantes"],
+  "observaciones_clave": ["observación importante para el analista 1", "observación importante 2"],
   "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100. En observaciones_clave incluye 2-4 puntos clave para debida diligencia (PEPs, estructuras complejas de control, porcentajes relevantes, señales de alerta, etc).
 Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
   cedula: `Eres un experto en documentos de identidad colombianos y detección de documentos alterados.
@@ -139,9 +141,10 @@ Analiza esta Cédula de Ciudadanía y extrae TODA la información disponible en 
   "calidad_imagen": "buena o regular o mala",
   "cara_visible": "ambas o solo_frente o solo_reverso",
   "inconsistencias": ["posibles inconsistencias entre campos o datos sospechosos"],
+  "observaciones_clave": ["observación importante para el analista 1", "observación importante 2"],
   "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100. En observaciones_clave incluye 2-4 puntos clave (señales de alteración, calidad del documento, coherencia entre campos, etc).
 Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 
   rut: `Eres un experto en documentos tributarios colombianos de la DIAN.
@@ -189,9 +192,10 @@ Analiza este RUT (Registro Único Tributario) y extrae TODA la información disp
   "estado_rut": "ACTIVO o SUSPENDIDO o CANCELADO",
   "numero_formulario": "número del formulario RUT si aparece",
   "inconsistencias": ["posibles inconsistencias o alertas relevantes"],
+  "observaciones_clave": ["observación importante para el analista 1", "observación importante 2"],
   "confianza": 85
 }
-Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
+Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100. En observaciones_clave incluye 2-4 puntos clave (estado del RUT, régimen tributario, responsabilidades relevantes, fechas de actualización, etc).
 Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 };
 
@@ -595,7 +599,7 @@ function generarResumen(resultados) {
       ? rut.actividades_economicas
       : [];
 
-    const actividadPrincipal = actividades.find((a) => a.principal === "SI");
+    const actividadPrincipal = actividades.find((a) => a.principal === "SI") || actividades[0] || null;
 
     return {
       razon_social,

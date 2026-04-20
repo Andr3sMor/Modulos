@@ -512,6 +512,34 @@
 .doc-badge { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46; border-radius: 20px; padding: 4px 12px; font-size: 0.78rem; font-weight: 600; }
 .doc-badge-error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
 
+/* ─── Observaciones IA ─── */
+.observaciones-ia {
+  background: linear-gradient(135deg, #eff6ff, #f0fdf4);
+  border: 1px solid #bfdbfe;
+  border-left: 4px solid #2563eb;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+}
+.obs-titulo {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #1d4ed8;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.observaciones-ia ul {
+  margin: 0 0 0 16px;
+  padding: 0;
+}
+.observaciones-ia li {
+  font-size: 0.875rem;
+  color: #1e3a5f;
+  margin-bottom: 4px;
+  line-height: 1.5;
+}
+
 /* ─── Responsive ─── */
 @media (max-width: 640px) {
   .card-header, .upload-section, .tab-content { padding: 18px 16px; }
