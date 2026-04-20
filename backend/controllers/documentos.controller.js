@@ -1,12 +1,12 @@
-const Groq = require('groq-sdk');
-const fs = require('fs');
-const pdfParse = require('pdf-parse');
+const Groq = require("groq-sdk");
+const fs = require("fs");
+const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth"); // npm install mammoth
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ─── PROMPTS ────────────────────────────────────────────────────────────────────
 const PROMPTS = {
-
   camara_comercio: `Eres un experto en documentos legales colombianos especializado en debida diligencia y listas restrictivas.
 Analiza este documento de Cámara de Comercio y extrae TODA la información disponible en formato JSON estricto:
 {
@@ -192,196 +192,351 @@ Analiza este RUT (Registro Único Tributario) y extrae TODA la información disp
   "confianza": 85
 }
 Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El campo confianza es un número entero de 0 a 100.
-Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`
+Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 };
 
 // ─── MIME types soportados ──────────────────────────────────────────────────────
 const MIME_IMAGENES = {
-  'image/jpeg': 'image/jpeg',
-  'image/jpg':  'image/jpeg',
-  'image/png':  'image/png',
-  'image/webp': 'image/webp',
-  'image/gif':  'image/gif',
+  "image/jpeg": "image/jpeg",
+  "image/jpg": "image/jpeg",
+  "image/png": "image/png",
+  "image/webp": "image/webp",
+  "image/gif": "image/gif",
 };
 
+// NUEVO: MIME types de Word
+const MIME_WORD = [
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+  "application/msword", // .doc legacy
+];
+
+// NUEVO: qué tipos de documento aceptan Word
+const TIPOS_ACEPTA_WORD = ["dof"];
+
 // ─── Extracción de texto de PDF ─────────────────────────────────────────────────
+// FIX: reescrito con Promise explícita para evitar que se quede pegado
 async function extraerTextoPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('TIMEOUT_PDF')), 20000)
-  );
-  let data;
-  try {
-    data = await Promise.race([
-      pdfParse(buffer, { max: 10 }),
-      timeout
-    ]);
-  } catch (err) {
-    if (err.message === 'TIMEOUT_PDF') {
-      throw new Error('El PDF tardó demasiado en procesarse. Puede ser un PDF escaneado o protegido. Por favor suba una foto/imagen del documento.');
-    }
-    throw err;
-  }
-  return data.text?.trim() || '';
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          "El PDF tardó demasiado en procesarse. Puede ser un PDF escaneado o protegido. " +
+            "Por favor suba una foto/imagen del documento.",
+        ),
+      );
+    }, 20000);
+
+    pdfParse(buffer, { max: 10 })
+      .then((data) => {
+        clearTimeout(timer);
+        resolve(data.text?.trim() || "");
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        // pdfParse puede lanzar errores en PDFs con password, dañados o con estructura inusual
+        reject(
+          new Error(
+            `Error leyendo el PDF: ${err.message}. ` +
+              "Intente subir una imagen o foto del documento.",
+          ),
+        );
+      });
+  });
 }
 
-// ─── Adaptación del prompt para texto (PDF) ─────────────────────────────────────
+// NUEVO: Extracción de texto de Word (.docx / .doc)
+async function extraerTextoWord(filePath) {
+  let result;
+  try {
+    result = await mammoth.extractRawText({ path: filePath });
+  } catch (err) {
+    throw new Error(`Error leyendo el archivo Word: ${err.message}`);
+  }
+
+  if (result.messages?.length > 0) {
+    const warns = result.messages.map((m) => m.message).join(", ");
+    console.warn(`⚠️ Advertencias al leer Word (${filePath}): ${warns}`);
+  }
+
+  const texto = result.value?.trim() || "";
+  if (!texto || texto.length < 20) {
+    throw new Error(
+      "No se pudo extraer texto del archivo Word. " +
+        "El documento puede estar vacío, protegido o en formato no compatible.",
+    );
+  }
+  return texto;
+}
+
+// ─── Adaptación del prompt para texto (PDF o Word) ──────────────────────────────
 function adaptarPromptParaTexto(prompt) {
   return prompt
-    .replace(/Analiza esta (imagen de una?|Cédula de Ciudadanía y extrae)/g,
-      (m) => m.includes('Cédula') ? 'Analiza el siguiente texto extraído de una Cédula de Ciudadanía y extrae' : 'Analiza el siguiente texto extraído de')
-    .replace(/Analiza este (documento de|Documento de|RUT \()/g,
-      (_, p1) => `Analiza el siguiente texto extraído de este ${p1}`);
+    .replace(
+      /Analiza esta (imagen de una?|Cédula de Ciudadanía y extrae)/g,
+      (m) =>
+        m.includes("Cédula")
+          ? "Analiza el siguiente texto extraído de una Cédula de Ciudadanía y extrae"
+          : "Analiza el siguiente texto extraído de",
+    )
+    .replace(
+      /Analiza este (documento de|Documento de|RUT \()/g,
+      (_, p1) => `Analiza el siguiente texto extraído de este ${p1}`,
+    );
 }
 
 // ─── Llamada principal a Groq ────────────────────────────────────────────────────
 async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const prompt = PROMPTS[tipoDocumento];
-  if (!prompt) throw new Error(`Tipo de documento desconocido: ${tipoDocumento}`);
+  if (!prompt)
+    throw new Error(`Tipo de documento desconocido: ${tipoDocumento}`);
 
-  if (!fs.existsSync(filePath)) throw new Error('No se pudo leer el archivo subido.');
-  const fileBuffer = fs.readFileSync(filePath);
-  if (fileBuffer.length === 0) throw new Error('El archivo está vacío.');
+  if (!fs.existsSync(filePath))
+    throw new Error("No se pudo leer el archivo subido.");
+
+  const stat = fs.statSync(filePath);
+  if (stat.size === 0) throw new Error("El archivo está vacío.");
 
   const mime = mimeType?.toLowerCase();
   let completion;
 
-  if (mime === 'application/pdf') {
+  // ── PDF ──────────────────────────────────────────────────────────────────────
+  if (mime === "application/pdf") {
     console.log(`📄 Extrayendo texto del PDF: ${tipoDocumento}`);
     const textoPdf = await extraerTextoPdf(filePath);
 
     if (!textoPdf || textoPdf.length < 20) {
-      throw new Error('No se pudo extraer texto del PDF. Puede ser un PDF escaneado. Por favor suba una foto clara del documento.');
+      throw new Error(
+        "No se pudo extraer texto del PDF. Puede ser un PDF escaneado. " +
+          "Por favor suba una foto clara del documento.",
+      );
     }
 
     completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      messages: [{
-        role: 'user',
-        content: `${adaptarPromptParaTexto(prompt)}\n\nTEXTO DEL DOCUMENTO:\n${textoPdf}`
-      }],
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "user",
+          content: `${adaptarPromptParaTexto(prompt)}\n\nTEXTO DEL DOCUMENTO:\n${textoPdf}`,
+        },
+      ],
       temperature: 0.1,
-      max_tokens: 4096
+      max_tokens: 4096,
     });
 
-  } else if (MIME_IMAGENES[mime]) {
-    console.log(`🖼️ Analizando imagen: ${tipoDocumento}`);
-    const base64Image = fileBuffer.toString('base64');
+    // ── WORD (.docx / .doc) — solo para tipos que lo permiten ────────────────────
+  } else if (MIME_WORD.includes(mime)) {
+    if (!TIPOS_ACEPTA_WORD.includes(tipoDocumento)) {
+      throw new Error(
+        `El tipo de documento "${tipoDocumento}" no acepta archivos Word. ` +
+          "Use PDF o imagen (JPG/PNG).",
+      );
+    }
+
+    console.log(`📝 Extrayendo texto del Word: ${tipoDocumento}`);
+    const textoWord = await extraerTextoWord(filePath);
 
     completion = await groq.chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:${MIME_IMAGENES[mime]};base64,${base64Image}` } },
-          { type: 'text', text: prompt }
-        ]
-      }],
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "user",
+          content: `${adaptarPromptParaTexto(prompt)}\n\nTEXTO DEL DOCUMENTO:\n${textoWord}`,
+        },
+      ],
       temperature: 0.1,
-      max_tokens: 4096
+      max_tokens: 4096,
     });
 
+    // ── IMAGEN ───────────────────────────────────────────────────────────────────
+  } else if (MIME_IMAGENES[mime]) {
+    console.log(`🖼️ Analizando imagen: ${tipoDocumento}`);
+    const fileBuffer = fs.readFileSync(filePath);
+    const base64Image = fileBuffer.toString("base64");
+
+    completion = await groq.chat.completions.create({
+      model: "meta-llama/llama-4-scout-17b-16e-instruct",
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${MIME_IMAGENES[mime]};base64,${base64Image}`,
+              },
+            },
+            { type: "text", text: prompt },
+          ],
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 4096,
+    });
+
+    // ── FORMATO NO SOPORTADO ─────────────────────────────────────────────────────
   } else {
-    throw new Error(`Formato no soportado: ${mimeType}. Use PDF, JPG o PNG.`);
+    const formatosAceptados =
+      tipoDocumento === "dof"
+        ? "PDF, JPG, PNG o Word (.docx)"
+        : "PDF, JPG o PNG";
+    throw new Error(
+      `Formato no soportado: "${mimeType}". Use ${formatosAceptados}.`,
+    );
   }
 
-  const rawContent = completion.choices[0]?.message?.content || '{}';
-  const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('La IA no devolvió un JSON válido');
-  return JSON.parse(jsonMatch[0]);
+  // ── Parseo de la respuesta ───────────────────────────────────────────────────
+  const rawContent = completion.choices?.[0]?.message?.content;
+  if (!rawContent) throw new Error("La IA no devolvió respuesta.");
+
+  // FIX: limpiar posibles bloques markdown antes de parsear
+  const cleaned = rawContent
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (!jsonMatch)
+    throw new Error(
+      "La IA no devolvió un JSON válido. Respuesta: " +
+        rawContent.slice(0, 200),
+    );
+
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch (parseErr) {
+    throw new Error(`Error parseando JSON de la IA: ${parseErr.message}`);
+  }
 }
 
 // ─── Handler principal ───────────────────────────────────────────────────────────
 exports.analizarDocumentos = async (req, res) => {
+  // FIX: envolver todo en try/catch y asegurar que res siempre recibe respuesta
   try {
     const archivos = req.files;
     if (!archivos || Object.keys(archivos).length === 0) {
-      return res.status(400).json({ error: 'No se recibieron documentos' });
+      return res.status(400).json({ error: "No se recibieron documentos" });
     }
 
-    console.log('📄 Analizando documentos:', Object.keys(archivos));
+    console.log("📄 Analizando documentos:", Object.keys(archivos));
 
     const resultados = {};
-    const promesas = [];
 
-    for (const [campo, fileArray] of Object.entries(archivos)) {
+    // FIX: usar Promise.allSettled en lugar de Promise.all para que un fallo
+    // en un documento no cancele los demás ni deje el handler colgado
+    const promesas = Object.entries(archivos).map(([campo, fileArray]) => {
       const file = Array.isArray(fileArray) ? fileArray[0] : fileArray;
 
-      promesas.push(
-        (async () => {
+      return analizarDocumentoConGroq(file.path, campo, file.mimetype)
+        .then((datos) => {
+          resultados[campo] = { ok: true, datos };
+        })
+        .catch((err) => {
+          console.error(`❌ Error analizando ${campo}:`, err.message);
+          resultados[campo] = { ok: false, error: err.message };
+        })
+        .finally(() => {
+          // Limpiar archivo temporal sin importar el resultado
           try {
-            const datos = await analizarDocumentoConGroq(file.path, campo, file.mimetype);
-            resultados[campo] = { ok: true, datos };
-          } catch (err) {
-            console.error(`❌ Error analizando ${campo}:`, err.message);
-            resultados[campo] = { ok: false, error: err.message };
-          } finally {
-            try { fs.unlinkSync(file.path); } catch {}
+            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          } catch (unlinkErr) {
+            console.warn(
+              `⚠️ No se pudo eliminar archivo temporal ${file.path}:`,
+              unlinkErr.message,
+            );
           }
-        })()
-      );
-    }
+        });
+    });
 
-    await Promise.all(promesas);
+    // FIX: allSettled garantiza que esperamos TODAS las promesas aunque fallen
+    await Promise.allSettled(promesas);
 
     const resumen = generarResumen(resultados);
-    res.json({ resultados, resumen });
 
+    // FIX: asegurarse de no llamar res.json() dos veces
+    if (!res.headersSent) {
+      res.json({ resultados, resumen });
+    }
   } catch (error) {
-    console.error('❌ Error general:', error.message);
-    res.status(500).json({ error: 'Error al procesar los documentos', detalle: error.message });
+    console.error("❌ Error general:", error.message);
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: "Error al procesar los documentos",
+        detalle: error.message,
+      });
+    }
   }
 };
 
 // ─── Resumen consolidado para listas restrictivas ────────────────────────────────
 function generarResumen(resultados) {
-  const cedula  = resultados.cedula?.ok  ? resultados.cedula.datos  : null;
-  const camara  = resultados.camara_comercio?.ok ? resultados.camara_comercio.datos : null;
-  const rut     = resultados.rut?.ok     ? resultados.rut.datos     : null;
-  const dof     = resultados.dof?.ok     ? resultados.dof.datos     : null;
+  const cedula = resultados.cedula?.ok ? resultados.cedula.datos : null;
+  const camara = resultados.camara_comercio?.ok
+    ? resultados.camara_comercio.datos
+    : null;
+  const rut = resultados.rut?.ok ? resultados.rut.datos : null;
+  const dof = resultados.dof?.ok ? resultados.dof.datos : null;
 
   // ── Identidad de la persona natural ──────────────────────────────────────────
   const persona_natural = (() => {
-    // Nombre: cédula > RUT > DOF
     const nombre_completo =
       cedula?.nombre_completo ||
-      (rut?.tipo_contribuyente === 'natural'
-        ? [rut.primer_nombre, rut.otros_nombres, rut.primer_apellido, rut.segundo_apellido].filter(Boolean).join(' ')
+      (rut?.tipo_contribuyente === "natural"
+        ? [
+            rut.primer_nombre,
+            rut.otros_nombres,
+            rut.primer_apellido,
+            rut.segundo_apellido,
+          ]
+            .filter(Boolean)
+            .join(" ")
         : null) ||
-      dof?.beneficiarios_finales?.find(b => b.tipo_persona === 'natural')?.nombre_completo ||
+      dof?.beneficiarios_finales?.find((b) => b.tipo_persona === "natural")
+        ?.nombre_completo ||
       null;
 
     const numero_cedula =
       cedula?.numero_cedula ||
-      (rut?.tipo_contribuyente === 'natural' ? rut.numero_documento : null) ||
+      (rut?.tipo_contribuyente === "natural" ? rut.numero_documento : null) ||
       null;
 
     if (!nombre_completo && !numero_cedula) return null;
 
     return {
       nombre_completo,
-      primer_apellido:  cedula?.primer_apellido  || rut?.primer_apellido  || null,
-      segundo_apellido: cedula?.segundo_apellido || rut?.segundo_apellido || null,
-      primer_nombre:    cedula?.primer_nombre    || rut?.primer_nombre    || null,
-      segundo_nombre:   cedula?.segundo_nombre   || rut?.otros_nombres    || null,
+      primer_apellido: cedula?.primer_apellido || rut?.primer_apellido || null,
+      segundo_apellido:
+        cedula?.segundo_apellido || rut?.segundo_apellido || null,
+      primer_nombre: cedula?.primer_nombre || rut?.primer_nombre || null,
+      segundo_nombre: cedula?.segundo_nombre || rut?.otros_nombres || null,
       numero_cedula,
-      fecha_nacimiento: cedula?.fecha_nacimiento || rut?.fecha_nacimiento || null,
-      lugar_nacimiento: cedula?.lugar_nacimiento || rut?.lugar_nacimiento || null,
+      fecha_nacimiento:
+        cedula?.fecha_nacimiento || rut?.fecha_nacimiento || null,
+      lugar_nacimiento:
+        cedula?.lugar_nacimiento || rut?.lugar_nacimiento || null,
       fecha_expedicion_cedula: cedula?.fecha_expedicion || null,
       lugar_expedicion_cedula: cedula?.lugar_expedicion || null,
-      sexo:             cedula?.sexo || rut?.sexo || null,
-      grupo_sanguineo:  cedula?.grupo_sanguineo || null,
-      // PEP se detecta si aparece en DOF o si el cargo en cámara sugiere función pública
-      es_pep: dof?.beneficiarios_finales?.some(b => b.pep === 'SI') || null,
-      cargo_pep: dof?.beneficiarios_finales?.find(b => b.pep === 'SI')?.cargo_pep || null,
-      es_representante_legal: camara?.representantes_legales?.some(r =>
-        r.nombre && cedula?.nombre_completo &&
-        sonNombresSimilares(r.nombre, cedula.nombre_completo)
-      ) || null,
-      cargo_en_empresa: camara?.representantes_legales?.find(r =>
-        r.nombre && cedula?.nombre_completo &&
-        sonNombresSimilares(r.nombre, cedula.nombre_completo)
-      )?.cargo || null,
+      sexo: cedula?.sexo || rut?.sexo || null,
+      grupo_sanguineo: cedula?.grupo_sanguineo || null,
+      es_pep: dof?.beneficiarios_finales?.some((b) => b.pep === "SI") || null,
+      cargo_pep:
+        dof?.beneficiarios_finales?.find((b) => b.pep === "SI")?.cargo_pep ||
+        null,
+      es_representante_legal:
+        camara?.representantes_legales?.some(
+          (r) =>
+            r.nombre &&
+            cedula?.nombre_completo &&
+            sonNombresSimilares(r.nombre, cedula.nombre_completo),
+        ) || null,
+      cargo_en_empresa:
+        camara?.representantes_legales?.find(
+          (r) =>
+            r.nombre &&
+            cedula?.nombre_completo &&
+            sonNombresSimilares(r.nombre, cedula.nombre_completo),
+        )?.cargo || null,
     };
   })();
 
@@ -394,180 +549,247 @@ function generarResumen(resultados) {
 
     return {
       razon_social,
-      nombre_comercial: camara?.nombre_comercial || rut?.nombre_comercial || null,
-      sigla:            camara?.sigla || null,
+      nombre_comercial:
+        camara?.nombre_comercial || rut?.nombre_comercial || null,
+      sigla: camara?.sigla || null,
       nit,
-      tipo_sociedad:    camara?.tipo_sociedad || null,
+      tipo_sociedad: camara?.tipo_sociedad || null,
       numero_matricula: camara?.numero_matricula || null,
       estado_matricula: camara?.estado_matricula || null,
-      fecha_matricula:  camara?.fecha_matricula || null,
+      fecha_matricula: camara?.fecha_matricula || null,
       fecha_renovacion: camara?.fecha_renovacion || null,
-      domicilio:        camara?.domicilio || rut?.municipio_fiscal || null,
-      direccion:        camara?.direccion || rut?.direccion_fiscal || null,
-      actividad_principal_ciiu: camara?.actividad_economica_ciiu ||
-        rut?.actividades_economicas?.find(a => a.principal === 'SI')?.codigo_ciiu || null,
+      domicilio: camara?.domicilio || rut?.municipio_fiscal || null,
+      direccion: camara?.direccion || rut?.direccion_fiscal || null,
+      actividad_principal_ciiu:
+        camara?.actividad_economica_ciiu ||
+        rut?.actividades_economicas?.find((a) => a.principal === "SI")
+          ?.codigo_ciiu ||
+        null,
       descripcion_actividad:
-        rut?.actividades_economicas?.find(a => a.principal === 'SI')?.descripcion || null,
+        rut?.actividades_economicas?.find((a) => a.principal === "SI")
+          ?.descripcion || null,
       todas_actividades_ciiu: rut?.actividades_economicas || [],
       responsabilidades_tributarias: rut?.responsabilidades_tributarias || [],
       regimen_tributario: rut?.regimen_tributario || null,
       gran_contribuyente: rut?.gran_contribuyente || null,
-      estado_rut:       rut?.estado_rut || null,
+      estado_rut: rut?.estado_rut || null,
       capital_suscrito: camara?.capital_suscrito || null,
-      capital_pagado:   camara?.capital_pagado   || null,
+      capital_pagado: camara?.capital_pagado || null,
     };
   })();
 
   // ── Personas vinculadas a la empresa (para buscar en listas) ─────────────────
   const personas_vinculadas = (() => {
-    const mapa = new Map(); // key: nombre normalizado
+    const mapa = new Map();
 
     const agregar = (nombre, doc, rol, fuente) => {
       if (!nombre) return;
       const key = nombre.toLowerCase().trim();
-      if (!mapa.has(key)) mapa.set(key, { nombre, documento: doc || null, roles: [], fuentes: [] });
+      if (!mapa.has(key))
+        mapa.set(key, {
+          nombre,
+          documento: doc || null,
+          roles: [],
+          fuentes: [],
+        });
       const entry = mapa.get(key);
       if (rol && !entry.roles.includes(rol)) entry.roles.push(rol);
       if (fuente && !entry.fuentes.includes(fuente)) entry.fuentes.push(fuente);
       if (doc && !entry.documento) entry.documento = doc;
     };
 
-    // Representantes legales (cámara)
-    (camara?.representantes_legales || []).forEach(r =>
-      agregar(r.nombre, r.documento, r.cargo || 'Representante Legal', 'Cámara de Comercio')
+    (camara?.representantes_legales || []).forEach((r) =>
+      agregar(
+        r.nombre,
+        r.documento,
+        r.cargo || "Representante Legal",
+        "Cámara de Comercio",
+      ),
     );
-
-    // Junta directiva (cámara)
-    (camara?.junta_directiva || []).forEach(j =>
-      agregar(j.nombre, j.documento, `Junta: ${j.cargo || 'Miembro'}`, 'Cámara de Comercio')
+    (camara?.junta_directiva || []).forEach((j) =>
+      agregar(
+        j.nombre,
+        j.documento,
+        `Junta: ${j.cargo || "Miembro"}`,
+        "Cámara de Comercio",
+      ),
     );
-
-    // Revisor fiscal
     if (camara?.revisor_fiscal?.nombre)
-      agregar(camara.revisor_fiscal.nombre, camara.revisor_fiscal.documento, 'Revisor Fiscal', 'Cámara de Comercio');
-
-    // Socios/accionistas (cámara)
-    (camara?.socios_o_accionistas || []).forEach(s =>
-      agregar(s.nombre, s.documento, `Socio ${s.porcentaje ? s.porcentaje + '%' : ''}`.trim(), 'Cámara de Comercio')
+      agregar(
+        camara.revisor_fiscal.nombre,
+        camara.revisor_fiscal.documento,
+        "Revisor Fiscal",
+        "Cámara de Comercio",
+      );
+    (camara?.socios_o_accionistas || []).forEach((s) =>
+      agregar(
+        s.nombre,
+        s.documento,
+        `Socio ${s.porcentaje ? s.porcentaje + "%" : ""}`.trim(),
+        "Cámara de Comercio",
+      ),
     );
-
-    // Beneficiarios finales (DOF)
-    (dof?.beneficiarios_finales || []).forEach(b => {
+    (dof?.beneficiarios_finales || []).forEach((b) => {
       const rol = b.tipo_control
-        ? `Beneficiario Final (${b.porcentaje_participacion || '?'}% - ${b.tipo_control})`
-        : 'Beneficiario Final';
-      agregar(b.nombre_completo, b.numero_documento, rol, 'DOF');
-      if (b.pep === 'SI' && b.nombre_completo) {
+        ? `Beneficiario Final (${b.porcentaje_participacion || "?"}% - ${b.tipo_control})`
+        : "Beneficiario Final";
+      agregar(b.nombre_completo, b.numero_documento, rol, "DOF");
+      if (b.pep === "SI" && b.nombre_completo) {
         const entry = mapa.get(b.nombre_completo.toLowerCase().trim());
-        if (entry) { entry.es_pep = true; entry.cargo_pep = b.cargo_pep || null; }
+        if (entry) {
+          entry.es_pep = true;
+          entry.cargo_pep = b.cargo_pep || null;
+        }
       }
     });
-
-    // Titular de la cédula
     if (cedula?.nombre_completo)
-      agregar(cedula.nombre_completo, cedula.numero_cedula, 'Titular Cédula', 'Cédula');
+      agregar(
+        cedula.nombre_completo,
+        cedula.numero_cedula,
+        "Titular Cédula",
+        "Cédula",
+      );
 
     return Array.from(mapa.values());
   })();
 
   // ── Datos para búsqueda en listas restrictivas ───────────────────────────────
   const datos_busqueda = {
-    // Identificadores únicos a buscar
     cedulas_a_buscar: [
-      ...new Set([
-        cedula?.numero_cedula,
-        ...(personas_vinculadas.map(p => p.documento).filter(Boolean)),
-      ].filter(Boolean))
+      ...new Set(
+        [
+          cedula?.numero_cedula,
+          ...personas_vinculadas.map((p) => p.documento).filter(Boolean),
+        ].filter(Boolean),
+      ),
     ],
+
     nits_a_buscar: [
-      ...new Set([
-        normalizar_nit(camara?.nit),
-        normalizar_nit(rut?.nit),
-        ...(camara?.socios_o_accionistas || [])
-          .filter(s => s.tipo === 'juridica')
-          .map(s => s.documento)
-          .filter(Boolean),
-        ...(dof?.vehiculos_interpuestos || []),
-      ].filter(Boolean))
+      ...new Set(
+        [
+          normalizar_nit(camara?.nit),
+          normalizar_nit(rut?.nit),
+          ...(camara?.socios_o_accionistas || [])
+            .filter((s) => s.tipo === "juridica")
+            .map((s) => s.documento)
+            .filter(Boolean),
+          ...(dof?.vehiculos_interpuestos || []),
+        ].filter(Boolean),
+      ),
     ],
+
     nombres_a_buscar: [
-      ...new Set(personas_vinculadas.map(p => p.nombre).filter(Boolean))
+      ...new Set(personas_vinculadas.map((p) => p.nombre).filter(Boolean)),
     ],
+
     razones_sociales_a_buscar: [
-      ...new Set([
-        camara?.razon_social,
-        rut?.razon_social,
-        camara?.nombre_comercial,
-        ...(camara?.socios_o_accionistas || [])
-          .filter(s => s.tipo === 'juridica')
-          .map(s => s.nombre)
-          .filter(Boolean),
-      ].filter(Boolean))
+      ...new Set(
+        [
+          camara?.razon_social,
+          rut?.razon_social,
+          camara?.nombre_comercial,
+          ...(camara?.socios_o_accionistas || [])
+            .filter((s) => s.tipo === "juridica")
+            .map((s) => s.nombre)
+            .filter(Boolean),
+        ].filter(Boolean),
+      ),
     ],
   };
 
   // ── Alertas e inconsistencias cruzadas ────────────────────────────────────────
   const alertas = [];
 
-  // NIT inconsistente
-  if (camara?.nit && rut?.nit && normalizar_nit(camara.nit) !== normalizar_nit(rut.nit))
-    alertas.push({ nivel: 'CRITICO', mensaje: `NIT difiere: Cámara (${camara.nit}) vs RUT (${rut.nit})` });
+  if (
+    camara?.nit &&
+    rut?.nit &&
+    normalizar_nit(camara.nit) !== normalizar_nit(rut.nit)
+  )
+    alertas.push({
+      nivel: "CRITICO",
+      mensaje: `NIT difiere: Cámara (${camara.nit}) vs RUT (${rut.nit})`,
+    });
 
-  // Razón social inconsistente
-  if (camara?.razon_social && rut?.razon_social &&
-    normalizar_texto(camara.razon_social) !== normalizar_texto(rut.razon_social))
-    alertas.push({ nivel: 'MEDIO', mensaje: `Razón social difiere: Cámara ("${camara.razon_social}") vs RUT ("${rut.razon_social}")` });
+  if (
+    camara?.razon_social &&
+    rut?.razon_social &&
+    normalizar_texto(camara.razon_social) !== normalizar_texto(rut.razon_social)
+  )
+    alertas.push({
+      nivel: "MEDIO",
+      mensaje: `Razón social difiere: Cámara ("${camara.razon_social}") vs RUT ("${rut.razon_social}")`,
+    });
 
-  // Titular cédula no es representante
   if (cedula?.nombre_completo && camara?.representantes_legales?.length > 0) {
-    const estaEnCamara = camara.representantes_legales.some(r =>
-      sonNombresSimilares(r.nombre, cedula.nombre_completo)
+    const estaEnCamara = camara.representantes_legales.some((r) =>
+      sonNombresSimilares(r.nombre, cedula.nombre_completo),
     );
     if (!estaEnCamara)
-      alertas.push({ nivel: 'MEDIO', mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no aparece como representante legal en la Cámara de Comercio` });
+      alertas.push({
+        nivel: "MEDIO",
+        mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no aparece como representante legal en la Cámara de Comercio`,
+      });
   }
 
-  // Titular cédula no está en DOF
   if (cedula?.nombre_completo && dof?.beneficiarios_finales?.length > 0) {
-    const estaEnDof = dof.beneficiarios_finales.some(b =>
-      sonNombresSimilares(b.nombre_completo, cedula.nombre_completo)
+    const estaEnDof = dof.beneficiarios_finales.some((b) =>
+      sonNombresSimilares(b.nombre_completo, cedula.nombre_completo),
     );
     if (!estaEnDof)
-      alertas.push({ nivel: 'INFO', mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no figura como beneficiario final en el DOF` });
+      alertas.push({
+        nivel: "INFO",
+        mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no figura como beneficiario final en el DOF`,
+      });
   }
 
-  // NIT de cédula (número de documento) vs NIT del RUT si es persona natural
-  if (cedula?.numero_cedula && rut?.tipo_contribuyente === 'natural' && rut?.numero_documento) {
-    if (cedula.numero_cedula.replace(/\D/g, '') !== rut.numero_documento.replace(/\D/g, ''))
-      alertas.push({ nivel: 'CRITICO', mensaje: `Número de cédula difiere: Cédula (${cedula.numero_cedula}) vs RUT (${rut.numero_documento})` });
+  if (
+    cedula?.numero_cedula &&
+    rut?.tipo_contribuyente === "natural" &&
+    rut?.numero_documento
+  ) {
+    if (
+      cedula.numero_cedula.replace(/\D/g, "") !==
+      rut.numero_documento.replace(/\D/g, "")
+    )
+      alertas.push({
+        nivel: "CRITICO",
+        mensaje: `Número de cédula difiere: Cédula (${cedula.numero_cedula}) vs RUT (${rut.numero_documento})`,
+      });
   }
 
-  // Matrícula vencida
-  if (camara?.estado_matricula && camara.estado_matricula !== 'ACTIVA')
-    alertas.push({ nivel: 'CRITICO', mensaje: `Matrícula mercantil en estado: ${camara.estado_matricula}` });
+  if (camara?.estado_matricula && camara.estado_matricula !== "ACTIVA")
+    alertas.push({
+      nivel: "CRITICO",
+      mensaje: `Matrícula mercantil en estado: ${camara.estado_matricula}`,
+    });
 
-  // RUT suspendido o cancelado
-  if (rut?.estado_rut && rut.estado_rut !== 'ACTIVO')
-    alertas.push({ nivel: 'CRITICO', mensaje: `RUT en estado: ${rut.estado_rut}` });
+  if (rut?.estado_rut && rut.estado_rut !== "ACTIVO")
+    alertas.push({
+      nivel: "CRITICO",
+      mensaje: `RUT en estado: ${rut.estado_rut}`,
+    });
 
-  // Señales de alteración en cédula
   if (cedula?.senales_alteracion?.length > 0)
-    alertas.push({ nivel: 'CRITICO', mensaje: `Señales de posible alteración en la cédula: ${cedula.senales_alteracion.join(' / ')}` });
+    alertas.push({
+      nivel: "CRITICO",
+      mensaje: `Señales de posible alteración en la cédula: ${cedula.senales_alteracion.join(" / ")}`,
+    });
 
-  // PEP detectado
-  const peps = personas_vinculadas.filter(p => p.es_pep);
+  const peps = personas_vinculadas.filter((p) => p.es_pep);
   if (peps.length > 0)
-    alertas.push({ nivel: 'ALTO', mensaje: `PEP detectado(s): ${peps.map(p => `${p.nombre} (${p.cargo_pep || 'cargo no especificado'})`).join(', ')}` });
+    alertas.push({
+      nivel: "ALTO",
+      mensaje: `PEP detectado(s): ${peps.map((p) => `${p.nombre} (${p.cargo_pep || "cargo no especificado"})`).join(", ")}`,
+    });
 
-  // Inconsistencias reportadas por la IA en cada doc
   [
-    { doc: cedula,  fuente: 'Cédula' },
-    { doc: camara,  fuente: 'Cámara de Comercio' },
-    { doc: rut,     fuente: 'RUT' },
-    { doc: dof,     fuente: 'DOF' },
+    { doc: cedula, fuente: "Cédula" },
+    { doc: camara, fuente: "Cámara de Comercio" },
+    { doc: rut, fuente: "RUT" },
+    { doc: dof, fuente: "DOF" },
   ].forEach(({ doc, fuente }) => {
-    (doc?.inconsistencias || []).forEach(inc =>
-      alertas.push({ nivel: 'INFO', mensaje: `[${fuente}] ${inc}` })
+    (doc?.inconsistencias || []).forEach((inc) =>
+      alertas.push({ nivel: "INFO", mensaje: `[${fuente}] ${inc}` }),
     );
   });
 
@@ -577,13 +799,19 @@ function generarResumen(resultados) {
     personas_vinculadas,
     datos_busqueda,
     alertas,
-    documentos_analizados: Object.keys(resultados).filter(k => resultados[k].ok),
-    documentos_con_error:  Object.keys(resultados).filter(k => !resultados[k].ok),
+    documentos_analizados: Object.keys(resultados).filter(
+      (k) => resultados[k].ok,
+    ),
+    documentos_con_error: Object.keys(resultados).filter(
+      (k) => !resultados[k].ok,
+    ),
     confianza_promedio: (() => {
       const vals = Object.values(resultados)
-        .filter(r => r.ok && typeof r.datos?.confianza === 'number')
-        .map(r => r.datos.confianza);
-      return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null;
+        .filter((r) => r.ok && typeof r.datos?.confianza === "number")
+        .map((r) => r.datos.confianza);
+      return vals.length
+        ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length)
+        : null;
     })(),
   };
 }
@@ -591,14 +819,20 @@ function generarResumen(resultados) {
 // ─── Utilidades ──────────────────────────────────────────────────────────────────
 function normalizar_nit(nit) {
   if (!nit) return null;
-  return nit.toString().replace(/[^0-9\-]/g, '').trim();
+  return nit
+    .toString()
+    .replace(/[^0-9\-]/g, "")
+    .trim();
 }
 
 function normalizar_texto(str) {
-  if (!str) return '';
-  return str.toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quitar tildes
-    .replace(/\s+/g, ' ');
+  if (!str) return "";
+  return str
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 function sonNombresSimilares(a, b) {
@@ -606,9 +840,8 @@ function sonNombresSimilares(a, b) {
   const na = normalizar_texto(a);
   const nb = normalizar_texto(b);
   if (na === nb) return true;
-  // Verificar si al menos 2 palabras significativas coinciden
-  const palabrasA = na.split(' ').filter(p => p.length > 2);
-  const palabrasB = nb.split(' ').filter(p => p.length > 2);
-  const coincidencias = palabrasA.filter(p => palabrasB.includes(p));
+  const palabrasA = na.split(" ").filter((p) => p.length > 2);
+  const palabrasB = nb.split(" ").filter((p) => p.length > 2);
+  const coincidencias = palabrasA.filter((p) => palabrasB.includes(p));
   return coincidencias.length >= 2;
 }
