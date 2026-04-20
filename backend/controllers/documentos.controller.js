@@ -1,7 +1,7 @@
 const Groq = require("groq-sdk");
 const fs = require("fs");
 const pdfParse = require("pdf-parse");
-const mammoth = require("mammoth"); // npm install mammoth
+const mammoth = require("mammoth");
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -195,7 +195,7 @@ Si un campo no es visible o no aplica, usa null. Para arrays vacíos usa []. El 
 Responde SOLO con el JSON, sin texto adicional, sin bloques de código markdown.`,
 };
 
-// ─── MIME types soportados ──────────────────────────────────────────────────────
+// ─── MIME types ─────────────────────────────────────────────────────────────────
 const MIME_IMAGENES = {
   "image/jpeg": "image/jpeg",
   "image/jpg": "image/jpeg",
@@ -204,49 +204,48 @@ const MIME_IMAGENES = {
   "image/gif": "image/gif",
 };
 
-// NUEVO: MIME types de Word
 const MIME_WORD = [
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-  "application/msword", // .doc legacy
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/msword",
 ];
 
-// NUEVO: qué tipos de documento aceptan Word
 const TIPOS_ACEPTA_WORD = ["dof"];
 
-// ─── Extracción de texto de PDF ─────────────────────────────────────────────────
-// FIX: reescrito con Promise explícita para evitar que se quede pegado
+// ─── FIX 1: Extracción de texto de PDF con timeout real ─────────────────────────
+// pdf-parse internamente no respeta el abort, pero si ponemos { max: 0 } en lugar
+// de { max: 10 } y capturamos el buffer, podemos al menos cortar después.
+// La solución más robusta es correr pdfParse en una Promise race contra un timeout.
 async function extraerTextoPdf(filePath) {
   const buffer = fs.readFileSync(filePath);
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(
-        new Error(
-          "El PDF tardó demasiado en procesarse. Puede ser un PDF escaneado o protegido. " +
-            "Por favor suba una foto/imagen del documento.",
-        ),
+  const parsePromise = pdfParse(buffer, { max: 10 })
+    .then((data) => data.text?.trim() || "")
+    .catch((err) => {
+      throw new Error(
+        `Error leyendo el PDF: ${err.message}. Intente subir una imagen del documento.`,
       );
-    }, 20000);
+    });
 
-    pdfParse(buffer, { max: 10 })
-      .then((data) => {
-        clearTimeout(timer);
-        resolve(data.text?.trim() || "");
-      })
-      .catch((err) => {
-        clearTimeout(timer);
-        // pdfParse puede lanzar errores en PDFs con password, dañados o con estructura inusual
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(
+      () =>
         reject(
           new Error(
-            `Error leyendo el PDF: ${err.message}. ` +
-              "Intente subir una imagen o foto del documento.",
+            "El PDF tardó demasiado en procesarse. Puede ser un PDF escaneado o protegido. " +
+              "Por favor suba una foto/imagen del documento.",
           ),
-        );
-      });
-  });
+        ),
+      // FIX: reducido a 15 s; si el proceso hijo de pdf-parse no termina,
+      // Node.js igual seguirá corriendo hasta que el proceso hijo muera, pero
+      // la respuesta HTTP ya se habrá enviado con el error — no queda colgado.
+      15000,
+    ),
+  );
+
+  return Promise.race([parsePromise, timeoutPromise]);
 }
 
-// NUEVO: Extracción de texto de Word (.docx / .doc)
+// ─── Extracción de texto de Word ─────────────────────────────────────────────────
 async function extraerTextoWord(filePath) {
   let result;
   try {
@@ -270,7 +269,7 @@ async function extraerTextoWord(filePath) {
   return texto;
 }
 
-// ─── Adaptación del prompt para texto (PDF o Word) ──────────────────────────────
+// ─── Adaptación del prompt para texto ────────────────────────────────────────────
 function adaptarPromptParaTexto(prompt) {
   return prompt
     .replace(
@@ -286,7 +285,7 @@ function adaptarPromptParaTexto(prompt) {
     );
 }
 
-// ─── Llamada principal a Groq ────────────────────────────────────────────────────
+// ─── Llamada a Groq ───────────────────────────────────────────────────────────────
 async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const prompt = PROMPTS[tipoDocumento];
   if (!prompt)
@@ -301,7 +300,6 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
   const mime = mimeType?.toLowerCase();
   let completion;
 
-  // ── PDF ──────────────────────────────────────────────────────────────────────
   if (mime === "application/pdf") {
     console.log(`📄 Extrayendo texto del PDF: ${tipoDocumento}`);
     const textoPdf = await extraerTextoPdf(filePath);
@@ -324,8 +322,6 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
       temperature: 0.1,
       max_tokens: 4096,
     });
-
-    // ── WORD (.docx / .doc) — solo para tipos que lo permiten ────────────────────
   } else if (MIME_WORD.includes(mime)) {
     if (!TIPOS_ACEPTA_WORD.includes(tipoDocumento)) {
       throw new Error(
@@ -348,8 +344,6 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
       temperature: 0.1,
       max_tokens: 4096,
     });
-
-    // ── IMAGEN ───────────────────────────────────────────────────────────────────
   } else if (MIME_IMAGENES[mime]) {
     console.log(`🖼️ Analizando imagen: ${tipoDocumento}`);
     const fileBuffer = fs.readFileSync(filePath);
@@ -374,8 +368,6 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
       temperature: 0.1,
       max_tokens: 4096,
     });
-
-    // ── FORMATO NO SOPORTADO ─────────────────────────────────────────────────────
   } else {
     const formatosAceptados =
       tipoDocumento === "dof"
@@ -386,11 +378,9 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
     );
   }
 
-  // ── Parseo de la respuesta ───────────────────────────────────────────────────
   const rawContent = completion.choices?.[0]?.message?.content;
   if (!rawContent) throw new Error("La IA no devolvió respuesta.");
 
-  // FIX: limpiar posibles bloques markdown antes de parsear
   const cleaned = rawContent
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```$/i, "")
@@ -412,7 +402,6 @@ async function analizarDocumentoConGroq(filePath, tipoDocumento, mimeType) {
 
 // ─── Handler principal ───────────────────────────────────────────────────────────
 exports.analizarDocumentos = async (req, res) => {
-  // FIX: envolver todo en try/catch y asegurar que res siempre recibe respuesta
   try {
     const archivos = req.files;
     if (!archivos || Object.keys(archivos).length === 0) {
@@ -423,8 +412,6 @@ exports.analizarDocumentos = async (req, res) => {
 
     const resultados = {};
 
-    // FIX: usar Promise.allSettled en lugar de Promise.all para que un fallo
-    // en un documento no cancele los demás ni deje el handler colgado
     const promesas = Object.entries(archivos).map(([campo, fileArray]) => {
       const file = Array.isArray(fileArray) ? fileArray[0] : fileArray;
 
@@ -437,7 +424,6 @@ exports.analizarDocumentos = async (req, res) => {
           resultados[campo] = { ok: false, error: err.message };
         })
         .finally(() => {
-          // Limpiar archivo temporal sin importar el resultado
           try {
             if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
           } catch (unlinkErr) {
@@ -449,12 +435,10 @@ exports.analizarDocumentos = async (req, res) => {
         });
     });
 
-    // FIX: allSettled garantiza que esperamos TODAS las promesas aunque fallen
     await Promise.allSettled(promesas);
 
     const resumen = generarResumen(resultados);
 
-    // FIX: asegurarse de no llamar res.json() dos veces
     if (!res.headersSent) {
       res.json({ resultados, resumen });
     }
@@ -469,7 +453,35 @@ exports.analizarDocumentos = async (req, res) => {
   }
 };
 
-// ─── Resumen consolidado para listas restrictivas ────────────────────────────────
+// ─── FIX 2: Coerción segura de valores ──────────────────────────────────────────
+// Convierte cualquier valor a string legible. Si el LLM devuelve un objeto
+// donde se esperaba un string (ej: { "codigo": "4711", "descripcion": "..." })
+// esto lo serializa en lugar de producir "[object Object]".
+function coerceString(val) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === "string") return val;
+  if (typeof val === "number" || typeof val === "boolean") return String(val);
+  // Objeto o array inesperado → serializar compacto para que sea inspeccionable
+  return JSON.stringify(val);
+}
+
+// Versión para campos que deben ser específicamente strings de texto simple.
+// Si el LLM devuelve un objeto con un campo canónico conocido, lo extrae.
+function extraerCampoString(val, ...claves) {
+  if (val === null || val === undefined) return null;
+  if (typeof val === "string") return val;
+  if (typeof val === "object" && !Array.isArray(val)) {
+    // Intentar extraer por clave conocida (ej: "descripcion", "nombre", "valor")
+    for (const k of claves) {
+      if (val[k] !== undefined) return coerceString(val[k]);
+    }
+    // Ninguna clave conocida: serializar compacto
+    return JSON.stringify(val);
+  }
+  return coerceString(val);
+}
+
+// ─── Resumen consolidado ─────────────────────────────────────────────────────────
 function generarResumen(resultados) {
   const cedula = resultados.cedula?.ok ? resultados.cedula.datos : null;
   const camara = resultados.camara_comercio?.ok
@@ -478,131 +490,215 @@ function generarResumen(resultados) {
   const rut = resultados.rut?.ok ? resultados.rut.datos : null;
   const dof = resultados.dof?.ok ? resultados.dof.datos : null;
 
-  // ── Identidad de la persona natural ──────────────────────────────────────────
+  // ── Nombre completo desde RUT (persona natural) ───────────────────────────────
+  // FIX: cada campo del RUT se pasa por coerceString antes de concatenar
+  const nombreDesdeRut =
+    rut?.tipo_contribuyente === "natural"
+      ? [
+          coerceString(rut.primer_nombre),
+          coerceString(rut.otros_nombres),
+          coerceString(rut.primer_apellido),
+          coerceString(rut.segundo_apellido),
+        ]
+          .filter(Boolean)
+          .join(" ") || null
+      : null;
+
+  // ── Persona natural ────────────────────────────────────────────────────────────
   const persona_natural = (() => {
     const nombre_completo =
-      cedula?.nombre_completo ||
-      (rut?.tipo_contribuyente === "natural"
-        ? [
-            rut.primer_nombre,
-            rut.otros_nombres,
-            rut.primer_apellido,
-            rut.segundo_apellido,
-          ]
-            .filter(Boolean)
-            .join(" ")
-        : null) ||
-      dof?.beneficiarios_finales?.find((b) => b.tipo_persona === "natural")
-        ?.nombre_completo ||
+      coerceString(cedula?.nombre_completo) ||
+      nombreDesdeRut ||
+      coerceString(
+        dof?.beneficiarios_finales?.find((b) => b.tipo_persona === "natural")
+          ?.nombre_completo,
+      ) ||
       null;
 
     const numero_cedula =
-      cedula?.numero_cedula ||
-      (rut?.tipo_contribuyente === "natural" ? rut.numero_documento : null) ||
+      coerceString(cedula?.numero_cedula) ||
+      (rut?.tipo_contribuyente === "natural"
+        ? coerceString(rut.numero_documento)
+        : null) ||
       null;
 
     if (!nombre_completo && !numero_cedula) return null;
 
     return {
       nombre_completo,
-      primer_apellido: cedula?.primer_apellido || rut?.primer_apellido || null,
+      primer_apellido:
+        coerceString(cedula?.primer_apellido) ||
+        coerceString(rut?.primer_apellido) ||
+        null,
       segundo_apellido:
-        cedula?.segundo_apellido || rut?.segundo_apellido || null,
-      primer_nombre: cedula?.primer_nombre || rut?.primer_nombre || null,
-      segundo_nombre: cedula?.segundo_nombre || rut?.otros_nombres || null,
+        coerceString(cedula?.segundo_apellido) ||
+        coerceString(rut?.segundo_apellido) ||
+        null,
+      primer_nombre:
+        coerceString(cedula?.primer_nombre) ||
+        coerceString(rut?.primer_nombre) ||
+        null,
+      segundo_nombre:
+        coerceString(cedula?.segundo_nombre) ||
+        coerceString(rut?.otros_nombres) ||
+        null,
       numero_cedula,
       fecha_nacimiento:
-        cedula?.fecha_nacimiento || rut?.fecha_nacimiento || null,
+        coerceString(cedula?.fecha_nacimiento) ||
+        coerceString(rut?.fecha_nacimiento) ||
+        null,
       lugar_nacimiento:
-        cedula?.lugar_nacimiento || rut?.lugar_nacimiento || null,
-      fecha_expedicion_cedula: cedula?.fecha_expedicion || null,
-      lugar_expedicion_cedula: cedula?.lugar_expedicion || null,
-      sexo: cedula?.sexo || rut?.sexo || null,
-      grupo_sanguineo: cedula?.grupo_sanguineo || null,
+        coerceString(cedula?.lugar_nacimiento) ||
+        coerceString(rut?.lugar_nacimiento) ||
+        null,
+      fecha_expedicion_cedula: coerceString(cedula?.fecha_expedicion) || null,
+      lugar_expedicion_cedula: coerceString(cedula?.lugar_expedicion) || null,
+      sexo: coerceString(cedula?.sexo) || coerceString(rut?.sexo) || null,
+      grupo_sanguineo: coerceString(cedula?.grupo_sanguineo) || null,
       es_pep: dof?.beneficiarios_finales?.some((b) => b.pep === "SI") || null,
       cargo_pep:
-        dof?.beneficiarios_finales?.find((b) => b.pep === "SI")?.cargo_pep ||
-        null,
+        coerceString(
+          dof?.beneficiarios_finales?.find((b) => b.pep === "SI")?.cargo_pep,
+        ) || null,
       es_representante_legal:
         camara?.representantes_legales?.some(
           (r) =>
             r.nombre &&
             cedula?.nombre_completo &&
-            sonNombresSimilares(r.nombre, cedula.nombre_completo),
+            sonNombresSimilares(
+              coerceString(r.nombre),
+              coerceString(cedula.nombre_completo),
+            ),
         ) || null,
       cargo_en_empresa:
-        camara?.representantes_legales?.find(
-          (r) =>
-            r.nombre &&
-            cedula?.nombre_completo &&
-            sonNombresSimilares(r.nombre, cedula.nombre_completo),
-        )?.cargo || null,
+        coerceString(
+          camara?.representantes_legales?.find(
+            (r) =>
+              r.nombre &&
+              cedula?.nombre_completo &&
+              sonNombresSimilares(
+                coerceString(r.nombre),
+                coerceString(cedula.nombre_completo),
+              ),
+          )?.cargo,
+        ) || null,
     };
   })();
 
-  // ── Identidad de la empresa ───────────────────────────────────────────────────
+  // ── Empresa ────────────────────────────────────────────────────────────────────
   const empresa = (() => {
-    const razon_social = camara?.razon_social || rut?.razon_social || null;
+    const razon_social =
+      coerceString(camara?.razon_social) ||
+      coerceString(rut?.razon_social) ||
+      null;
     const nit = normalizar_nit(camara?.nit || rut?.nit);
 
     if (!razon_social && !nit) return null;
 
+    // FIX: actividades_economicas — el LLM a veces devuelve el array entero
+    // como valor de un campo string. Nos aseguramos de que sea array.
+    const actividades = Array.isArray(rut?.actividades_economicas)
+      ? rut.actividades_economicas
+      : [];
+
+    const actividadPrincipal = actividades.find((a) => a.principal === "SI");
+
     return {
       razon_social,
       nombre_comercial:
-        camara?.nombre_comercial || rut?.nombre_comercial || null,
-      sigla: camara?.sigla || null,
+        coerceString(camara?.nombre_comercial) ||
+        coerceString(rut?.nombre_comercial) ||
+        null,
+      sigla: coerceString(camara?.sigla) || null,
       nit,
-      tipo_sociedad: camara?.tipo_sociedad || null,
-      numero_matricula: camara?.numero_matricula || null,
-      estado_matricula: camara?.estado_matricula || null,
-      fecha_matricula: camara?.fecha_matricula || null,
-      fecha_renovacion: camara?.fecha_renovacion || null,
-      domicilio: camara?.domicilio || rut?.municipio_fiscal || null,
-      direccion: camara?.direccion || rut?.direccion_fiscal || null,
+      tipo_sociedad: coerceString(camara?.tipo_sociedad) || null,
+      numero_matricula: coerceString(camara?.numero_matricula) || null,
+      estado_matricula: coerceString(camara?.estado_matricula) || null,
+      fecha_matricula: coerceString(camara?.fecha_matricula) || null,
+      fecha_renovacion: coerceString(camara?.fecha_renovacion) || null,
+      domicilio:
+        coerceString(camara?.domicilio) ||
+        coerceString(rut?.municipio_fiscal) ||
+        null,
+      direccion:
+        coerceString(camara?.direccion) ||
+        coerceString(rut?.direccion_fiscal) ||
+        null,
       actividad_principal_ciiu:
-        camara?.actividad_economica_ciiu ||
-        rut?.actividades_economicas?.find((a) => a.principal === "SI")
-          ?.codigo_ciiu ||
+        coerceString(camara?.actividad_economica_ciiu) ||
+        // FIX: codigo_ciiu puede ser objeto si el modelo anidó datos
+        extraerCampoString(actividadPrincipal?.codigo_ciiu, "codigo", "code") ||
         null,
       descripcion_actividad:
-        rut?.actividades_economicas?.find((a) => a.principal === "SI")
-          ?.descripcion || null,
-      todas_actividades_ciiu: rut?.actividades_economicas || [],
-      responsabilidades_tributarias: rut?.responsabilidades_tributarias || [],
-      regimen_tributario: rut?.regimen_tributario || null,
-      gran_contribuyente: rut?.gran_contribuyente || null,
-      estado_rut: rut?.estado_rut || null,
-      capital_suscrito: camara?.capital_suscrito || null,
-      capital_pagado: camara?.capital_pagado || null,
+        // FIX: descripcion puede ser objeto
+        extraerCampoString(
+          actividadPrincipal?.descripcion,
+          "descripcion",
+          "description",
+          "texto",
+        ) || null,
+      // FIX: normalizar cada elemento del array de actividades
+      todas_actividades_ciiu: actividades.map((a) => ({
+        codigo_ciiu: extraerCampoString(a.codigo_ciiu, "codigo", "code"),
+        descripcion: extraerCampoString(
+          a.descripcion,
+          "descripcion",
+          "description",
+          "texto",
+        ),
+        principal: coerceString(a.principal),
+      })),
+      // FIX: normalizar responsabilidades
+      responsabilidades_tributarias: (Array.isArray(
+        rut?.responsabilidades_tributarias,
+      )
+        ? rut.responsabilidades_tributarias
+        : []
+      ).map((r) => ({
+        codigo: extraerCampoString(r.codigo, "codigo", "code"),
+        descripcion: extraerCampoString(
+          r.descripcion,
+          "descripcion",
+          "description",
+          "texto",
+        ),
+      })),
+      regimen_tributario: coerceString(rut?.regimen_tributario) || null,
+      gran_contribuyente: coerceString(rut?.gran_contribuyente) || null,
+      estado_rut: coerceString(rut?.estado_rut) || null,
+      capital_suscrito: coerceString(camara?.capital_suscrito) || null,
+      capital_pagado: coerceString(camara?.capital_pagado) || null,
     };
   })();
 
-  // ── Personas vinculadas a la empresa (para buscar en listas) ─────────────────
+  // ── Personas vinculadas ────────────────────────────────────────────────────────
   const personas_vinculadas = (() => {
     const mapa = new Map();
 
     const agregar = (nombre, doc, rol, fuente) => {
-      if (!nombre) return;
-      const key = nombre.toLowerCase().trim();
+      // FIX: coerce antes de usar como clave o comparar
+      const nombreStr = coerceString(nombre);
+      const docStr = coerceString(doc);
+      if (!nombreStr) return;
+      const key = nombreStr.toLowerCase().trim();
       if (!mapa.has(key))
         mapa.set(key, {
-          nombre,
-          documento: doc || null,
+          nombre: nombreStr,
+          documento: docStr || null,
           roles: [],
           fuentes: [],
         });
       const entry = mapa.get(key);
       if (rol && !entry.roles.includes(rol)) entry.roles.push(rol);
       if (fuente && !entry.fuentes.includes(fuente)) entry.fuentes.push(fuente);
-      if (doc && !entry.documento) entry.documento = doc;
+      if (docStr && !entry.documento) entry.documento = docStr;
     };
 
     (camara?.representantes_legales || []).forEach((r) =>
       agregar(
         r.nombre,
         r.documento,
-        r.cargo || "Representante Legal",
+        coerceString(r.cargo) || "Representante Legal",
         "Cámara de Comercio",
       ),
     );
@@ -610,7 +706,7 @@ function generarResumen(resultados) {
       agregar(
         j.nombre,
         j.documento,
-        `Junta: ${j.cargo || "Miembro"}`,
+        `Junta: ${coerceString(j.cargo) || "Miembro"}`,
         "Cámara de Comercio",
       ),
     );
@@ -621,24 +717,29 @@ function generarResumen(resultados) {
         "Revisor Fiscal",
         "Cámara de Comercio",
       );
-    (camara?.socios_o_accionistas || []).forEach((s) =>
+    (camara?.socios_o_accionistas || []).forEach((s) => {
+      const porcentaje = coerceString(s.porcentaje);
       agregar(
         s.nombre,
         s.documento,
-        `Socio ${s.porcentaje ? s.porcentaje + "%" : ""}`.trim(),
+        `Socio ${porcentaje ? porcentaje + "%" : ""}`.trim(),
         "Cámara de Comercio",
-      ),
-    );
+      );
+    });
     (dof?.beneficiarios_finales || []).forEach((b) => {
-      const rol = b.tipo_control
-        ? `Beneficiario Final (${b.porcentaje_participacion || "?"}% - ${b.tipo_control})`
+      const porcentaje = coerceString(b.porcentaje_participacion);
+      const tipoControl = coerceString(b.tipo_control);
+      const rol = tipoControl
+        ? `Beneficiario Final (${porcentaje || "?"}% - ${tipoControl})`
         : "Beneficiario Final";
       agregar(b.nombre_completo, b.numero_documento, rol, "DOF");
       if (b.pep === "SI" && b.nombre_completo) {
-        const entry = mapa.get(b.nombre_completo.toLowerCase().trim());
+        const entry = mapa.get(
+          coerceString(b.nombre_completo)?.toLowerCase().trim(),
+        );
         if (entry) {
           entry.es_pep = true;
-          entry.cargo_pep = b.cargo_pep || null;
+          entry.cargo_pep = coerceString(b.cargo_pep) || null;
         }
       }
     });
@@ -653,13 +754,15 @@ function generarResumen(resultados) {
     return Array.from(mapa.values());
   })();
 
-  // ── Datos para búsqueda en listas restrictivas ───────────────────────────────
+  // ── Datos para búsqueda en listas ─────────────────────────────────────────────
   const datos_busqueda = {
     cedulas_a_buscar: [
       ...new Set(
         [
-          cedula?.numero_cedula,
-          ...personas_vinculadas.map((p) => p.documento).filter(Boolean),
+          coerceString(cedula?.numero_cedula),
+          ...personas_vinculadas
+            .map((p) => coerceString(p.documento))
+            .filter(Boolean),
         ].filter(Boolean),
       ),
     ],
@@ -671,33 +774,37 @@ function generarResumen(resultados) {
           normalizar_nit(rut?.nit),
           ...(camara?.socios_o_accionistas || [])
             .filter((s) => s.tipo === "juridica")
-            .map((s) => s.documento)
+            .map((s) => coerceString(s.documento))
             .filter(Boolean),
-          ...(dof?.vehiculos_interpuestos || []),
+          ...(dof?.vehiculos_interpuestos || [])
+            .map(coerceString)
+            .filter(Boolean),
         ].filter(Boolean),
       ),
     ],
 
     nombres_a_buscar: [
-      ...new Set(personas_vinculadas.map((p) => p.nombre).filter(Boolean)),
+      ...new Set(
+        personas_vinculadas.map((p) => coerceString(p.nombre)).filter(Boolean),
+      ),
     ],
 
     razones_sociales_a_buscar: [
       ...new Set(
         [
-          camara?.razon_social,
-          rut?.razon_social,
-          camara?.nombre_comercial,
+          coerceString(camara?.razon_social),
+          coerceString(rut?.razon_social),
+          coerceString(camara?.nombre_comercial),
           ...(camara?.socios_o_accionistas || [])
             .filter((s) => s.tipo === "juridica")
-            .map((s) => s.nombre)
+            .map((s) => coerceString(s.nombre))
             .filter(Boolean),
         ].filter(Boolean),
       ),
     ],
   };
 
-  // ── Alertas e inconsistencias cruzadas ────────────────────────────────────────
+  // ── Alertas ────────────────────────────────────────────────────────────────────
   const alertas = [];
 
   if (
@@ -713,32 +820,39 @@ function generarResumen(resultados) {
   if (
     camara?.razon_social &&
     rut?.razon_social &&
-    normalizar_texto(camara.razon_social) !== normalizar_texto(rut.razon_social)
+    normalizar_texto(coerceString(camara.razon_social)) !==
+      normalizar_texto(coerceString(rut.razon_social))
   )
     alertas.push({
       nivel: "MEDIO",
-      mensaje: `Razón social difiere: Cámara ("${camara.razon_social}") vs RUT ("${rut.razon_social}")`,
+      mensaje: `Razón social difiere: Cámara ("${coerceString(camara.razon_social)}") vs RUT ("${coerceString(rut.razon_social)}")`,
     });
 
   if (cedula?.nombre_completo && camara?.representantes_legales?.length > 0) {
     const estaEnCamara = camara.representantes_legales.some((r) =>
-      sonNombresSimilares(r.nombre, cedula.nombre_completo),
+      sonNombresSimilares(
+        coerceString(r.nombre),
+        coerceString(cedula.nombre_completo),
+      ),
     );
     if (!estaEnCamara)
       alertas.push({
         nivel: "MEDIO",
-        mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no aparece como representante legal en la Cámara de Comercio`,
+        mensaje: `El titular de la cédula ("${coerceString(cedula.nombre_completo)}") no aparece como representante legal en la Cámara de Comercio`,
       });
   }
 
   if (cedula?.nombre_completo && dof?.beneficiarios_finales?.length > 0) {
     const estaEnDof = dof.beneficiarios_finales.some((b) =>
-      sonNombresSimilares(b.nombre_completo, cedula.nombre_completo),
+      sonNombresSimilares(
+        coerceString(b.nombre_completo),
+        coerceString(cedula.nombre_completo),
+      ),
     );
     if (!estaEnDof)
       alertas.push({
         nivel: "INFO",
-        mensaje: `El titular de la cédula ("${cedula.nombre_completo}") no figura como beneficiario final en el DOF`,
+        mensaje: `El titular de la cédula ("${coerceString(cedula.nombre_completo)}") no figura como beneficiario final en el DOF`,
       });
   }
 
@@ -747,10 +861,9 @@ function generarResumen(resultados) {
     rut?.tipo_contribuyente === "natural" &&
     rut?.numero_documento
   ) {
-    if (
-      cedula.numero_cedula.replace(/\D/g, "") !==
-      rut.numero_documento.replace(/\D/g, "")
-    )
+    const cedulaNum = coerceString(cedula.numero_cedula).replace(/\D/g, "");
+    const rutNum = coerceString(rut.numero_documento).replace(/\D/g, "");
+    if (cedulaNum !== rutNum)
       alertas.push({
         nivel: "CRITICO",
         mensaje: `Número de cédula difiere: Cédula (${cedula.numero_cedula}) vs RUT (${rut.numero_documento})`,
@@ -760,26 +873,31 @@ function generarResumen(resultados) {
   if (camara?.estado_matricula && camara.estado_matricula !== "ACTIVA")
     alertas.push({
       nivel: "CRITICO",
-      mensaje: `Matrícula mercantil en estado: ${camara.estado_matricula}`,
+      mensaje: `Matrícula mercantil en estado: ${coerceString(camara.estado_matricula)}`,
     });
 
   if (rut?.estado_rut && rut.estado_rut !== "ACTIVO")
     alertas.push({
       nivel: "CRITICO",
-      mensaje: `RUT en estado: ${rut.estado_rut}`,
+      mensaje: `RUT en estado: ${coerceString(rut.estado_rut)}`,
     });
 
   if (cedula?.senales_alteracion?.length > 0)
     alertas.push({
       nivel: "CRITICO",
-      mensaje: `Señales de posible alteración en la cédula: ${cedula.senales_alteracion.join(" / ")}`,
+      mensaje: `Señales de posible alteración en la cédula: ${cedula.senales_alteracion.map(coerceString).join(" / ")}`,
     });
 
   const peps = personas_vinculadas.filter((p) => p.es_pep);
   if (peps.length > 0)
     alertas.push({
       nivel: "ALTO",
-      mensaje: `PEP detectado(s): ${peps.map((p) => `${p.nombre} (${p.cargo_pep || "cargo no especificado"})`).join(", ")}`,
+      mensaje: `PEP detectado(s): ${peps
+        .map(
+          (p) =>
+            `${coerceString(p.nombre)} (${coerceString(p.cargo_pep) || "cargo no especificado"})`,
+        )
+        .join(", ")}`,
     });
 
   [
@@ -789,7 +907,10 @@ function generarResumen(resultados) {
     { doc: dof, fuente: "DOF" },
   ].forEach(({ doc, fuente }) => {
     (doc?.inconsistencias || []).forEach((inc) =>
-      alertas.push({ nivel: "INFO", mensaje: `[${fuente}] ${inc}` }),
+      alertas.push({
+        nivel: "INFO",
+        mensaje: `[${fuente}] ${coerceString(inc)}`,
+      }),
     );
   });
 
@@ -837,8 +958,8 @@ function normalizar_texto(str) {
 
 function sonNombresSimilares(a, b) {
   if (!a || !b) return false;
-  const na = normalizar_texto(a);
-  const nb = normalizar_texto(b);
+  const na = normalizar_texto(String(a));
+  const nb = normalizar_texto(String(b));
   if (na === nb) return true;
   const palabrasA = na.split(" ").filter((p) => p.length > 2);
   const palabrasB = nb.split(" ").filter((p) => p.length > 2);
