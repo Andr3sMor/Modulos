@@ -174,4 +174,14 @@ export class VerificacionComponent {
   isArray(val: any): boolean {
     return Array.isArray(val);
   }
+
+  formatearValorItem(v: any): string {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      return Object.values(v)
+        .filter(x => x !== null && x !== undefined && x !== '')
+        .join(' — ');
+    }
+    return String(v);
+  }
 }

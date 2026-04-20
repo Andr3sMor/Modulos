@@ -188,7 +188,7 @@
                 </ng-container>
                 <ng-container *ngIf="isArray(item.valor)">
                   <ul class="dato-lista">
-                    <li *ngFor="let v of item.valor">{{ v }}</li>
+                    <li *ngFor="let v of item.valor">{{ formatearValorItem(v) }}</li>
                   </ul>
                 </ng-container>
               </div>

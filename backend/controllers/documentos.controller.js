@@ -412,30 +412,24 @@ exports.analizarDocumentos = async (req, res) => {
 
     const resultados = {};
 
-    const promesas = Object.entries(archivos).map(([campo, fileArray]) => {
+    // Procesar documentos de forma secuencial para no sobrecargar la API de Groq
+    for (const [campo, fileArray] of Object.entries(archivos)) {
       const file = Array.isArray(fileArray) ? fileArray[0] : fileArray;
-
-      return analizarDocumentoConGroq(file.path, campo, file.mimetype)
-        .then((datos) => {
-          resultados[campo] = { ok: true, datos };
-        })
-        .catch((err) => {
-          console.error(`❌ Error analizando ${campo}:`, err.message);
-          resultados[campo] = { ok: false, error: err.message };
-        })
-        .finally(() => {
-          try {
-            if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
-          } catch (unlinkErr) {
-            console.warn(
-              `⚠️ No se pudo eliminar archivo temporal ${file.path}:`,
-              unlinkErr.message,
-            );
-          }
-        });
-    });
-
-    await Promise.allSettled(promesas);
+      console.log(`🔍 Procesando: ${campo} (${file.mimetype})`);
+      try {
+        const datos = await analizarDocumentoConGroq(file.path, campo, file.mimetype);
+        resultados[campo] = { ok: true, datos };
+      } catch (err) {
+        console.error(`❌ Error analizando ${campo}:`, err.message);
+        resultados[campo] = { ok: false, error: err.message };
+      } finally {
+        try {
+          if (fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        } catch (unlinkErr) {
+          console.warn(`⚠️ No se pudo eliminar archivo temporal ${file.path}:`, unlinkErr.message);
+        }
+      }
+    }
 
     const resumen = generarResumen(resultados);
 
