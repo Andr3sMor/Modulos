@@ -931,6 +931,37 @@ function generarResumen(resultados) {
   };
 }
 
+// ─── Endpoints individuales ───────────────────────────────────────────────────────
+exports.analizarUnDocumento = async (req, res) => {
+  const archivo = req.file;
+  const tipo = req.body?.tipo;
+
+  if (!archivo) return res.status(400).json({ ok: false, error: 'No se recibió archivo' });
+  if (!tipo || !PROMPTS[tipo]) return res.status(400).json({ ok: false, error: `Tipo de documento inválido: ${tipo}` });
+
+  try {
+    const datos = await analizarDocumentoConGroq(archivo.path, tipo, archivo.mimetype);
+    if (!res.headersSent) res.json({ ok: true, campo: tipo, datos });
+  } catch (err) {
+    console.error(`❌ Error analizando ${tipo}:`, err.message);
+    if (!res.headersSent) res.json({ ok: false, campo: tipo, error: err.message });
+  } finally {
+    try { if (fs.existsSync(archivo.path)) fs.unlinkSync(archivo.path); } catch {}
+  }
+};
+
+exports.generarResumenEndpoint = (req, res) => {
+  try {
+    const { resultados } = req.body;
+    if (!resultados) return res.status(400).json({ error: 'Falta el campo resultados' });
+    const resumen = generarResumen(resultados);
+    res.json(resumen);
+  } catch (error) {
+    console.error('❌ Error generando resumen:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 // ─── Utilidades ──────────────────────────────────────────────────────────────────
 function normalizar_nit(nit) {
   if (!nit) return null;

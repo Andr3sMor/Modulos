@@ -59,14 +59,20 @@
           {{ conteoArchivos }} documento{{ conteoArchivos > 1 ? 's' : '' }} cargado{{ conteoArchivos > 1 ? 's' : '' }}
         </div>
         <button class="btn-analizar" (click)="analizar()" [disabled]="cargando || !hayAlgunArchivo">
-          <ng-container *ngIf="!cargando">
-            🤖 Analizar con IA
-          </ng-container>
+          <ng-container *ngIf="!cargando">🤖 Analizar con IA</ng-container>
           <ng-container *ngIf="cargando">
-            <span class="spinner"></span> Analizando {{ conteoArchivos > 1 ? conteoArchivos + ' documentos' : 'documento' }} con IA — puede tardar hasta {{ conteoArchivos }} min...
+            <span class="spinner"></span> {{ progresoTexto || 'Iniciando...' }}
           </ng-container>
         </button>
         <button class="btn-limpiar" (click)="limpiar()" [disabled]="cargando">Limpiar todo</button>
+      </div>
+
+      <!-- Barra de progreso -->
+      <div *ngIf="cargando && progresoTotal > 0" class="progreso-wrap">
+        <div class="progreso-bar">
+          <div class="progreso-fill" [style.width.%]="(progresoNum / progresoTotal) * 100"></div>
+        </div>
+        <span class="progreso-label">{{ progresoNum }} / {{ progresoTotal }}</span>
       </div>
     </div>
 
@@ -79,7 +85,7 @@
       <!-- Tabs -->
       <div class="tabs-bar">
         <button class="tab-btn" [class.tab-activo]="tabActiva === 'resumen'" (click)="tabActiva = 'resumen'">
-          📊 Resumen Consolidado
+          📊 Resumen
         </button>
         <button
           *ngFor="let key of getDocKeys()"
@@ -88,86 +94,184 @@
           (click)="tabActiva = key"
         >
           {{ getNombreDoc(key) }}
-          <span *ngIf="!resultados![key].ok" class="tab-error-badge">!</span>
+          <span *ngIf="!resultados[key].ok" class="tab-error-badge">!</span>
         </button>
         <button
-          *ngIf="hayInconsistencias()"
+          *ngIf="hayAlertasCriticas()"
           class="tab-btn tab-alerta"
-          [class.tab-activo]="tabActiva === 'inconsistencias'"
-          (click)="tabActiva = 'inconsistencias'"
+          [class.tab-activo]="tabActiva === 'alertas'"
+          (click)="tabActiva = 'alertas'"
         >
-          ⚠️ Inconsistencias
+          🚨 Alertas
         </button>
       </div>
 
       <!-- TAB: Resumen -->
       <div *ngIf="tabActiva === 'resumen'" class="tab-content">
-        <div class="resumen-grid">
 
-          <div class="resumen-item" *ngIf="resumen.nombre">
-            <span class="resumen-label">👤 Nombre</span>
-            <span class="resumen-valor">{{ resumen.nombre }}</span>
-          </div>
-
-          <div class="resumen-item" *ngIf="resumen.razon_social">
-            <span class="resumen-label">🏢 Razón Social</span>
-            <span class="resumen-valor">{{ resumen.razon_social }}</span>
-          </div>
-
-          <div class="resumen-item" *ngIf="resumen.nit">
-            <span class="resumen-label">🔢 NIT</span>
-            <span class="resumen-valor">{{ resumen.nit }}</span>
-          </div>
-
-          <div class="resumen-item" *ngIf="resumen.codigo_rut">
-            <span class="resumen-label">📋 Código CIIU (RUT)</span>
-            <span class="resumen-valor mono">{{ resumen.codigo_rut }}</span>
-            <span class="resumen-sub" *ngIf="resumen.descripcion_actividad">{{ resumen.descripcion_actividad }}</span>
-          </div>
-
-          <div class="resumen-item full-width" *ngIf="resumen.representantes_legales?.length">
-            <span class="resumen-label">⚖️ Representantes Legales</span>
-            <ul class="resumen-lista">
-              <li *ngFor="let r of resumen.representantes_legales">{{ r }}</li>
-            </ul>
-          </div>
-
-          <div class="resumen-item full-width" *ngIf="resumen.beneficiarios_finales?.length">
-            <span class="resumen-label">💼 Beneficiarios Finales</span>
-            <ul class="resumen-lista">
-              <li *ngFor="let b of resumen.beneficiarios_finales">{{ b }}</li>
-            </ul>
-          </div>
-
-          <div class="resumen-item full-width">
-            <span class="resumen-label">✅ Documentos Analizados</span>
-            <div class="docs-analizados">
-              <span *ngFor="let d of resumen.documentos_analizados" class="doc-badge">{{ getNombreDoc(d) }}</span>
+        <!-- Confianza promedio -->
+        <div *ngIf="resumen.confianza_promedio !== null" class="confianza-bar-wrap">
+          <span class="confianza-label">Confianza promedio: {{ resumen.confianza_promedio }}%</span>
+          <div class="confianza-bar">
+            <div class="confianza-fill"
+                 [style.width.%]="resumen.confianza_promedio"
+                 [class.alta]="resumen.confianza_promedio >= 80"
+                 [class.media]="resumen.confianza_promedio >= 50 && resumen.confianza_promedio < 80"
+                 [class.baja]="resumen.confianza_promedio < 50">
             </div>
           </div>
-
         </div>
 
-        <div *ngIf="resumen.inconsistencias_cruzadas?.length" class="inconsistencias-alert">
-          <div class="incon-header">⚠️ Se detectaron inconsistencias entre documentos</div>
+        <!-- Alertas críticas al tope -->
+        <div *ngIf="getAlertasPorNivel('CRITICO').length" class="alertas-bloque nivel-critico-bloque">
+          <div class="alerta-titulo">🚨 Alertas Críticas</div>
           <ul>
-            <li *ngFor="let inc of resumen.inconsistencias_cruzadas">{{ inc }}</li>
+            <li *ngFor="let a of getAlertasPorNivel('CRITICO')">{{ a.mensaje }}</li>
           </ul>
         </div>
+        <div *ngIf="getAlertasPorNivel('ALTO').length" class="alertas-bloque nivel-alto-bloque">
+          <div class="alerta-titulo">⚠️ Alertas Altas</div>
+          <ul>
+            <li *ngFor="let a of getAlertasPorNivel('ALTO')">{{ a.mensaje }}</li>
+          </ul>
+        </div>
+
+        <div class="resumen-doble">
+
+          <!-- Persona Natural -->
+          <div *ngIf="resumen.persona_natural" class="resumen-card">
+            <div class="resumen-card-titulo">👤 Persona Natural</div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.nombre_completo">
+              <span class="rf-label">Nombre</span>
+              <span class="rf-valor">{{ resumen.persona_natural.nombre_completo }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.numero_cedula">
+              <span class="rf-label">Cédula</span>
+              <span class="rf-valor mono">{{ resumen.persona_natural.numero_cedula }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.fecha_nacimiento">
+              <span class="rf-label">Fecha nacimiento</span>
+              <span class="rf-valor">{{ resumen.persona_natural.fecha_nacimiento }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.lugar_nacimiento">
+              <span class="rf-label">Lugar nacimiento</span>
+              <span class="rf-valor">{{ resumen.persona_natural.lugar_nacimiento }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.sexo">
+              <span class="rf-label">Sexo</span>
+              <span class="rf-valor">{{ resumen.persona_natural.sexo }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.grupo_sanguineo">
+              <span class="rf-label">Grupo sanguíneo</span>
+              <span class="rf-valor">{{ resumen.persona_natural.grupo_sanguineo }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.persona_natural.cargo_en_empresa">
+              <span class="rf-label">Cargo</span>
+              <span class="rf-valor">{{ resumen.persona_natural.cargo_en_empresa }}</span>
+            </div>
+            <div *ngIf="resumen.persona_natural.es_pep" class="pep-badge">⚠️ PEP — {{ resumen.persona_natural.cargo_pep || 'cargo no especificado' }}</div>
+          </div>
+
+          <!-- Empresa -->
+          <div *ngIf="resumen.empresa" class="resumen-card">
+            <div class="resumen-card-titulo">🏢 Empresa</div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.razon_social">
+              <span class="rf-label">Razón Social</span>
+              <span class="rf-valor">{{ resumen.empresa.razon_social }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.nit">
+              <span class="rf-label">NIT</span>
+              <span class="rf-valor mono">{{ resumen.empresa.nit }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.tipo_sociedad">
+              <span class="rf-label">Tipo sociedad</span>
+              <span class="rf-valor">{{ resumen.empresa.tipo_sociedad }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.estado_matricula">
+              <span class="rf-label">Estado matrícula</span>
+              <span class="rf-valor" [class.estado-activo]="resumen.empresa.estado_matricula === 'ACTIVA'"
+                                     [class.estado-inactivo]="resumen.empresa.estado_matricula !== 'ACTIVA'">
+                {{ resumen.empresa.estado_matricula }}
+              </span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.estado_rut">
+              <span class="rf-label">Estado RUT</span>
+              <span class="rf-valor" [class.estado-activo]="resumen.empresa.estado_rut === 'ACTIVO'"
+                                     [class.estado-inactivo]="resumen.empresa.estado_rut !== 'ACTIVO'">
+                {{ resumen.empresa.estado_rut }}
+              </span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.fecha_renovacion">
+              <span class="rf-label">Última renovación</span>
+              <span class="rf-valor">{{ resumen.empresa.fecha_renovacion }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.domicilio">
+              <span class="rf-label">Domicilio</span>
+              <span class="rf-valor">{{ resumen.empresa.domicilio }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.actividad_principal_ciiu">
+              <span class="rf-label">CIIU</span>
+              <span class="rf-valor mono">{{ resumen.empresa.actividad_principal_ciiu }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.descripcion_actividad">
+              <span class="rf-label">Actividad</span>
+              <span class="rf-valor">{{ resumen.empresa.descripcion_actividad }}</span>
+            </div>
+            <div class="resumen-fila" *ngIf="resumen.empresa.regimen_tributario">
+              <span class="rf-label">Régimen</span>
+              <span class="rf-valor">{{ resumen.empresa.regimen_tributario }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Personas Vinculadas -->
+        <div *ngIf="resumen.personas_vinculadas?.length" class="tabla-wrap">
+          <div class="tabla-titulo">👥 Personas Vinculadas</div>
+          <table class="tabla-personas">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Documento</th>
+                <th>Roles</th>
+                <th>Fuentes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let p of resumen.personas_vinculadas" [class.fila-pep]="p.es_pep">
+                <td>{{ p.nombre }}<span *ngIf="p.es_pep" class="badge-pep">PEP</span></td>
+                <td class="mono">{{ p.documento || '—' }}</td>
+                <td>{{ p.roles?.join(', ') || '—' }}</td>
+                <td class="fuentes-cell">{{ p.fuentes?.join(', ') || '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Alertas MEDIO e INFO -->
+        <div *ngIf="getAlertasPorNivel('MEDIO').length" class="alertas-bloque nivel-medio-bloque">
+          <div class="alerta-titulo">🔔 Observaciones</div>
+          <ul>
+            <li *ngFor="let a of getAlertasPorNivel('MEDIO')">{{ a.mensaje }}</li>
+          </ul>
+        </div>
+
+        <!-- Documentos analizados -->
+        <div class="docs-analizados-wrap">
+          <span *ngFor="let d of resumen.documentos_analizados" class="doc-badge">✅ {{ getNombreDoc(d) }}</span>
+          <span *ngFor="let d of resumen.documentos_con_error" class="doc-badge doc-badge-error">❌ {{ getNombreDoc(d) }}</span>
+        </div>
+
       </div>
 
       <!-- TAB: Documento individual -->
       <div *ngFor="let key of getDocKeys()">
         <div *ngIf="tabActiva === key" class="tab-content">
 
-          <!-- Error al procesar -->
-          <div *ngIf="!resultados![key].ok" class="alert-error">
-            ❌ No se pudo analizar este documento: {{ resultados![key].error }}
+          <div *ngIf="!resultados[key].ok" class="alert-error">
+            ❌ No se pudo analizar este documento: {{ resultados[key].error }}
           </div>
 
-          <!-- Datos extraídos -->
-          <div *ngIf="resultados![key].ok">
-
+          <div *ngIf="resultados[key].ok">
             <div class="confianza-bar-wrap">
               <span class="confianza-label">Confianza de lectura: {{ getConfianza(key) }}%</span>
               <div class="confianza-bar">
@@ -200,25 +304,17 @@
                 <li *ngFor="let inc of getInconsistenciasDoc(key)">{{ inc }}</li>
               </ul>
             </div>
-
           </div>
         </div>
       </div>
 
-      <!-- TAB: Inconsistencias -->
-      <div *ngIf="tabActiva === 'inconsistencias'" class="tab-content">
-        <div *ngIf="resumen.inconsistencias_cruzadas?.length" class="inconsistencias-alert">
-          <div class="incon-header">❌ Inconsistencias entre documentos</div>
-          <ul>
-            <li *ngFor="let inc of resumen.inconsistencias_cruzadas">{{ inc }}</li>
-          </ul>
-        </div>
-
-        <div *ngFor="let key of getDocKeys()">
-          <div *ngIf="getInconsistenciasDoc(key).length" class="inconsistencias-doc" style="margin-bottom:12px;">
-            <div class="incon-header-sm">📄 {{ getNombreDoc(key) }}</div>
+      <!-- TAB: Alertas -->
+      <div *ngIf="tabActiva === 'alertas'" class="tab-content">
+        <div *ngFor="let nivel of ['CRITICO','ALTO','MEDIO','INFO']">
+          <div *ngIf="getAlertasPorNivel(nivel).length" class="alertas-bloque" [ngClass]="getNivelClass(nivel) + '-bloque'">
+            <div class="alerta-titulo">{{ nivel }}</div>
             <ul>
-              <li *ngFor="let inc of getInconsistenciasDoc(key)">{{ inc }}</li>
+              <li *ngFor="let a of getAlertasPorNivel(nivel)">{{ a.mensaje }}</li>
             </ul>
           </div>
         </div>

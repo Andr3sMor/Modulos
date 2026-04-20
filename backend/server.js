@@ -179,5 +179,11 @@ app.post(
   ]),
   conTimeout(documentosController.analizarDocumentos, 240000)
 );
+app.post(
+  "/api/analizar-documento",
+  upload.single('archivo'),
+  conTimeout(documentosController.analizarUnDocumento, 60000)
+);
+app.post("/api/generar-resumen", documentosController.generarResumenEndpoint);
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));

@@ -2,17 +2,71 @@ import { Component } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
+import { lastValueFrom } from 'rxjs';
 
-interface ResumenDocumentos {
-  nombre: string | null;
+interface PersonaNatural {
+  nombre_completo: string | null;
+  primer_apellido: string | null;
+  segundo_apellido: string | null;
+  primer_nombre: string | null;
+  segundo_nombre: string | null;
+  numero_cedula: string | null;
+  fecha_nacimiento: string | null;
+  lugar_nacimiento: string | null;
+  fecha_expedicion_cedula: string | null;
+  lugar_expedicion_cedula: string | null;
+  sexo: string | null;
+  grupo_sanguineo: string | null;
+  es_pep: boolean | null;
+  cargo_pep: string | null;
+  es_representante_legal: boolean | null;
+  cargo_en_empresa: string | null;
+}
+
+interface Empresa {
   razon_social: string | null;
-  representantes_legales: string[];
-  beneficiarios_finales: string[];
-  codigo_rut: string | null;
-  descripcion_actividad: string | null;
+  nombre_comercial: string | null;
+  sigla: string | null;
   nit: string | null;
-  inconsistencias_cruzadas: string[];
+  tipo_sociedad: string | null;
+  numero_matricula: string | null;
+  estado_matricula: string | null;
+  fecha_matricula: string | null;
+  fecha_renovacion: string | null;
+  domicilio: string | null;
+  direccion: string | null;
+  actividad_principal_ciiu: string | null;
+  descripcion_actividad: string | null;
+  responsabilidades_tributarias: { codigo: string; descripcion: string }[];
+  regimen_tributario: string | null;
+  gran_contribuyente: string | null;
+  estado_rut: string | null;
+  capital_suscrito: string | null;
+  capital_pagado: string | null;
+}
+
+interface PersonaVinculada {
+  nombre: string;
+  documento: string | null;
+  roles: string[];
+  fuentes: string[];
+  es_pep?: boolean;
+  cargo_pep?: string | null;
+}
+
+interface Alerta {
+  nivel: 'CRITICO' | 'ALTO' | 'MEDIO' | 'INFO';
+  mensaje: string;
+}
+
+interface Resumen {
+  persona_natural: PersonaNatural | null;
+  empresa: Empresa | null;
+  personas_vinculadas: PersonaVinculada[];
+  alertas: Alerta[];
   documentos_analizados: string[];
+  documentos_con_error: string[];
+  confianza_promedio: number | null;
 }
 
 interface ResultadoDocumento {
@@ -44,14 +98,17 @@ export class VerificacionComponent {
   };
 
   cargando = false;
+  progresoTexto = '';
+  progresoNum = 0;
+  progresoTotal = 0;
   error = '';
-  resumen: ResumenDocumentos | null = null;
-  resultados: { [key: string]: ResultadoDocumento } | null = null;
+  resumen: Resumen | null = null;
+  resultados: { [key: string]: ResultadoDocumento } = {};
   tabActiva = 'resumen';
 
   documentosConfig = [
     { key: 'camara_comercio', label: 'Cámara de Comercio', icon: '🏢', desc: 'Certificado de existencia y representación' },
-    { key: 'dof', label: 'DOF', icon: '📋', desc: 'Documento de origen / Beneficiarios finales' },
+    { key: 'dof', label: 'DOF', icon: '📋', desc: 'Documento de beneficiarios finales' },
     { key: 'cedula', label: 'Cédula', icon: '🪪', desc: 'Cédula de ciudadanía del representante' },
     { key: 'rut', label: 'RUT', icon: '📑', desc: 'Registro Único Tributario' },
   ];
@@ -98,7 +155,7 @@ export class VerificacionComponent {
     return Object.values(this.archivos).filter(f => f !== null).length;
   }
 
-  analizar() {
+  async analizar() {
     if (!this.hayAlgunArchivo) {
       this.error = 'Por favor suba al menos un documento para analizar.';
       return;
@@ -107,33 +164,56 @@ export class VerificacionComponent {
     this.cargando = true;
     this.error = '';
     this.resumen = null;
-    this.resultados = null;
+    this.resultados = {};
 
-    const formData = new FormData();
-    for (const [key, file] of Object.entries(this.archivos)) {
-      if (file) formData.append(key, file);
+    const entradas = Object.entries(this.archivos).filter(([, f]) => f !== null) as [string, File][];
+    this.progresoTotal = entradas.length;
+    this.progresoNum = 0;
+
+    for (const [key, file] of entradas) {
+      this.progresoNum++;
+      this.progresoTexto = `Analizando ${this.getNombreDoc(key)} (${this.progresoNum}/${this.progresoTotal})...`;
+
+      const formData = new FormData();
+      formData.append('archivo', file);
+      formData.append('tipo', key);
+
+      try {
+        const res = await lastValueFrom(
+          this.http.post<{ ok: boolean; campo: string; datos?: any; error?: string }>(
+            `${this.apiUrl}/api/analizar-documento`,
+            formData
+          )
+        );
+        this.resultados[key] = { ok: res.ok, datos: res.datos, error: res.error };
+      } catch (err: any) {
+        this.resultados[key] = { ok: false, error: err.error?.error || 'Error de conexión' };
+      }
     }
 
-    this.http.post<any>(`${this.apiUrl}/api/analizar-documentos`, formData).subscribe({
-      next: (res) => {
-        this.resumen = res.resumen;
-        this.resultados = res.resultados;
-        this.tabActiva = 'resumen';
-        this.cargando = false;
-      },
-      error: (err) => {
-        this.error = err.error?.error || 'Error al analizar los documentos. Intente de nuevo.';
-        this.cargando = false;
-      }
-    });
+    this.progresoTexto = 'Generando resumen consolidado...';
+
+    try {
+      const resumen = await lastValueFrom(
+        this.http.post<Resumen>(`${this.apiUrl}/api/generar-resumen`, { resultados: this.resultados })
+      );
+      this.resumen = resumen;
+    } catch (err: any) {
+      this.error = 'No se pudo generar el resumen consolidado.';
+    }
+
+    this.tabActiva = 'resumen';
+    this.cargando = false;
+    this.progresoTexto = '';
   }
 
   limpiar() {
     this.archivos = { camara_comercio: null, dof: null, cedula: null, rut: null };
     this.previews = { camara_comercio: null, dof: null, cedula: null, rut: null };
     this.resumen = null;
-    this.resultados = null;
+    this.resultados = {};
     this.error = '';
+    this.progresoTexto = '';
   }
 
   getNombreDoc(key: string): string {
@@ -141,38 +221,20 @@ export class VerificacionComponent {
   }
 
   getDocKeys(): string[] {
-    return this.resultados ? Object.keys(this.resultados) : [];
+    return Object.keys(this.resultados);
   }
 
   getDatosDoc(key: string): { campo: string; valor: any }[] {
-    const datos = this.resultados?.[key]?.datos;
+    const datos = this.resultados[key]?.datos;
     if (!datos) return [];
     const excluir = ['inconsistencias', 'confianza'];
     return Object.entries(datos)
-      .filter(([k]) => !excluir.includes(k) && datos[k] !== null && datos[k] !== undefined)
+      .filter(([k]) => !excluir.includes(k) && datos[k] !== null && datos[k] !== undefined && datos[k] !== '')
       .map(([k, v]) => ({ campo: this.formatearCampo(k), valor: v }));
   }
 
   formatearCampo(key: string): string {
     return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  }
-
-  getConfianza(key: string): number {
-    return parseInt(this.resultados?.[key]?.datos?.confianza) || 0;
-  }
-
-  getInconsistenciasDoc(key: string): string[] {
-    return this.resultados?.[key]?.datos?.inconsistencias || [];
-  }
-
-  hayInconsistencias(): boolean {
-    const cruzadas = (this.resumen?.inconsistencias_cruzadas?.length || 0) > 0;
-    const enDocs = this.getDocKeys().some(k => this.getInconsistenciasDoc(k).length > 0);
-    return cruzadas || enDocs;
-  }
-
-  isArray(val: any): boolean {
-    return Array.isArray(val);
   }
 
   formatearValorItem(v: any): string {
@@ -183,5 +245,34 @@ export class VerificacionComponent {
         .join(' — ');
     }
     return String(v);
+  }
+
+  getConfianza(key: string): number {
+    return parseInt(this.resultados[key]?.datos?.confianza) || 0;
+  }
+
+  getInconsistenciasDoc(key: string): string[] {
+    return this.resultados[key]?.datos?.inconsistencias || [];
+  }
+
+  isArray(val: any): boolean {
+    return Array.isArray(val);
+  }
+
+  getAlertasPorNivel(nivel: string): Alerta[] {
+    return (this.resumen?.alertas || []).filter(a => a.nivel === nivel);
+  }
+
+  getNivelClass(nivel: string): string {
+    const map: any = { CRITICO: 'nivel-critico', ALTO: 'nivel-alto', MEDIO: 'nivel-medio', INFO: 'nivel-info' };
+    return map[nivel] || '';
+  }
+
+  hayAlertasCriticas(): boolean {
+    return (this.resumen?.alertas || []).some(a => a.nivel === 'CRITICO' || a.nivel === 'ALTO');
+  }
+
+  getPersonasVinculadasConRol(): PersonaVinculada[] {
+    return this.resumen?.personas_vinculadas || [];
   }
 }
