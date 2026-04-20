@@ -177,7 +177,7 @@ app.post(
     { name: 'cedula', maxCount: 1 },
     { name: 'rut', maxCount: 1 },
   ]),
-  conTimeout(documentosController.analizarDocumentos, 60000)
+  conTimeout(documentosController.analizarDocumentos, 240000)
 );
 
 app.listen(3001, () => console.log("✅ Backend en puerto 3001"));

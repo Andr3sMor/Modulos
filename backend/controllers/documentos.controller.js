@@ -238,7 +238,7 @@ async function extraerTextoPdf(filePath) {
       // FIX: reducido a 15 s; si el proceso hijo de pdf-parse no termina,
       // Node.js igual seguirá corriendo hasta que el proceso hijo muera, pero
       // la respuesta HTTP ya se habrá enviado con el error — no queda colgado.
-      15000,
+      8000,
     ),
   );
 

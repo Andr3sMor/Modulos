@@ -63,7 +63,7 @@
             🤖 Analizar con IA
           </ng-container>
           <ng-container *ngIf="cargando">
-            <span class="spinner"></span> Analizando documentos...
+            <span class="spinner"></span> Analizando {{ conteoArchivos > 1 ? conteoArchivos + ' documentos' : 'documento' }} con IA — puede tardar hasta {{ conteoArchivos }} min...
           </ng-container>
         </button>
         <button class="btn-limpiar" (click)="limpiar()" [disabled]="cargando">Limpiar todo</button>
