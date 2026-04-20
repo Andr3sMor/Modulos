@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, ChangeDetectorRef } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { HttpClient } from '@angular/common/http';
@@ -116,7 +116,7 @@ export class VerificacionComponent {
 
   private apiUrl = 'https://modulos-backend.onrender.com';
 
-  constructor(private http: HttpClient) {}
+  constructor(private http: HttpClient, private cdr: ChangeDetectorRef) {}
 
   onFileChange(event: Event, key: string) {
     const input = event.target as HTMLInputElement;
@@ -174,6 +174,7 @@ export class VerificacionComponent {
     for (const [key, file] of entradas) {
       this.progresoNum++;
       this.progresoTexto = `Analizando ${this.getNombreDoc(key)} (${this.progresoNum}/${this.progresoTotal})...`;
+      this.cdr.detectChanges();
 
       const formData = new FormData();
       formData.append('archivo', file);
@@ -193,9 +194,11 @@ export class VerificacionComponent {
           : (err.error?.error || err.message || 'Error de conexión');
         this.resultados[key] = { ok: false, error: msg };
       }
+      this.cdr.detectChanges();
     }
 
     this.progresoTexto = 'Generando resumen consolidado...';
+    this.cdr.detectChanges();
 
     try {
       const resumen = await lastValueFrom(
@@ -209,6 +212,7 @@ export class VerificacionComponent {
     this.tabActiva = 'resumen';
     this.cargando = false;
     this.progresoTexto = '';
+    this.cdr.detectChanges();
   }
 
   limpiar() {
